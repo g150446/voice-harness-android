@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.g150446.ringxwatch"
+    namespace = "com.g150446.shepherdsignal"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.g150446.ringxwatch"
+        applicationId = "com.g150446.shepherdsignal"
         minSdk = 24
         targetSdk = 36
         versionCode = 1

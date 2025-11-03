@@ -56,3 +56,32 @@ captures/
 
 # Log Files
 *.log
+
+# Python virtual environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Sensor data collection files
+sensor_data_*.csv
+
+# Visualization output files (temporary HTML from sensor data scripts)
+tmp*.html
+
+# Python package distribution
+*.egg
+*.egg-info/
+dist/
+*.whl
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb

@@ -1,6 +1,18 @@
-# RingXwatch
+# Shepherd Signal
 
-An Android application that integrates a Colmi smart ring with a Wear OS watch app. Tap your smart ring to remotely launch your watch app while enjoying background music playback.
+An Android application for Wear OS that enables wrist gesture detection to control voice recording. The app uses sensor-based gesture recognition to toggle recording, providing hands-free control of voice transcription features.
+
+## Migration from RingXwatch
+
+This project originated as **RingXwatch**, which was designed to control an AI voice assistant using ring tap gestures. The app has been migrated and rebranded to **Shepherd Signal** with a new focus on wrist gesture detection.
+
+**Key Changes:**
+- **Project Name**: RingXwatch → Shepherd Signal
+- **Package Name**: `com.g150446.ringxwatch` → `com.g150446.shepherdsignal`
+- **Primary Function**: Ring gesture control → Wrist gesture detection
+- **Target Gestures**: Ring tap gestures → Wrist flexion and external rotation
+
+**Note on Code Preservation**: Some ring gesture related code remains in the codebase for reference and reusable components (e.g., phone-watch communication infrastructure, Wearable Data Layer API usage, MediaSession handling). These components may be useful for future features or reference implementations.
 
 ## Features
 
@@ -36,13 +48,30 @@ An Android application that integrates a Colmi smart ring with a Wear OS watch a
 - Manual launch button in phone app
 
 ### 🎙️ Voice Transcription (Groq Whisper)
-- Ring tap on watch toggles voice recording while the watch app is open
-- Second ring tap stops recording and uploads audio to Groq Whisper Large v3 Turbo
+- Wrist gesture detection toggles voice recording while the watch app is open
+- Second gesture stops recording and uploads audio to Groq Whisper Large v3 Turbo
 - Displays transcribed text on the watch
 - After transcription, the text is sent to Groq Chat Completions using `openai/gpt-oss-120b` and the generated response is shown below the transcription
 - API key is configured on the phone app and synced to the watch automatically
 - **Screen stays on**: Ambient mode is disabled and screen remains fully interactive during recording
 - **Extended visibility**: Screen remains on for 15 seconds after displaying transcription and LLM response results
+
+### 🤲 Wrist Gesture Detection
+- **Real-time sensor monitoring**: Accelerometer and gyroscope data analyzed at 50Hz
+- **Threshold-based detection**: Simple state machine algorithm (no ML required) with 152-539x signal-to-noise ratio
+- **Current Gesture Support**:
+  - ✅ **Wrist Flexion**: Fully implemented and working
+    - Primary detector: gyro_x rotation threshold (-4.0 rad/s)
+    - Secondary confirmation: accel_z deviation (8.0 m/s²)
+    - Peak-then-return pattern detection within 0.3-3.0 second window
+    - Automatic baseline calibration (0.8 seconds)
+  - 🔄 **External Rotation**: Planned for future implementation
+    - Will use gyro_z rotation threshold (1.2 rad/s)
+    - Similar peak-then-return detection pattern
+- **Dual Mode System**:
+  - **Data Collection Mode**: Logs sensor data to CSV for analysis
+  - **Gesture Detection Mode**: Real-time gesture recognition during recording
+- **Integration**: Gestures toggle voice recording (same behavior as previous ring tap)
 
 ### 🐛 Debug Logging
 - Real-time debug messages displayed on screen
@@ -83,10 +112,21 @@ An Android application that integrates a Colmi smart ring with a Wear OS watch a
   - Groq API integration for transcription and LLM responses
   - Ambient mode prevention during recording and result display
   - Extended screen-on time management (15 seconds after results)
+  - **Wrist gesture detection integration** (gesture detector triggers recording toggle)
+- `GestureDetector.kt` - **NEW**: Threshold-based gesture recognition:
+  - Baseline calibration system
+  - Wrist flexion detection (gyro_x + accel_z thresholds)
+  - State machine for peak-then-return pattern recognition
+  - Real-time sensor event processing
+- `SensorDataLogger.kt` - Sensor monitoring and data collection:
+  - Dual mode support (data collection / gesture detection)
+  - CSV logging for data analysis
+  - Sensor event forwarding to gesture detector
 - `WearableMessageListenerService.kt` - Background service that:
   - Listens for launch commands from phone
   - Checks display state via DisplayManager (interactive or ambient)
   - Launches watch app UI without waking the screen
+  - **Note**: Ring gesture code preserved for reference
 
 ## How It Works
 
@@ -385,7 +425,7 @@ implementation(platform("androidx.compose:compose-bom:2024.04.01"))
 - **Recording protection**: Screen remains fully interactive during voice recording
 - **Result display protection**: Keeps screen on for 15 seconds after transcription and LLM response are shown
 
-### v3.4 - Dual Silent Track System (Current)
+### v3.4 - Dual Silent Track System
 - **Two-track playlist**: Added second silent MP3 (silent2.mp3) for reliable ring gesture detection
 - **Ring gesture advances tracks**: Tap now switches between Silent Track 1 and Silent Track 2
 - **Track metadata**: Both MP3 files tagged with unique titles using ffmpeg
@@ -395,14 +435,44 @@ implementation(platform("androidx.compose:compose-bom:2024.04.01"))
 - **PlaybackStateManager integration**: Real-time track and playback state updates to UI
 - **REPEAT_MODE_ALL**: ExoPlayer configured to loop the two-track playlist indefinitely
 
+### v4.0 - Wrist Gesture Detection (Current)
+- **Project Migration**: Rebranded from RingXwatch to Shepherd Signal
+- **Gesture Detection System**: Implemented threshold-based wrist flexion detection
+- **Sensor Integration**: Real-time accelerometer and gyroscope monitoring at 50Hz
+- **Baseline Calibration**: 0.8-second automatic calibration for stable gesture recognition
+- **Dual Mode Support**: Data collection mode and gesture detection mode
+- **Current Status**: 
+  - ✅ Wrist flexion detection: **Complete and working**
+  - 🔄 External rotation detection: **Planned for future implementation**
+- **Gesture Analysis**: Analyzed sensor data showing 152-539x signal-to-noise ratio, confirming simple threshold-based approach is sufficient (no ML required)
+- **Code Preservation**: Ring gesture related code preserved for reusable components and reference
+
+## Current Status
+
+### Completed Features ✅
+- Wrist flexion gesture detection (threshold-based, working)
+- Voice recording with gesture control
+- Groq API integration for transcription and LLM responses
+- Dual mode sensor system (data collection / gesture detection)
+- Baseline calibration system
+
+### Planned Features 🔄
+- External rotation gesture detection
+- Gesture sensitivity customization
+- Multiple gesture pattern recognition
+
+### Preserved for Reference 📚
+- Ring gesture related code (not actively used, but preserved for reusable components)
+- Phone-watch communication infrastructure
+- MediaSession and playback control code
+
 ## Future Enhancements
 
-- [ ] Support for playlist management
-- [ ] Skip to next/previous track controls
-- [ ] Volume control
-- [ ] Customizable ring tap actions
-- [ ] Battery optimization settings
-- [ ] Watch app UI for music control
+- [ ] External rotation gesture detection implementation
+- [ ] Gesture pattern customization (sensitivity, timing)
+- [ ] Multiple gesture recognition (sequence of gestures)
+- [ ] Gesture-based shortcuts (different gestures for different actions)
+- [ ] Sensor data analysis tools for gesture tuning
 
 ## License
 

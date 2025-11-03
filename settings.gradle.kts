@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "RingXwatch"
+rootProject.name = "ShepherdSignal"
 include(":app")
 include(":wear")
