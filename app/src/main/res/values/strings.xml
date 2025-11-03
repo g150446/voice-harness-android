@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">RingXwatch</string>
+    <string name="accessibility_service_description">RingXwatch Accessibility Service provides accessibility features for users with disabilities while enabling ring gesture detection. The service monitors system events and provides accessibility feedback, allowing the app to launch your paired Wear OS watch when you tap your ring, even when the phone is in sleep mode. This service runs with system-level privileges to ensure reliable operation and accessibility support.</string>
+</resources>
