@@ -102,6 +102,11 @@ class MainActivity : ComponentActivity() {
     // Sensor data logger and gesture detector
     private var sensorDataLogger: SensorDataLogger? = null
     private var gestureDetector: GestureDetector? = null
+    private var gestureTestMode: Boolean = true // Track if we're in test mode
+    private var dataCollectionMode: Boolean = false // Enable data collection mode
+    private var negativeSamplesCollection: Boolean = false // Collect negative samples (true = negative samples, false = flexion)
+    private var gestureDetectedMessage by mutableStateOf("") // Message shown when gesture detected in test mode
+    private var gestureTestJob: Job? = null // Job to handle test mode timing
     
     companion object {
         private const val TAG = "WatchMainActivity"
@@ -159,13 +164,24 @@ class MainActivity : ComponentActivity() {
         
         handleIntentAction(intent)
         
-        // Automatically start recording if not already started by intent action
-        // This skips the "Tap ring to start" message and goes directly to recording
+        // Automatically start based on mode
         if (intent?.action != "TOGGLE_RECORDING") {
-            // Use Handler to start recording after UI is set up
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                if (!isRecording) {
-                    requestMicPermissionAndToggle()
+                when {
+                    dataCollectionMode -> {
+                        // Start data collection mode (external rotation or flexion)
+                        startDataCollection()
+                    }
+                    gestureTestMode -> {
+                        // In test mode, just start sensor monitoring without recording
+                        initializeGestureDetection()
+                    }
+                    else -> {
+                        // Default: start recording with gesture control
+                        if (!isRecording) {
+                            requestMicPermissionAndToggle()
+                        }
+                    }
                 }
             }, 100) // Small delay to ensure UI is ready
         }
@@ -173,7 +189,7 @@ class MainActivity : ComponentActivity() {
         setTheme(android.R.style.Theme_DeviceDefault)
         
         setContent {
-            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage)
+            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage)
         }
     }
     
@@ -263,6 +279,77 @@ class MainActivity : ComponentActivity() {
         toggleRecording()
     }
 
+    private fun handleGestureDetectedInTestMode(gestureType: GestureType) {
+        // Update UI to show detected gesture type
+        gestureDetectedMessage = "Wrist Flexion"
+        
+        // Cancel any existing test job
+        gestureTestJob?.cancel()
+        
+        // After 1 second, return to "waiting gesture" message
+        gestureTestJob = wakeLockScope.launch {
+            delay(1000)
+            gestureDetectedMessage = ""
+        }
+    }
+    
+    private fun initializeGestureDetection() {
+        try {
+            // OPTION A: Disable ambient mode and keep screen on
+            disableAmbientMode() // Explicitly prevent ambient mode
+            keepScreenOnDirect() // Multiple methods to keep screen on
+            // Also acquire wake lock as backup
+            acquireWakeLock()
+            
+            // Initialize sensor monitoring in test mode
+            sensorDataLogger = SensorDataLogger(this, SensorMode.GESTURE_TEST_MODE)
+            
+            // Initialize gesture detector for test mode
+            gestureDetector = GestureDetector(object : GestureDetectionListener {
+                override fun onGestureDetected(type: GestureType) {
+                    // Test mode: show detection message with gesture type
+                    Log.d(TAG, "*** ${type.name} DETECTED (TEST MODE) ***")
+                    handleGestureDetectedInTestMode(type)
+                }
+            })
+            
+            // Start sensor monitoring first
+            sensorDataLogger?.startLogging()
+            
+            // Connect gesture detector to sensor logger and start calibration
+            sensorDataLogger?.setGestureDetector(gestureDetector)
+            sensorDataLogger?.notifyGestureDetectorReady()
+        } catch (e: Exception) {
+            statusMessage = "Failed to initialize gesture detection: ${e.message}"
+            Log.e(TAG, "Failed to initialize gesture detection", e)
+        }
+    }
+    
+    private fun initializeGestureDetectionForRecording() {
+        try {
+            // Initialize sensor monitoring in control mode
+            sensorDataLogger = SensorDataLogger(this, SensorMode.GESTURE_CONTROL_MODE)
+            
+            // Initialize gesture detector for control mode
+            gestureDetector = GestureDetector(object : GestureDetectionListener {
+                override fun onGestureDetected(type: GestureType) {
+                    // Control mode: toggle recording
+                    Log.d(TAG, "*** WRIST FLEXION DETECTED - TOGGLING RECORDING ***")
+                    toggleRecording()
+                }
+            })
+            
+            // Start sensor monitoring first
+            sensorDataLogger?.startLogging()
+            
+            // Connect gesture detector to sensor logger and start calibration
+            sensorDataLogger?.setGestureDetector(gestureDetector)
+            sensorDataLogger?.notifyGestureDetectorReady()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize gesture detection for recording", e)
+        }
+    }
+    
     private fun toggleRecording() {
         // If exit message is showing, cancel auto-close and restart recording
         if (exitMessage.isNotBlank()) {
@@ -284,6 +371,36 @@ class MainActivity : ComponentActivity() {
         autoCloseJob?.cancel()
         autoCloseJob = null
         Log.d(TAG, "Auto-close cancelled")
+    }
+    
+    private fun startDataCollection() {
+        try {
+            // OPTION A: Disable ambient mode and keep screen on
+            disableAmbientMode() // Explicitly prevent ambient mode
+            keepScreenOnDirect() // Multiple methods to keep screen on
+            // Also acquire wake lock as backup
+            acquireWakeLock()
+            
+            // Determine which data type to collect
+            val sensorMode = if (negativeSamplesCollection) {
+                SensorMode.NEGATIVE_SAMPLES_COLLECTION
+            } else {
+                SensorMode.FLEXION_DATA_COLLECTION
+            }
+            
+            // Initialize sensor monitoring in data collection mode
+            sensorDataLogger = SensorDataLogger(this, sensorMode)
+            
+            // Start data collection
+            sensorDataLogger?.startLogging()
+            
+            val dataType = if (negativeSamplesCollection) "negative samples" else "wrist flexion"
+            statusMessage = "Collecting $dataType data..."
+            Log.d(TAG, "Started $dataType data collection")
+        } catch (e: Exception) {
+            statusMessage = "Failed to start data collection: ${e.message}"
+            Log.e(TAG, "Failed to start data collection", e)
+        }
     }
 
     private fun startRecording() {
@@ -319,28 +436,8 @@ class MainActivity : ComponentActivity() {
                 Log.v(TAG, "VAD setup failed, continuing without VAD") // Suppressed for data collection
             }
             
-            // Initialize sensor monitoring in gesture detection mode
-            sensorDataLogger = SensorDataLogger(this, SensorMode.GESTURE_DETECTION)
-            
-            // Initialize gesture detector
-            gestureDetector = GestureDetector(object : GestureDetectionListener {
-                override fun onGestureDetected(type: GestureType) {
-                    when (type) {
-                        GestureType.WRIST_FLEXION -> {
-                            Log.d(TAG, "*** WRIST FLEXION DETECTED - TOGGLING RECORDING ***")
-                            // Toggle recording on gesture detection (same as ring tap)
-                            toggleRecording()
-                        }
-                    }
-                }
-            })
-            
-            // Start sensor monitoring first
-            sensorDataLogger?.startLogging()
-            
-            // Connect gesture detector to sensor logger and start calibration
-            sensorDataLogger?.setGestureDetector(gestureDetector)
-            sensorDataLogger?.notifyGestureDetectorReady()
+            // Initialize sensor monitoring in gesture control mode
+            initializeGestureDetectionForRecording()
         } catch (e: Exception) {
             statusMessage = "Failed to start recording: ${e.message}"
             stopAndReleaseRecorderIfNeeded()
@@ -826,7 +923,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String) {
+fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String) {
     ShepherdSignalTheme {
         val scrollState = rememberScrollState()
         Box(
@@ -848,7 +945,9 @@ fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, 
                     llmResponseText = llmResponseText,
                     statusMessage = statusMessage,
                     exitMessage = exitMessage,
-                    currentCount = currentCount
+                    currentCount = currentCount,
+                    gestureTestMode = gestureTestMode,
+                    gestureDetectedMessage = gestureDetectedMessage
                 )
             }
         }
@@ -885,11 +984,34 @@ fun BlinkingMicIcon() {
 }
 
 @Composable
-fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int) {
+fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int, gestureTestMode: Boolean, gestureDetectedMessage: String) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Gesture test mode UI (shows detection status instead of recording)
+        if (gestureTestMode) {
+            if (gestureDetectedMessage.isNotBlank()) {
+                // Show "Gesture Detected" message
+                Text(
+                    text = gestureDetectedMessage,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colors.primary,
+                    style = MaterialTheme.typography.title2
+                )
+            } else {
+                // Show "waiting gesture" message
+                Text(
+                    text = "Waiting Gesture",
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colors.primary,
+                    style = MaterialTheme.typography.title2
+                )
+            }
+            return@Column
+        }
+        
+        // Control mode UI (original recording interface)
         if (isRecording || exitMessage.isNotBlank()) {
             if (exitMessage.isNotBlank()) {
                 // Show exit message in primary color (same as "Ask gpt-oss")
@@ -927,5 +1049,5 @@ fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseTe
 @Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true)
 @Composable
 fun DefaultPreview() {
-    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "")
+    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "")
 }

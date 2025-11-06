@@ -7,7 +7,6 @@ import kotlin.math.abs
 
 enum class GestureType {
     WRIST_FLEXION
-    // External rotation deferred to future
 }
 
 interface GestureDetectionListener {
@@ -48,16 +47,17 @@ class GestureDetector(
     private var hasGyroData = false
     
     companion object {
-        // Wrist Flexion Thresholds
-        private const val FLEXION_GYRO_X_THRESHOLD = -4.0f // rad/s (negative = flexion)
-        private const val FLEXION_ACCEL_Z_THRESHOLD = 8.0f // m/s² deviation from baseline
-        private const val FLEXION_MIN_DURATION_MS = 300L // 0.3s minimum gesture
+        // Wrist Flexion Thresholds (relaxed for better detection rate)
+        private const val FLEXION_GYRO_X_THRESHOLD = -2.5f // rad/s (negative = flexion) - relaxed from -4.0
+        private const val FLEXION_ACCEL_Z_THRESHOLD = 6.0f // m/s² deviation from baseline - relaxed from 8.0
+        private const val FLEXION_MIN_DURATION_MS = 200L // 0.2s minimum gesture - relaxed from 300ms
         private const val FLEXION_MAX_DURATION_MS = 3000L // 3s maximum gesture
+        private const val FLEXION_GYRO_Z_BASELINE_TOLERANCE = 0.6f // rad/s (gyro_z should be near baseline for flexion) - relaxed from 0.4
         
         // Baseline Calibration
         private const val BASELINE_DURATION_MS = 800L // 0.8 seconds - optimized from analysis
         private const val MIN_BASELINE_SAMPLES = 20 // Minimum samples needed (at 50Hz, 20 samples = 400ms)
-        private const val BASELINE_STD_MULTIPLIER = 2.0f // ±2σ for baseline bounds
+        private const val BASELINE_STD_MULTIPLIER = 2.5f // ±2.5σ for baseline bounds - relaxed from 2.0 for easier return detection
         
         // Cooldown to prevent false positives
         private const val GESTURE_COOLDOWN_MS = 500L
@@ -221,27 +221,37 @@ class GestureDetector(
         
         when (state) {
             DetectionState.IDLE -> {
-                // Check for threshold crossing
+                // Calculate deviations from baseline
                 val gyroXDeviation = sample.gyroX - baselineMean.gyroX
+                val gyroZDeviation = sample.gyroZ - baselineMean.gyroZ
                 val accelZDeviation = abs(sample.accelZ - baselineMean.accelZ)
                 
-                // Primary detector: gyro_x < baseline - threshold
-                // Secondary detector: accel_z deviation > threshold
-                if (gyroXDeviation < FLEXION_GYRO_X_THRESHOLD || accelZDeviation > FLEXION_ACCEL_Z_THRESHOLD) {
-                    state = DetectionState.DETECTING
-                    detectionStartTime = timestamp
-                    peakTime = timestamp
-                    peakGyroX = gyroXDeviation
-                    peakAccelZ = accelZDeviation
+                // Improved detection algorithm based on data analysis:
+                // 1. Primary filter: gyro_z must be near baseline (filters out negative samples)
+                //    Negative samples have 2.9x more gyro_z activity (mean abs = 0.68 vs 0.24)
+                // 2. Primary detector: gyro_x < -4.0 rad/s (wrist flexion)
+                // 3. Secondary detector: accel_z > 8.0 m/s² (backup confirmation)
+                
+                val gyroZNearBaseline = abs(gyroZDeviation) <= FLEXION_GYRO_Z_BASELINE_TOLERANCE
+                
+                // Primary flexion detector: gyro_x threshold with gyro_z constraint
+                val flexionDetected = gyroXDeviation < FLEXION_GYRO_X_THRESHOLD && gyroZNearBaseline
+                
+                // Secondary flexion detector: accel_z threshold with gyro_z constraint
+                val flexionDetectedSecondary = accelZDeviation > FLEXION_ACCEL_Z_THRESHOLD && gyroZNearBaseline
+                
+                if (flexionDetected || flexionDetectedSecondary) {
+                    startDetecting(sample, timestamp)
                 }
             }
             
             DetectionState.DETECTING -> {
-                // Track peak
+                val elapsed = timestamp - detectionStartTime
                 val gyroXDeviation = sample.gyroX - baselineMean.gyroX
+                val gyroZDeviation = sample.gyroZ - baselineMean.gyroZ
                 val accelZDeviation = abs(sample.accelZ - baselineMean.accelZ)
                 
-                // Update peak if we find a larger deviation
+                // Update flexion peaks
                 if (gyroXDeviation < peakGyroX) {
                     peakGyroX = gyroXDeviation
                     peakTime = timestamp
@@ -251,22 +261,19 @@ class GestureDetector(
                     peakTime = timestamp
                 }
                 
-                // Check for return to baseline (±2σ)
+                // Check for return to baseline
                 val baselineBound = BASELINE_STD_MULTIPLIER
                 val gyroXDev = sample.gyroX - baselineMean.gyroX
                 val gyroXInBounds = abs(gyroXDev) <= baselineStd.gyroX * baselineBound
                 val accelZDev = sample.accelZ - baselineMean.accelZ
                 val accelZInBounds = abs(accelZDev) <= baselineStd.accelZ * baselineBound
                 
-                val elapsed = timestamp - detectionStartTime
-                val peakToNow = timestamp - peakTime
+                // Verify still flexion (gyro_z near baseline)
+                val gyroZNearBaseline = abs(gyroZDeviation) <= FLEXION_GYRO_Z_BASELINE_TOLERANCE
                 
-                // Confirm gesture if:
-                // 1. Peak detected (we have a significant deviation)
-                // 2. Values return to baseline (±2σ)
-                // 3. Duration is within acceptable range
-                if ((gyroXInBounds || accelZInBounds) && elapsed >= FLEXION_MIN_DURATION_MS && elapsed <= FLEXION_MAX_DURATION_MS) {
-                    // Gesture confirmed
+                // Confirm if returned to baseline and duration valid
+                if ((gyroXInBounds || accelZInBounds) && gyroZNearBaseline && 
+                    elapsed >= FLEXION_MIN_DURATION_MS && elapsed <= FLEXION_MAX_DURATION_MS) {
                     state = DetectionState.CONFIRMED
                     confirmGesture(timestamp)
                 } else if (elapsed > FLEXION_MAX_DURATION_MS) {
@@ -286,9 +293,23 @@ class GestureDetector(
         }
     }
     
+    private fun startDetecting(sample: SensorSample, timestamp: Long) {
+        state = DetectionState.DETECTING
+        detectionStartTime = timestamp
+        peakTime = timestamp
+        
+        val gyroXDeviation = sample.gyroX - baselineMean.gyroX
+        val accelZDeviation = abs(sample.accelZ - baselineMean.accelZ)
+        
+        peakGyroX = gyroXDeviation
+        peakAccelZ = accelZDeviation
+    }
+    
     private fun confirmGesture(timestamp: Long) {
+        val duration = timestamp - detectionStartTime
+        
         Log.d(TAG, "*** WRIST FLEXION DETECTED ***")
-        Log.d(TAG, "  Peak: gyro_x=${String.format("%.4f", peakGyroX)}, accel_z=${String.format("%.4f", peakAccelZ)}, duration=${timestamp - detectionStartTime}ms")
+        Log.d(TAG, "  Peak: gyro_x=${String.format("%.4f", peakGyroX)}, accel_z=${String.format("%.4f", peakAccelZ)}, duration=${duration}ms")
         
         lastDetectionTime = timestamp
         state = DetectionState.COOLDOWN

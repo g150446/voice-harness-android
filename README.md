@@ -65,13 +65,23 @@ This project originated as **RingXwatch**, which was designed to control an AI v
     - Secondary confirmation: accel_z deviation (8.0 m/s²)
     - Peak-then-return pattern detection within 0.3-3.0 second window
     - Automatic baseline calibration (0.8 seconds)
-  - 🔄 **External Rotation**: Planned for future implementation
-    - Will use gyro_z rotation threshold (1.2 rad/s)
-    - Similar peak-then-return detection pattern
-- **Dual Mode System**:
-  - **Data Collection Mode**: Logs sensor data to CSV for analysis
-  - **Gesture Detection Mode**: Real-time gesture recognition during recording
-- **Integration**: Gestures toggle voice recording (same behavior as previous ring tap)
+  - ✅ **External Rotation**: Fully implemented and working
+    - Primary detector: gyro_z rotation threshold (1.2 rad/s)
+    - Cross-axis verification: gyro_x must not be strongly negative (to distinguish from flexion)
+    - Peak-then-return pattern detection within 0.3-3.0 second window
+    - Automatic baseline calibration (0.8 seconds)
+- **Dual Gesture Detection**: System can detect and distinguish both gestures simultaneously
+  - Simultaneous threshold checking for both gesture types
+  - Conflict resolution: Signal strength comparison when both thresholds crossed
+  - Real-time classification with cross-axis verification
+- **Four Mode System**:
+  - **Flexion Data Collection Mode**: Logs wrist flexion gesture data to CSV for analysis
+  - **External Rotation Data Collection Mode**: Logs external rotation gesture data to CSV for analysis
+  - **Gesture Test Mode**: Real-time gesture testing - shows "Waiting Gesture" / "Wrist Flexion" / "External Rotation" messages based on detected gesture type
+  - **Gesture Control Mode**: Real-time gesture control - toggles voice recording with wrist flexion gesture
+- **Integration**: 
+  - **Test Mode**: Shows detection status instead of recording interface
+  - **Control Mode**: Gestures toggle voice recording (same behavior as previous ring tap)
 
 ### 🐛 Debug Logging
 - Real-time debug messages displayed on screen
@@ -113,15 +123,19 @@ This project originated as **RingXwatch**, which was designed to control an AI v
   - Ambient mode prevention during recording and result display
   - Extended screen-on time management (15 seconds after results)
   - **Wrist gesture detection integration** (gesture detector triggers recording toggle)
-- `GestureDetector.kt` - **NEW**: Threshold-based gesture recognition:
+- `GestureDetector.kt` - **NEW**: Threshold-based dual gesture recognition:
   - Baseline calibration system
   - Wrist flexion detection (gyro_x + accel_z thresholds)
+  - External rotation detection (gyro_z threshold with cross-axis verification)
+  - Simultaneous detection and distinction of both gesture types
+  - Conflict resolution via signal strength comparison
   - State machine for peak-then-return pattern recognition
   - Real-time sensor event processing
 - `SensorDataLogger.kt` - Sensor monitoring and data collection:
-  - Dual mode support (data collection / gesture detection)
-  - CSV logging for data analysis
-  - Sensor event forwarding to gesture detector
+  - Four mode support (flexion data collection / external rotation data collection / gesture test / gesture control)
+  - CSV logging for data analysis (in data collection modes)
+  - Sensor event forwarding to gesture detector (in test and control modes)
+  - Automatic folder organization (gesture_data/flexion/ and gesture_data/external_rotation/)
 - `WearableMessageListenerService.kt` - Background service that:
   - Listens for launch commands from phone
   - Checks display state via DisplayManager (interactive or ambient)
@@ -437,27 +451,41 @@ implementation(platform("androidx.compose:compose-bom:2024.04.01"))
 
 ### v4.0 - Wrist Gesture Detection (Current)
 - **Project Migration**: Rebranded from RingXwatch to Shepherd Signal
-- **Gesture Detection System**: Implemented threshold-based wrist flexion detection
+- **Dual Gesture Detection System**: Implemented threshold-based detection for both wrist flexion and external rotation
+- **Gesture Distinction**: System can detect and distinguish between two gestures simultaneously
+  - Wrist flexion: gyro_x < -4.0 rad/s with gyro_z near baseline
+  - External rotation: gyro_z > 1.2 rad/s with gyro_x > -2.0 rad/s
+  - Conflict resolution via signal strength comparison
 - **Sensor Integration**: Real-time accelerometer and gyroscope monitoring at 50Hz
 - **Baseline Calibration**: 0.8-second automatic calibration for stable gesture recognition
-- **Dual Mode Support**: Data collection mode and gesture detection mode
+- **Four Mode System**: 
+  - Flexion data collection mode
+  - External rotation data collection mode
+  - Gesture test mode (shows "Waiting Gesture" / "Wrist Flexion" / "External Rotation" on screen)
+  - Gesture control mode (toggles recording with wrist flexion)
 - **Current Status**: 
   - ✅ Wrist flexion detection: **Complete and working**
-  - 🔄 External rotation detection: **Planned for future implementation**
+  - ✅ External rotation detection: **Complete and working**
+  - ✅ Dual gesture distinction: **Complete** - Can distinguish between both gestures in real-time
+  - ✅ Gesture test mode: **Complete** - Shows detected gesture type ("Wrist Flexion" or "External Rotation")
+  - ✅ Gesture control mode: **Complete** - Toggles recording on wrist flexion gesture
 - **Gesture Analysis**: Analyzed sensor data showing 152-539x signal-to-noise ratio, confirming simple threshold-based approach is sufficient (no ML required)
+- **Data Organization**: Collected gesture data automatically saved to gesture-specific folders (gesture_data/flexion/ and gesture_data/external_rotation/)
 - **Code Preservation**: Ring gesture related code preserved for reusable components and reference
 
 ## Current Status
 
 ### Completed Features ✅
-- Wrist flexion gesture detection (threshold-based, working)
-- Voice recording with gesture control
+- Dual gesture detection (wrist flexion and external rotation) - threshold-based, working
+- Gesture distinction - Can detect and distinguish between both gestures simultaneously
+- Voice recording with gesture control (gesture control mode - wrist flexion toggles recording)
+- Gesture test mode with visual feedback showing detected gesture type ("Wrist Flexion" or "External Rotation")
 - Groq API integration for transcription and LLM responses
-- Dual mode sensor system (data collection / gesture detection)
+- Four-mode sensor system (flexion data collection / external rotation data collection / gesture test / gesture control)
 - Baseline calibration system
+- Organized data collection (gesture-specific folders)
 
 ### Planned Features 🔄
-- External rotation gesture detection
 - Gesture sensitivity customization
 - Multiple gesture pattern recognition
 

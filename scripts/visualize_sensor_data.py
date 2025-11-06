@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
 Visualize sensor data from CSV file in interactive browser graph.
-Usage: python visualize_sensor_data.py <csv_file_path>
+
+Usage:
+    python visualize_sensor_data.py <csv_file_path>
+    
+    Examples:
+    # Absolute path
+    python visualize_sensor_data.py /path/to/sensor_data_20251103_184927.csv
+    
+    # Relative path from project root
+    python visualize_sensor_data.py gesture_data/flexion/sensor_data_20251103_184927.csv
+    python visualize_sensor_data.py gesture_data/external_rotation/sensor_data_20251103_184927.csv
+
+The script automatically detects gesture type from file path or CSV content.
 """
 
 import sys
@@ -135,9 +147,8 @@ def create_visualization(df, stats):
     fig.update_xaxes(title_text="Time (seconds)", row=2, col=2)
     fig.update_xaxes(title_text="Time (seconds)", row=2, col=3)
     
-    # Update layout
+    # Update layout (title will be updated by caller with gesture type)
     fig.update_layout(
-        title_text="Sensor Data Visualization - Wrist Flexion Gestures",
         height=1000,
         showlegend=True,
         legend=dict(
@@ -183,15 +194,49 @@ def create_visualization(df, stats):
     
     return fig
 
+def detect_gesture_type(file_path, df):
+    """Detect gesture type from file path or CSV content."""
+    # Try to detect from file path first
+    file_path_lower = file_path.lower()
+    if 'flexion' in file_path_lower:
+        return 'Wrist Flexion'
+    elif 'negative' in file_path_lower:
+        return 'Negative Samples'
+    
+    # Try to detect from CSV content (gesture_type column)
+    if 'gesture_type' in df.columns:
+        gesture_types = df['gesture_type'].unique()
+        if 'flexion' in gesture_types:
+            return 'Wrist Flexion'
+        elif 'negative' in gesture_types:
+            return 'Negative Samples'
+    
+    # Default
+    return 'Unknown Data Type'
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python visualize_sensor_data.py <csv_file_path>")
+        print("\nExamples:")
+        print("  python visualize_sensor_data.py gesture_data/flexion/sensor_data_20251103_184927.csv")
+        print("  python visualize_sensor_data.py gesture_data/negative_samples/sensor_data_20251103_184927.csv")
         sys.exit(1)
     
     csv_file = sys.argv[1]
     
+    # Normalize path
+    if not os.path.isabs(csv_file):
+        # If relative path, make it relative to script location
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        csv_file = os.path.join(project_root, csv_file)
+    
     print(f"Loading CSV file: {csv_file}")
     df = load_and_validate_csv(csv_file)
+    
+    # Detect gesture type
+    gesture_type = detect_gesture_type(csv_file, df)
+    print(f"Detected gesture type: {gesture_type}")
     
     print(f"Loaded {len(df)} data points")
     print(f"Time range: {(df['timestamp_ms'].max() - df['timestamp_ms'].min()) / 1000.0:.2f} seconds")
@@ -202,8 +247,16 @@ def main():
     print("Creating visualization...")
     fig = create_visualization(df, stats)
     
-    # Save to temporary HTML file and open in browser
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, dir=os.getcwd()) as f:
+    # Update title with detected data type
+    title_suffix = "Gestures" if gesture_type == "Wrist Flexion" else "Samples"
+    fig.update_layout(title_text=f"Sensor Data Visualization - {gesture_type} {title_suffix}")
+    
+    # Determine output directory based on input file location
+    csv_dir = os.path.dirname(os.path.abspath(csv_file))
+    
+    # Save to temporary HTML file in the same directory as CSV (or current directory)
+    output_dir = csv_dir if os.path.isdir(csv_dir) else os.getcwd()
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, dir=output_dir, prefix='tmp') as f:
         html_file = f.name
         fig.write_html(html_file)
         

@@ -72,6 +72,7 @@ __pycache__/
 
 # Sensor data collection files
 sensor_data_*.csv
+gesture_data/**/*.csv
 
 # Visualization output files (temporary HTML from sensor data scripts)
 tmp*.html

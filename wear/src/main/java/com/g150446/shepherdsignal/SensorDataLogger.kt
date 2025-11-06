@@ -14,17 +14,20 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileWriter
 import java.text.SimpleDateFormat
+import java.util.Collections
 import java.util.Date
 import java.util.Locale
 
 enum class SensorMode {
-    DATA_COLLECTION,    // Log sensor data to CSV, show collection messages
-    GESTURE_DETECTION   // Real-time detection, suppress data collection logs
+    FLEXION_DATA_COLLECTION,        // Log wrist flexion gesture data to CSV
+    NEGATIVE_SAMPLES_COLLECTION,    // Log negative samples (non-gesture movements) to CSV
+    GESTURE_TEST_MODE,              // Test gesture detection - show detection status on screen
+    GESTURE_CONTROL_MODE            // Control mode - toggle recording with gestures
 }
 
 class SensorDataLogger(
     private val context: Context,
-    private var mode: SensorMode = SensorMode.DATA_COLLECTION
+    private var mode: SensorMode = SensorMode.FLEXION_DATA_COLLECTION
 ) {
     private val TAG = "SensorDataLogger"
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -40,6 +43,11 @@ class SensorDataLogger(
     private var startTime: Long = 0
     private var gestureJob: Job? = null
     private var currentGestureNumber = 0
+    private var isCollectionComplete = false // Track if all 10 gestures are collected
+    
+    // Data buffer - store CSV lines in memory until collection is complete
+    // Use synchronized list to prevent ConcurrentModificationException
+    private val dataBuffer = Collections.synchronizedList(mutableListOf<String>())
     
     // Store latest sensor values for synchronization
     private var latestAccelValues = Triple(0f, 0f, 0f)
@@ -72,25 +80,50 @@ class SensorDataLogger(
                 return
             }
             
-            // Create CSV file
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            csvFile = File(context.cacheDir, "sensor_data_$timestamp.csv")
-            csvWriter = FileWriter(csvFile, true)
+            // Initialize data buffer for data collection modes
+            if (mode == SensorMode.FLEXION_DATA_COLLECTION || mode == SensorMode.NEGATIVE_SAMPLES_COLLECTION) {
+                synchronized(dataBuffer) {
+                    dataBuffer.clear()
+                }
+                isCollectionComplete = false
+                // Add CSV header to buffer
+                synchronized(dataBuffer) {
+                    dataBuffer.add("timestamp_ms,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,gesture_type,gesture_number")
+                }
+            }
             
-            // Write CSV header
-            csvWriter?.write("timestamp_ms,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z,gesture_type,gesture_number\n")
-            csvWriter?.flush()
+            // Create CSV file path (will be used when saving)
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val gestureFolderName = when (mode) {
+                SensorMode.FLEXION_DATA_COLLECTION -> "flexion"
+                SensorMode.NEGATIVE_SAMPLES_COLLECTION -> "negative_samples"
+                SensorMode.GESTURE_TEST_MODE -> "flexion" // Default (not used for CSV)
+                SensorMode.GESTURE_CONTROL_MODE -> "flexion" // Default (not used for CSV)
+            }
+            val gestureFolder = File(context.getExternalFilesDir(null), "gesture_data/$gestureFolderName")
+            gestureFolder.mkdirs() // Ensure folder exists
+            csvFile = File(gestureFolder, "sensor_data_$timestamp.csv")
+            // Don't create FileWriter yet - we'll create it only when saving
             
             isLogging = true
             startTime = System.currentTimeMillis()
             currentGestureNumber = 0
             
-            if (mode == SensorMode.DATA_COLLECTION) {
-                Log.d(TAG, "Data collection started - logging to file: ${csvFile?.name}")
-                // Start gesture timing sequence only in data collection mode
-                startGestureSequence()
-            } else {
-                Log.d(TAG, "Sensor monitoring started (gesture detection mode)")
+            when (mode) {
+                SensorMode.FLEXION_DATA_COLLECTION -> {
+                    Log.d(TAG, "Wrist flexion data collection started - logging to file: ${csvFile?.name}")
+                    startGestureSequence()
+                }
+                SensorMode.NEGATIVE_SAMPLES_COLLECTION -> {
+                    Log.d(TAG, "Negative samples data collection started - logging to file: ${csvFile?.name}")
+                    startGestureSequence()
+                }
+                SensorMode.GESTURE_TEST_MODE -> {
+                    Log.d(TAG, "Sensor monitoring started (gesture test mode)")
+                }
+                SensorMode.GESTURE_CONTROL_MODE -> {
+                    Log.d(TAG, "Sensor monitoring started (gesture control mode)")
+                }
             }
             
             // Register sensor listeners
@@ -115,15 +148,16 @@ class SensorDataLogger(
                         }
                     }
                     
-                    // Forward to gesture detector if in detection mode (forward both accel and gyro events)
+                    // Forward to gesture detector if in test or control mode (forward both accel and gyro events)
                     // Always forward events, even during calibration
-                    if (mode == SensorMode.GESTURE_DETECTION) {
+                    if (mode == SensorMode.GESTURE_TEST_MODE || mode == SensorMode.GESTURE_CONTROL_MODE) {
                         gestureDetector?.onSensorChanged(event)
                     }
                     
-                    // Write to CSV only in data collection mode
-                    if (mode == SensorMode.DATA_COLLECTION && hasAccelData && hasGyroData && (currentTime - lastWriteTime >= 20)) {
-                        writeToCSV(currentTime, gestureInfo.first, gestureInfo.second)
+                    // Buffer data in memory only in data collection modes (don't write to file yet)
+                    if ((mode == SensorMode.FLEXION_DATA_COLLECTION || mode == SensorMode.NEGATIVE_SAMPLES_COLLECTION) 
+                        && hasAccelData && hasGyroData && (currentTime - lastWriteTime >= 20)) {
+                        bufferData(currentTime, gestureInfo.first, gestureInfo.second)
                         lastWriteTime = currentTime
                     }
                 }
@@ -153,20 +187,31 @@ class SensorDataLogger(
     private fun startGestureSequence() {
         gestureJob = scope.launch {
             // Baseline phase (0-3 seconds)
-            if (mode == SensorMode.DATA_COLLECTION) {
+            if (mode == SensorMode.FLEXION_DATA_COLLECTION || mode == SensorMode.NEGATIVE_SAMPLES_COLLECTION) {
                 Log.d(TAG, "Baseline calibration started (3 seconds)")
                 delay(BASELINE_DURATION_MS)
                 Log.d(TAG, "Baseline calibration complete")
                 
                 // Gesture prompts (every 2 seconds, 10 times)
+                val gesturePrompt = when (mode) {
+                    SensorMode.FLEXION_DATA_COLLECTION -> "START WRIST FLEXION NOW"
+                    SensorMode.NEGATIVE_SAMPLES_COLLECTION -> "START NEGATIVE SAMPLE NOW"
+                    SensorMode.GESTURE_TEST_MODE -> "" // Should not reach here
+                    SensorMode.GESTURE_CONTROL_MODE -> "" // Should not reach here
+                }
                 for (gestureNum in 1..TOTAL_GESTURES) {
                     currentGestureNumber = gestureNum
-                    Log.d(TAG, "*** GESTURE $gestureNum/$TOTAL_GESTURES - START WRIST FLEXION NOW ***")
+                    Log.d(TAG, "*** GESTURE $gestureNum/$TOTAL_GESTURES - $gesturePrompt ***")
                     
                     if (gestureNum < TOTAL_GESTURES) {
                         delay(GESTURE_INTERVAL_MS)
                     }
                 }
+                
+                // All gestures collected - mark as complete and save data
+                isCollectionComplete = true
+                Log.d(TAG, "All $TOTAL_GESTURES gestures collected. Saving data to file...")
+                saveBufferedData()
             }
         }
     }
@@ -178,27 +223,66 @@ class SensorDataLogger(
                 val gestureStartTime = BASELINE_DURATION_MS + (currentGestureNumber - 1) * GESTURE_INTERVAL_MS
                 val gestureEndTime = gestureStartTime + GESTURE_INTERVAL_MS
                 
+                val gestureTypeName = when (mode) {
+                    SensorMode.FLEXION_DATA_COLLECTION -> "flexion"
+                    SensorMode.NEGATIVE_SAMPLES_COLLECTION -> "negative"
+                    SensorMode.GESTURE_TEST_MODE -> "idle" // Should not be collecting in test mode
+                    SensorMode.GESTURE_CONTROL_MODE -> "idle" // Should not be collecting in control mode
+                }
                 if (elapsedTime >= gestureStartTime && elapsedTime < gestureEndTime) {
-                    Pair("flexion", currentGestureNumber)
+                    Pair(gestureTypeName, currentGestureNumber)
                 } else {
                     // Between gestures or after last gesture
                     val gestureNum = ((elapsedTime - BASELINE_DURATION_MS) / GESTURE_INTERVAL_MS + 1).toInt().coerceIn(1, TOTAL_GESTURES)
-                    Pair("flexion", gestureNum)
+                    Pair(gestureTypeName, gestureNum)
                 }
             }
         }
     }
     
-    private fun writeToCSV(
+    private fun bufferData(
         timestamp: Long,
         gestureType: String,
         gestureNumber: Int
     ) {
+        // Add data line to buffer instead of writing to file
+        // Synchronized access to prevent concurrent modification
+        synchronized(dataBuffer) {
+            val csvLine = "$timestamp,${latestAccelValues.first},${latestAccelValues.second},${latestAccelValues.third},${latestGyroValues.first},${latestGyroValues.second},${latestGyroValues.third},$gestureType,$gestureNumber"
+            dataBuffer.add(csvLine)
+        }
+    }
+    
+    private fun saveBufferedData() {
+        if (csvFile == null) {
+            Log.e(TAG, "Cannot save data: CSV file path not set")
+            return
+        }
+        
+        // Create a synchronized copy of the buffer to avoid ConcurrentModificationException
+        val bufferCopy: List<String>
+        synchronized(dataBuffer) {
+            if (dataBuffer.isEmpty()) {
+                Log.w(TAG, "No data to save - buffer is empty")
+                return
+            }
+            // Create a copy to avoid concurrent modification during iteration
+            bufferCopy = ArrayList(dataBuffer)
+        }
+        
         try {
-            csvWriter?.write("$timestamp,${latestAccelValues.first},${latestAccelValues.second},${latestAccelValues.third},${latestGyroValues.first},${latestGyroValues.second},${latestGyroValues.third},$gestureType,$gestureNumber\n")
+            csvWriter = FileWriter(csvFile, false) // Overwrite mode
+            // Write all buffered data from the copy
+            for (line in bufferCopy) {
+                csvWriter?.write("$line\n")
+            }
             csvWriter?.flush()
+            csvWriter?.close()
+            csvWriter = null
+            
+            Log.d(TAG, "Data saved successfully: ${csvFile?.name} (${bufferCopy.size} lines)")
         } catch (e: Exception) {
-            Log.e(TAG, "Error writing to CSV", e)
+            Log.e(TAG, "Error saving buffered data to CSV", e)
         }
     }
     
@@ -213,17 +297,58 @@ class SensorDataLogger(
         sensorEventListener = null
         
         try {
-            csvWriter?.close()
-            csvWriter = null
-            
             val totalGestures = currentGestureNumber
-            if (mode == SensorMode.DATA_COLLECTION) {
-                Log.d(TAG, "Data collection stopped. File saved: ${csvFile?.name}. Total gestures: $totalGestures")
+            
+            // For data collection modes: only save if collection is complete
+            if (mode == SensorMode.FLEXION_DATA_COLLECTION || mode == SensorMode.NEGATIVE_SAMPLES_COLLECTION) {
+                if (isCollectionComplete && totalGestures >= TOTAL_GESTURES) {
+                    // Collection was complete - data should already be saved, but ensure it's closed
+                    csvWriter?.close()
+                    csvWriter = null
+                    when (mode) {
+                        SensorMode.FLEXION_DATA_COLLECTION -> {
+                            Log.d(TAG, "Wrist flexion data collection completed. File saved: ${csvFile?.name}. Total gestures: $totalGestures")
+                        }
+                        SensorMode.NEGATIVE_SAMPLES_COLLECTION -> {
+                            Log.d(TAG, "Negative samples data collection completed. File saved: ${csvFile?.name}. Total samples: $totalGestures")
+                        }
+                        else -> {}
+                    }
+                } else {
+                    // Collection was incomplete - discard data
+                    synchronized(dataBuffer) {
+                        dataBuffer.clear()
+                    }
+                    csvWriter?.close()
+                    csvWriter = null
+                    // Delete the file if it was created
+                    csvFile?.delete()
+                    when (mode) {
+                        SensorMode.FLEXION_DATA_COLLECTION -> {
+                            Log.d(TAG, "Wrist flexion data collection stopped early. Data discarded. Collected: $totalGestures/$TOTAL_GESTURES gestures")
+                        }
+                        SensorMode.NEGATIVE_SAMPLES_COLLECTION -> {
+                            Log.d(TAG, "Negative samples data collection stopped early. Data discarded. Collected: $totalGestures/$TOTAL_GESTURES samples")
+                        }
+                        else -> {}
+                    }
+                }
             } else {
-                Log.d(TAG, "Sensor monitoring stopped")
+                // Not a data collection mode - just close writer if exists
+                csvWriter?.close()
+                csvWriter = null
+                when (mode) {
+                    SensorMode.GESTURE_TEST_MODE -> {
+                        Log.d(TAG, "Sensor monitoring stopped (gesture test mode)")
+                    }
+                    SensorMode.GESTURE_CONTROL_MODE -> {
+                        Log.d(TAG, "Sensor monitoring stopped (gesture control mode)")
+                    }
+                    else -> {}
+                }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error closing CSV file", e)
+            Log.e(TAG, "Error stopping logging", e)
         }
     }
     
@@ -245,7 +370,7 @@ class SensorDataLogger(
     
     // Call this after starting logging to trigger calibration
     fun notifyGestureDetectorReady() {
-        if (gestureDetector != null && mode == SensorMode.GESTURE_DETECTION && isLogging) {
+        if (gestureDetector != null && (mode == SensorMode.GESTURE_TEST_MODE || mode == SensorMode.GESTURE_CONTROL_MODE) && isLogging) {
             // Small delay to ensure sensor events are flowing
             scope.launch {
                 delay(50) // Give sensors 50ms to start registering
