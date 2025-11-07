@@ -280,62 +280,125 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleGestureDetectedInTestMode(gestureType: GestureType) {
-        // Update UI to show detected gesture type
-        gestureDetectedMessage = "Wrist Flexion"
-        
         // Cancel any existing test job
         gestureTestJob?.cancel()
         
-        // Start cumulative gyro value calculation for 1 second after detection
-        startCumulativeGyroCalculation()
+        // Don't show message immediately - wait for gesture analysis
+        // Start comprehensive gesture analysis for 0.5 seconds after detection
+        // This will determine the gesture type and update the message
+        startGestureAnalysis()
         
-        // After 1 second, return to "waiting gesture" message
+        // After 1.5 seconds total (0.5s analysis + 1s display), return to "waiting gesture" message
         gestureTestJob = wakeLockScope.launch {
-            delay(1000)
+            delay(1500)
             gestureDetectedMessage = ""
         }
     }
     
     /**
-     * Calculate cumulative gyro values for 1 second after wrist flexion detection.
-     * Samples gyro data at ~50Hz (every 20ms) and accumulates x, y, z values.
-     * Logs the cumulative values to logcat.
+     * Comprehensive gesture analysis for 0.5 seconds after wrist flexion detection.
+     * Tracks cumulative and peak values for both gyroscope and accelerometer.
+     * Determines gesture type (Wrist Flexion vs External Rotation) based on cumulative gyro X.
+     * Updates UI message after 0.5 seconds with the determined gesture type.
      */
-    private fun startCumulativeGyroCalculation() {
+    private fun startGestureAnalysis() {
         wakeLockScope.launch {
             val startTime = System.currentTimeMillis()
-            val duration = 1000L // 1 second
+            val duration = 500L // 0.5 seconds
             val sampleInterval = 20L // 20ms = ~50Hz (matches sensor sample rate)
             
+            // Cumulative values (absolute sum)
             var cumulativeGyroX = 0f
             var cumulativeGyroY = 0f
             var cumulativeGyroZ = 0f
+            var cumulativeAccelX = 0f
+            var cumulativeAccelY = 0f
+            var cumulativeAccelZ = 0f
+            
+            // Peak values (maximum absolute values)
+            var peakGyroX = 0f
+            var peakGyroY = 0f
+            var peakGyroZ = 0f
+            var peakAccelX = 0f
+            var peakAccelY = 0f
+            var peakAccelZ = 0f
+            
             var sampleCount = 0
             
-            Log.d(TAG, "*** Starting cumulative gyro calculation for 1 second after wrist flexion detection ***")
+            Log.d(TAG, "*** Starting gesture analysis for 0.5 seconds after wrist flexion detection ***")
             
             while (System.currentTimeMillis() - startTime < duration) {
-                // Get current gyro values from sensor logger
+                // Get current sensor values from sensor logger
                 val gyroValues = sensorDataLogger?.getCurrentGyroValues() ?: Triple(0f, 0f, 0f)
+                val accelValues = sensorDataLogger?.getCurrentAccelValues() ?: Triple(0f, 0f, 0f)
                 
-                // Accumulate values (using absolute values for cumulative calculation)
-                cumulativeGyroX += kotlin.math.abs(gyroValues.first)
-                cumulativeGyroY += kotlin.math.abs(gyroValues.second)
-                cumulativeGyroZ += kotlin.math.abs(gyroValues.third)
+                // Calculate absolute values for tracking
+                val absGyroX = kotlin.math.abs(gyroValues.first)
+                val absGyroY = kotlin.math.abs(gyroValues.second)
+                val absGyroZ = kotlin.math.abs(gyroValues.third)
+                val absAccelX = kotlin.math.abs(accelValues.first)
+                val absAccelY = kotlin.math.abs(accelValues.second)
+                val absAccelZ = kotlin.math.abs(accelValues.third)
+                
+                // Accumulate values
+                cumulativeGyroX += absGyroX
+                cumulativeGyroY += absGyroY
+                cumulativeGyroZ += absGyroZ
+                cumulativeAccelX += absAccelX
+                cumulativeAccelY += absAccelY
+                cumulativeAccelZ += absAccelZ
+                
+                // Track peak values
+                if (absGyroX > peakGyroX) peakGyroX = absGyroX
+                if (absGyroY > peakGyroY) peakGyroY = absGyroY
+                if (absGyroZ > peakGyroZ) peakGyroZ = absGyroZ
+                if (absAccelX > peakAccelX) peakAccelX = absAccelX
+                if (absAccelY > peakAccelY) peakAccelY = absAccelY
+                if (absAccelZ > peakAccelZ) peakAccelZ = absAccelZ
+                
                 sampleCount++
                 
                 delay(sampleInterval)
             }
             
-            // Log cumulative values
-            Log.d(TAG, "*** Cumulative Gyro Values (1 second after wrist flexion detection) ***")
+            // Log comprehensive analysis results
+            Log.d(TAG, "*** Gesture Analysis Results (0.5 seconds after wrist flexion detection) ***")
             Log.d(TAG, "  Sample count: $sampleCount")
+            Log.d(TAG, "")
             Log.d(TAG, "  Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s")
             Log.d(TAG, "  Cumulative Gyro Y: ${String.format("%.4f", cumulativeGyroY)} rad/s")
             Log.d(TAG, "  Cumulative Gyro Z: ${String.format("%.4f", cumulativeGyroZ)} rad/s")
             Log.d(TAG, "  Average Gyro X: ${String.format("%.4f", cumulativeGyroX / sampleCount)} rad/s")
             Log.d(TAG, "  Average Gyro Y: ${String.format("%.4f", cumulativeGyroY / sampleCount)} rad/s")
             Log.d(TAG, "  Average Gyro Z: ${String.format("%.4f", cumulativeGyroZ / sampleCount)} rad/s")
+            Log.d(TAG, "")
+            Log.d(TAG, "  Peak Gyro X: ${String.format("%.4f", peakGyroX)} rad/s")
+            Log.d(TAG, "  Peak Gyro Y: ${String.format("%.4f", peakGyroY)} rad/s")
+            Log.d(TAG, "  Peak Gyro Z: ${String.format("%.4f", peakGyroZ)} rad/s")
+            Log.d(TAG, "")
+            Log.d(TAG, "  Cumulative Accel X: ${String.format("%.4f", cumulativeAccelX)} m/s²")
+            Log.d(TAG, "  Cumulative Accel Y: ${String.format("%.4f", cumulativeAccelY)} m/s²")
+            Log.d(TAG, "  Cumulative Accel Z: ${String.format("%.4f", cumulativeAccelZ)} m/s²")
+            Log.d(TAG, "  Average Accel X: ${String.format("%.4f", cumulativeAccelX / sampleCount)} m/s²")
+            Log.d(TAG, "  Average Accel Y: ${String.format("%.4f", cumulativeAccelY / sampleCount)} m/s²")
+            Log.d(TAG, "  Average Accel Z: ${String.format("%.4f", cumulativeAccelZ / sampleCount)} m/s²")
+            Log.d(TAG, "")
+            Log.d(TAG, "  Peak Accel X: ${String.format("%.4f", peakAccelX)} m/s²")
+            Log.d(TAG, "  Peak Accel Y: ${String.format("%.4f", peakAccelY)} m/s²")
+            Log.d(TAG, "  Peak Accel Z: ${String.format("%.4f", peakAccelZ)} m/s²")
+            
+            // Determine gesture type based on Option 1: Cumulative Gyro X threshold
+            // Threshold: 50 rad/s (flexion max: 3.23, rotation min: 108.64)
+            val GESTURE_DISTINCTION_THRESHOLD = 50.0f
+            val gestureType = if (cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD) {
+                "External Rotation"
+            } else {
+                "Wrist Flexion"
+            }
+            
+            // Update UI message after 0.5 seconds with determined gesture type
+            gestureDetectedMessage = gestureType
+            Log.d(TAG, "*** Gesture Type Determined: $gestureType (Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s) ***")
         }
     }
     

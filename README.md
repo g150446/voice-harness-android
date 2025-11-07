@@ -77,10 +77,24 @@ This project originated as **RingXwatch**, which was designed to control an AI v
 - **Four Mode System**:
   - **Flexion Data Collection Mode**: Logs wrist flexion gesture data to CSV for analysis
   - **Negative Samples Collection Mode**: Logs negative samples (non-gesture movements) to CSV for analysis
-  - **Gesture Test Mode**: Real-time gesture testing - shows "Waiting Gesture" / "Wrist Flexion" messages based on detected gesture type
+  - **Gesture Test Mode**: Real-time gesture testing with automatic gesture distinction
+    - Shows "Waiting Gesture" initially
+    - After 0.5 seconds of sensor analysis, displays determined gesture type:
+      - "Wrist Flexion" for simple wrist flexion gestures
+      - "External Rotation" for external wrist rotation gestures
+    - Uses cumulative gyro X threshold (50 rad/s) to distinguish gesture types
+    - Comprehensive sensor data logged to logcat for analysis
   - **Gesture Control Mode**: Real-time gesture control - toggles voice recording with wrist flexion gesture
+- **Gesture Distinction Algorithm**:
+  - **Primary Discriminator**: Cumulative Gyro X (0.5 seconds after detection)
+    - Wrist Flexion: < 50 rad/s (typically 2-3 rad/s)
+    - External Rotation: > 50 rad/s (typically 108-130 rad/s)
+    - Perfect separation with 33x safety margin
+  - **Analysis Period**: 0.5 seconds of sensor data collection
+  - **Display Delay**: Message shown after analysis completes (0.5s delay)
+  - **Comprehensive Logging**: Tracks cumulative and peak values for gyro (X, Y, Z) and accelerometer (X, Y, Z)
 - **Integration**: 
-  - **Test Mode**: Shows detection status instead of recording interface
+  - **Test Mode**: Shows detection status with gesture type distinction instead of recording interface
   - **Control Mode**: Gestures toggle voice recording (same behavior as previous ring tap)
 
 ### 🐛 Debug Logging
@@ -453,34 +467,54 @@ implementation(platform("androidx.compose:compose-bom:2024.04.01"))
 - **Project Migration**: Rebranded from RingXwatch to Shepherd Signal
 - **Threshold-Based Gesture Detection**: Implemented wrist flexion detection using threshold algorithm
 - **Gesture Detection Algorithm**: 
-  - Wrist flexion: gyro_x < -2.5 rad/s with gyro_z near baseline (relaxed thresholds for better detection rate)
-  - Secondary confirmation: accel_z > 6.0 m/s² deviation from baseline
-  - Peak-then-return pattern detection within 0.2-3.0 second window
+  - Wrist flexion: gyro_x < -1.2 rad/s with gyro_z near baseline (relaxed thresholds for better detection rate)
+  - Secondary confirmation: accel_z > 3.5 m/s² deviation from baseline (gravity-compensated)
+  - Peak-then-return pattern detection within 0.12-3.0 second window
   - Automatic baseline calibration (0.8 seconds)
+  - Gravity compensation: Uses tilt angle to subtract gravity effect from accelerometer Z-axis
 - **Sensor Integration**: Real-time accelerometer and gyroscope monitoring at 50Hz
 - **Baseline Calibration**: 0.8-second automatic calibration for stable gesture recognition
 - **Four Mode System**: 
   - Flexion data collection mode
   - Negative samples collection mode
-  - Gesture test mode (shows "Waiting Gesture" / "Wrist Flexion" on screen)
+  - Gesture test mode (shows "Waiting Gesture" / "Wrist Flexion" / "External Rotation" on screen)
   - Gesture control mode (toggles recording with wrist flexion)
 - **Current Status**: 
   - ✅ Wrist flexion detection: **Complete and working** - Relaxed thresholds for better recognition rate
-  - ✅ Gesture test mode: **Complete** - Shows detected gesture type ("Wrist Flexion")
+  - ✅ Gesture test mode: **Complete** - Shows detected gesture type with automatic distinction
   - ✅ Gesture control mode: **Complete** - Toggles recording on wrist flexion gesture
 - **Gesture Analysis**: Analyzed sensor data showing strong signal-to-noise ratio, confirming simple threshold-based approach is sufficient (no ML required)
 - **Data Organization**: Collected gesture data automatically saved to gesture-specific folders (gesture_data/flexion/ and gesture_data/negative_samples/)
 - **Code Preservation**: Ring gesture related code preserved for reusable components and reference
+
+### v4.1 - Gesture Distinction Feature
+- **Automatic Gesture Classification**: Gesture test mode now distinguishes between wrist flexion and external rotation
+- **Distinction Algorithm**: 
+  - Uses cumulative gyro X (0.5 seconds after detection) as primary discriminator
+  - Threshold: 50 rad/s (flexion: 2-3 rad/s, rotation: 108-130 rad/s)
+  - Perfect separation with 33x safety margin
+- **Enhanced Gesture Analysis**:
+  - Comprehensive sensor tracking: cumulative and peak values for gyro (X, Y, Z) and accelerometer (X, Y, Z)
+  - 0.5-second analysis period for accurate gesture classification
+  - Detailed logging to logcat for debugging and analysis
+- **User Experience**:
+  - Delayed message display: Shows "Waiting Gesture" for 0.5 seconds during analysis
+  - Clear feedback: Displays "Wrist Flexion" or "External Rotation" based on sensor data
+  - 1.5-second total display time (0.5s analysis + 1.0s message display)
+- **Implementation**: Option 1 (Primary-Only) distinction logic for simplicity and reliability
 
 ## Current Status
 
 ### Completed Features ✅
 - Wrist flexion gesture detection - threshold-based, working with relaxed thresholds for better recognition
 - Voice recording with gesture control (gesture control mode - wrist flexion toggles recording)
-- Gesture test mode with visual feedback showing detected gesture type ("Wrist Flexion")
+- Gesture test mode with automatic gesture distinction - distinguishes "Wrist Flexion" vs "External Rotation"
+- Gesture distinction algorithm - uses cumulative gyro X threshold (50 rad/s) for reliable classification
+- Comprehensive gesture analysis - tracks cumulative and peak values for all sensor axes
 - Groq API integration for transcription and LLM responses
 - Four-mode sensor system (flexion data collection / negative samples collection / gesture test / gesture control)
 - Baseline calibration system
+- Gravity compensation for accurate accelerometer readings
 - Organized data collection (gesture-specific folders)
 
 ### Planned Features 🔄

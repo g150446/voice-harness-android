@@ -64,6 +64,14 @@ class SensorDataLogger(
     @Volatile
     private var currentGyroZ: Float = 0f
     
+    // Thread-safe access to latest accelerometer values for cumulative calculation
+    @Volatile
+    private var currentAccelX: Float = 0f
+    @Volatile
+    private var currentAccelY: Float = 0f
+    @Volatile
+    private var currentAccelZ: Float = 0f
+    
     companion object {
         private const val SENSOR_SAMPLE_RATE = 50 // Hz
         private const val SENSOR_DELAY_US = (1000 / SENSOR_SAMPLE_RATE * 1000).toInt() // microseconds
@@ -149,6 +157,11 @@ class SensorDataLogger(
                         Sensor.TYPE_ACCELEROMETER -> {
                             latestAccelValues = Triple(event.values[0], event.values[1], event.values[2])
                             hasAccelData = true
+                            
+                            // Update volatile values for thread-safe access
+                            currentAccelX = event.values[0]
+                            currentAccelY = event.values[1]
+                            currentAccelZ = event.values[2]
                         }
                         Sensor.TYPE_GYROSCOPE -> {
                             latestGyroValues = Triple(event.values[0], event.values[1], event.values[2])
@@ -394,5 +407,10 @@ class SensorDataLogger(
     // Get current gyro values (thread-safe for cumulative calculation)
     fun getCurrentGyroValues(): Triple<Float, Float, Float> {
         return Triple(currentGyroX, currentGyroY, currentGyroZ)
+    }
+    
+    // Get current accelerometer values (thread-safe for cumulative calculation)
+    fun getCurrentAccelValues(): Triple<Float, Float, Float> {
+        return Triple(currentAccelX, currentAccelY, currentAccelZ)
     }
 }
