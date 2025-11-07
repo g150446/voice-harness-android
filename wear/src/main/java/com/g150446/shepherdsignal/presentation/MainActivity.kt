@@ -61,6 +61,7 @@ import com.g150446.shepherdsignal.SensorMode
 import com.g150446.shepherdsignal.GestureDetector
 import com.g150446.shepherdsignal.GestureType
 import com.g150446.shepherdsignal.GestureDetectionListener
+import com.g150446.shepherdsignal.TiltAngleListener
 import com.g150446.shepherdsignal.presentation.theme.ShepherdSignalTheme
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -102,11 +103,13 @@ class MainActivity : ComponentActivity() {
     // Sensor data logger and gesture detector
     private var sensorDataLogger: SensorDataLogger? = null
     private var gestureDetector: GestureDetector? = null
-    private var gestureTestMode: Boolean = true // Track if we're in test mode
+    private var gestureTestMode: Boolean = false // Track if we're in test mode
     private var dataCollectionMode: Boolean = false // Enable data collection mode
     private var negativeSamplesCollection: Boolean = false // Collect negative samples (true = negative samples, false = flexion)
+    private var tiltAngleMode: Boolean = true // Track if we're in tilt angle display mode
     private var gestureDetectedMessage by mutableStateOf("") // Message shown when gesture detected in test mode
     private var gestureTestJob: Job? = null // Job to handle test mode timing
+    private var currentTiltAngle by mutableStateOf(0f) // Current tilt angle in degrees
     
     companion object {
         private const val TAG = "WatchMainActivity"
@@ -168,6 +171,10 @@ class MainActivity : ComponentActivity() {
         if (intent?.action != "TOGGLE_RECORDING") {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 when {
+                    tiltAngleMode -> {
+                        // Start tilt angle display mode
+                        initializeTiltAngleDisplay()
+                    }
                     dataCollectionMode -> {
                         // Start data collection mode (external rotation or flexion)
                         startDataCollection()
@@ -189,7 +196,7 @@ class MainActivity : ComponentActivity() {
         setTheme(android.R.style.Theme_DeviceDefault)
         
         setContent {
-            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage)
+            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage, tiltAngleMode, currentTiltAngle)
         }
     }
     
@@ -225,7 +232,8 @@ class MainActivity : ComponentActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
-        // Stop sensor data logger
+        // Stop sensor data logger and clear listeners
+        sensorDataLogger?.setTiltAngleListener(null)
         sensorDataLogger?.stopLogging()
         sensorDataLogger = null
         
@@ -322,6 +330,49 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             statusMessage = "Failed to initialize gesture detection: ${e.message}"
             Log.e(TAG, "Failed to initialize gesture detection", e)
+        }
+    }
+    
+    /**
+     * Initialize tilt angle display mode.
+     * 
+     * This mode displays the real-time angle between the watch face normal (Z-axis) and vertical (gravity direction).
+     * The angle is calculated using Method 2: full accelerometer vector magnitude.
+     * 
+     * Angle range:
+     * - 0°: Watch face horizontal (facing up)
+     * - 90°: Watch face vertical
+     * 
+     * The angle updates at ~10 Hz (every 100ms) for smooth display.
+     */
+    private fun initializeTiltAngleDisplay() {
+        try {
+            // Disable ambient mode and keep screen on for continuous display
+            disableAmbientMode() // Explicitly prevent ambient mode
+            keepScreenOnDirect() // Multiple methods to keep screen on
+            // Also acquire wake lock as backup
+            acquireWakeLock()
+            
+            // Initialize sensor monitoring in tilt angle display mode
+            sensorDataLogger = SensorDataLogger(this, SensorMode.TILT_ANGLE_DISPLAY)
+            
+            // Set tilt angle listener to update UI on main thread
+            // The listener receives angle updates from SensorDataLogger and updates the UI state
+            sensorDataLogger?.setTiltAngleListener(object : TiltAngleListener {
+                override fun onTiltAngleChanged(angleDegrees: Float) {
+                    runOnUiThread {
+                        currentTiltAngle = angleDegrees
+                    }
+                }
+            })
+            
+            // Start sensor monitoring - accelerometer data will be processed for tilt angle calculation
+            sensorDataLogger?.startLogging()
+            
+            Log.d(TAG, "Tilt angle display mode initialized")
+        } catch (e: Exception) {
+            statusMessage = "Failed to initialize tilt angle display: ${e.message}"
+            Log.e(TAG, "Failed to initialize tilt angle display", e)
         }
     }
     
@@ -923,7 +974,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String) {
+fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String, tiltAngleMode: Boolean, currentTiltAngle: Float) {
     ShepherdSignalTheme {
         val scrollState = rememberScrollState()
         Box(
@@ -947,7 +998,9 @@ fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, 
                     exitMessage = exitMessage,
                     currentCount = currentCount,
                     gestureTestMode = gestureTestMode,
-                    gestureDetectedMessage = gestureDetectedMessage
+                    gestureDetectedMessage = gestureDetectedMessage,
+                    tiltAngleMode = tiltAngleMode,
+                    currentTiltAngle = currentTiltAngle
                 )
             }
         }
@@ -984,11 +1037,25 @@ fun BlinkingMicIcon() {
 }
 
 @Composable
-fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int, gestureTestMode: Boolean, gestureDetectedMessage: String) {
+fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int, gestureTestMode: Boolean, gestureDetectedMessage: String, tiltAngleMode: Boolean, currentTiltAngle: Float) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Tilt angle display mode UI
+        // Shows real-time angle between watch face normal and vertical (gravity direction)
+        // Format: "Tilt: XX.X°" with 1 decimal place precision
+        // Angle range: 0° (horizontal, face up) to 90° (vertical)
+        if (tiltAngleMode) {
+            Text(
+                text = "Tilt: ${String.format("%.1f", currentTiltAngle)}°",
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colors.primary,
+                style = MaterialTheme.typography.title2
+            )
+            return@Column
+        }
+        
         // Gesture test mode UI (shows detection status instead of recording)
         if (gestureTestMode) {
             if (gestureDetectedMessage.isNotBlank()) {
@@ -1049,5 +1116,5 @@ fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseTe
 @Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true)
 @Composable
 fun DefaultPreview() {
-    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "")
+    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "", tiltAngleMode = false, currentTiltAngle = 0f)
 }
