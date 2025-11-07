@@ -61,7 +61,6 @@ import com.g150446.shepherdsignal.SensorMode
 import com.g150446.shepherdsignal.GestureDetector
 import com.g150446.shepherdsignal.GestureType
 import com.g150446.shepherdsignal.GestureDetectionListener
-import com.g150446.shepherdsignal.TiltAngleListener
 import com.g150446.shepherdsignal.presentation.theme.ShepherdSignalTheme
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -103,13 +102,11 @@ class MainActivity : ComponentActivity() {
     // Sensor data logger and gesture detector
     private var sensorDataLogger: SensorDataLogger? = null
     private var gestureDetector: GestureDetector? = null
-    private var gestureTestMode: Boolean = false // Track if we're in test mode
+    private var gestureTestMode: Boolean = true // Track if we're in test mode
     private var dataCollectionMode: Boolean = false // Enable data collection mode
     private var negativeSamplesCollection: Boolean = false // Collect negative samples (true = negative samples, false = flexion)
-    private var tiltAngleMode: Boolean = true // Track if we're in tilt angle display mode
     private var gestureDetectedMessage by mutableStateOf("") // Message shown when gesture detected in test mode
     private var gestureTestJob: Job? = null // Job to handle test mode timing
-    private var currentTiltAngle by mutableStateOf(0f) // Current tilt angle in degrees
     
     companion object {
         private const val TAG = "WatchMainActivity"
@@ -171,10 +168,6 @@ class MainActivity : ComponentActivity() {
         if (intent?.action != "TOGGLE_RECORDING") {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 when {
-                    tiltAngleMode -> {
-                        // Start tilt angle display mode
-                        initializeTiltAngleDisplay()
-                    }
                     dataCollectionMode -> {
                         // Start data collection mode (external rotation or flexion)
                         startDataCollection()
@@ -196,7 +189,7 @@ class MainActivity : ComponentActivity() {
         setTheme(android.R.style.Theme_DeviceDefault)
         
         setContent {
-            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage, tiltAngleMode, currentTiltAngle)
+            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage)
         }
     }
     
@@ -232,8 +225,7 @@ class MainActivity : ComponentActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
-        // Stop sensor data logger and clear listeners
-        sensorDataLogger?.setTiltAngleListener(null)
+        // Stop sensor data logger
         sensorDataLogger?.stopLogging()
         sensorDataLogger = null
         
@@ -294,10 +286,56 @@ class MainActivity : ComponentActivity() {
         // Cancel any existing test job
         gestureTestJob?.cancel()
         
+        // Start cumulative gyro value calculation for 1 second after detection
+        startCumulativeGyroCalculation()
+        
         // After 1 second, return to "waiting gesture" message
         gestureTestJob = wakeLockScope.launch {
             delay(1000)
             gestureDetectedMessage = ""
+        }
+    }
+    
+    /**
+     * Calculate cumulative gyro values for 1 second after wrist flexion detection.
+     * Samples gyro data at ~50Hz (every 20ms) and accumulates x, y, z values.
+     * Logs the cumulative values to logcat.
+     */
+    private fun startCumulativeGyroCalculation() {
+        wakeLockScope.launch {
+            val startTime = System.currentTimeMillis()
+            val duration = 1000L // 1 second
+            val sampleInterval = 20L // 20ms = ~50Hz (matches sensor sample rate)
+            
+            var cumulativeGyroX = 0f
+            var cumulativeGyroY = 0f
+            var cumulativeGyroZ = 0f
+            var sampleCount = 0
+            
+            Log.d(TAG, "*** Starting cumulative gyro calculation for 1 second after wrist flexion detection ***")
+            
+            while (System.currentTimeMillis() - startTime < duration) {
+                // Get current gyro values from sensor logger
+                val gyroValues = sensorDataLogger?.getCurrentGyroValues() ?: Triple(0f, 0f, 0f)
+                
+                // Accumulate values (using absolute values for cumulative calculation)
+                cumulativeGyroX += kotlin.math.abs(gyroValues.first)
+                cumulativeGyroY += kotlin.math.abs(gyroValues.second)
+                cumulativeGyroZ += kotlin.math.abs(gyroValues.third)
+                sampleCount++
+                
+                delay(sampleInterval)
+            }
+            
+            // Log cumulative values
+            Log.d(TAG, "*** Cumulative Gyro Values (1 second after wrist flexion detection) ***")
+            Log.d(TAG, "  Sample count: $sampleCount")
+            Log.d(TAG, "  Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s")
+            Log.d(TAG, "  Cumulative Gyro Y: ${String.format("%.4f", cumulativeGyroY)} rad/s")
+            Log.d(TAG, "  Cumulative Gyro Z: ${String.format("%.4f", cumulativeGyroZ)} rad/s")
+            Log.d(TAG, "  Average Gyro X: ${String.format("%.4f", cumulativeGyroX / sampleCount)} rad/s")
+            Log.d(TAG, "  Average Gyro Y: ${String.format("%.4f", cumulativeGyroY / sampleCount)} rad/s")
+            Log.d(TAG, "  Average Gyro Z: ${String.format("%.4f", cumulativeGyroZ / sampleCount)} rad/s")
         }
     }
     
@@ -330,49 +368,6 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             statusMessage = "Failed to initialize gesture detection: ${e.message}"
             Log.e(TAG, "Failed to initialize gesture detection", e)
-        }
-    }
-    
-    /**
-     * Initialize tilt angle display mode.
-     * 
-     * This mode displays the real-time angle between the watch face normal (Z-axis) and vertical (gravity direction).
-     * The angle is calculated using Method 2: full accelerometer vector magnitude.
-     * 
-     * Angle range:
-     * - 0°: Watch face horizontal (facing up)
-     * - 90°: Watch face vertical
-     * 
-     * The angle updates at ~10 Hz (every 100ms) for smooth display.
-     */
-    private fun initializeTiltAngleDisplay() {
-        try {
-            // Disable ambient mode and keep screen on for continuous display
-            disableAmbientMode() // Explicitly prevent ambient mode
-            keepScreenOnDirect() // Multiple methods to keep screen on
-            // Also acquire wake lock as backup
-            acquireWakeLock()
-            
-            // Initialize sensor monitoring in tilt angle display mode
-            sensorDataLogger = SensorDataLogger(this, SensorMode.TILT_ANGLE_DISPLAY)
-            
-            // Set tilt angle listener to update UI on main thread
-            // The listener receives angle updates from SensorDataLogger and updates the UI state
-            sensorDataLogger?.setTiltAngleListener(object : TiltAngleListener {
-                override fun onTiltAngleChanged(angleDegrees: Float) {
-                    runOnUiThread {
-                        currentTiltAngle = angleDegrees
-                    }
-                }
-            })
-            
-            // Start sensor monitoring - accelerometer data will be processed for tilt angle calculation
-            sensorDataLogger?.startLogging()
-            
-            Log.d(TAG, "Tilt angle display mode initialized")
-        } catch (e: Exception) {
-            statusMessage = "Failed to initialize tilt angle display: ${e.message}"
-            Log.e(TAG, "Failed to initialize tilt angle display", e)
         }
     }
     
@@ -974,7 +969,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String, tiltAngleMode: Boolean, currentTiltAngle: Float) {
+fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String) {
     ShepherdSignalTheme {
         val scrollState = rememberScrollState()
         Box(
@@ -998,9 +993,7 @@ fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, 
                     exitMessage = exitMessage,
                     currentCount = currentCount,
                     gestureTestMode = gestureTestMode,
-                    gestureDetectedMessage = gestureDetectedMessage,
-                    tiltAngleMode = tiltAngleMode,
-                    currentTiltAngle = currentTiltAngle
+                    gestureDetectedMessage = gestureDetectedMessage
                 )
             }
         }
@@ -1037,25 +1030,11 @@ fun BlinkingMicIcon() {
 }
 
 @Composable
-fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int, gestureTestMode: Boolean, gestureDetectedMessage: String, tiltAngleMode: Boolean, currentTiltAngle: Float) {
+fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int, gestureTestMode: Boolean, gestureDetectedMessage: String) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Tilt angle display mode UI
-        // Shows real-time angle between watch face normal and vertical (gravity direction)
-        // Format: "Tilt: XX.X°" with 1 decimal place precision
-        // Angle range: 0° (horizontal, face up) to 90° (vertical)
-        if (tiltAngleMode) {
-            Text(
-                text = "Tilt: ${String.format("%.1f", currentTiltAngle)}°",
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colors.primary,
-                style = MaterialTheme.typography.title2
-            )
-            return@Column
-        }
-        
         // Gesture test mode UI (shows detection status instead of recording)
         if (gestureTestMode) {
             if (gestureDetectedMessage.isNotBlank()) {
@@ -1116,5 +1095,5 @@ fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseTe
 @Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true)
 @Composable
 fun DefaultPreview() {
-    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "", tiltAngleMode = false, currentTiltAngle = 0f)
+    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "")
 }

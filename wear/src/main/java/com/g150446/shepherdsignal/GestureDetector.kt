@@ -40,6 +40,10 @@ class GestureDetector(
     private var peakAccelZ: Float = 0f
     private var detectionStartTime: Long = 0
     
+    // Tilt angle tracking for gravity compensation
+    private var baselineTiltAngle: Float = 0f // Tilt angle during calibration (degrees)
+    private var currentTiltAngle: Float = 0f // Current tilt angle (degrees)
+    
     // Store latest sensor values for synchronization
     private var latestAccelValues = Triple(0f, 0f, 0f)
     private var latestGyroValues = Triple(0f, 0f, 0f)
@@ -47,12 +51,12 @@ class GestureDetector(
     private var hasGyroData = false
     
     companion object {
-        // Wrist Flexion Thresholds (relaxed for better detection rate)
-        private const val FLEXION_GYRO_X_THRESHOLD = -2.5f // rad/s (negative = flexion) - relaxed from -4.0
-        private const val FLEXION_ACCEL_Z_THRESHOLD = 6.0f // m/s² deviation from baseline - relaxed from 8.0
-        private const val FLEXION_MIN_DURATION_MS = 200L // 0.2s minimum gesture - relaxed from 300ms
+        // Wrist Flexion Thresholds (aggressively relaxed to detect very weak gestures)
+        private const val FLEXION_GYRO_X_THRESHOLD = -1.2f // rad/s (negative = flexion) - further relaxed from -1.8 to detect very weak gestures
+        private const val FLEXION_ACCEL_Z_THRESHOLD = 3.5f // m/s² deviation from baseline (gravity-compensated) - further relaxed from 4.5 to detect very weak gestures
+        private const val FLEXION_MIN_DURATION_MS = 120L // 0.12s minimum gesture - further relaxed from 150ms for very fast weak gestures
         private const val FLEXION_MAX_DURATION_MS = 3000L // 3s maximum gesture
-        private const val FLEXION_GYRO_Z_BASELINE_TOLERANCE = 0.6f // rad/s (gyro_z should be near baseline for flexion) - relaxed from 0.4
+        private const val FLEXION_GYRO_Z_BASELINE_TOLERANCE = 0.8f // rad/s (gyro_z should be near baseline for flexion) - further relaxed from 0.7
         
         // Baseline Calibration
         private const val BASELINE_DURATION_MS = 800L // 0.8 seconds - optimized from analysis
@@ -61,6 +65,9 @@ class GestureDetector(
         
         // Cooldown to prevent false positives
         private const val GESTURE_COOLDOWN_MS = 500L
+        
+        // Gravity constant (m/s²)
+        private const val GRAVITY = 9.8f
     }
     
     data class BaselineValues(
@@ -195,18 +202,61 @@ class GestureDetector(
             calculateStdDev(gyroZValues, baselineMean.gyroZ)
         )
         
+        // Calculate baseline tilt angle from baseline accelerometer values
+        baselineTiltAngle = calculateTiltAngle(baselineMean.accelX, baselineMean.accelY, baselineMean.accelZ)
+        
         isCalibrating = false
         state = DetectionState.IDLE
+        
+        // Calculate baseline gravity-compensated accel_z for reference
+        val baselineGravityZ = calculateGravityZ(baselineTiltAngle)
+        val baselineAccelZCompensated = baselineMean.accelZ - baselineGravityZ
         
         Log.d(TAG, "Baseline calibration complete:")
         Log.d(TAG, "  Accel: X=${String.format("%.4f", baselineMean.accelX)}+-${String.format("%.4f", baselineStd.accelX)}, Y=${String.format("%.4f", baselineMean.accelY)}+-${String.format("%.4f", baselineStd.accelY)}, Z=${String.format("%.4f", baselineMean.accelZ)}+-${String.format("%.4f", baselineStd.accelZ)}")
         Log.d(TAG, "  Gyro: X=${String.format("%.4f", baselineMean.gyroX)}+-${String.format("%.4f", baselineStd.gyroX)}, Y=${String.format("%.4f", baselineMean.gyroY)}+-${String.format("%.4f", baselineStd.gyroY)}, Z=${String.format("%.4f", baselineMean.gyroZ)}+-${String.format("%.4f", baselineStd.gyroZ)}")
+        Log.d(TAG, "  Baseline Tilt Angle: ${String.format("%.2f", baselineTiltAngle)}°")
+        Log.d(TAG, "  Baseline Gravity Z: ${String.format("%.4f", baselineGravityZ)} m/s², Accel Z (compensated): ${String.format("%.4f", baselineAccelZCompensated)} m/s²")
     }
     
     private fun calculateStdDev(values: List<Float>, mean: Float): Float {
         if (values.isEmpty()) return 0f
         val variance = values.map { (it - mean) * (it - mean) }.average().toFloat()
         return kotlin.math.sqrt(variance)
+    }
+    
+    /**
+     * Calculate tilt angle between watch face normal (Z-axis) and vertical (gravity direction).
+     * Uses Method 2: full accelerometer vector magnitude for accurate calculation.
+     * 
+     * @param accelX Accelerometer X value
+     * @param accelY Accelerometer Y value
+     * @param accelZ Accelerometer Z value
+     * @return Tilt angle in degrees (0° = horizontal face up, 90° = vertical)
+     */
+    private fun calculateTiltAngle(accelX: Float, accelY: Float, accelZ: Float): Float {
+        val accelMagnitude = kotlin.math.sqrt(accelX * accelX + accelY * accelY + accelZ * accelZ)
+        if (accelMagnitude < 0.1f) return 0f // Avoid division by zero
+        
+        // Calculate angle between Z-axis (perpendicular to watch face) and vertical (gravity)
+        val angleRadians = kotlin.math.acos(accelZ / accelMagnitude)
+        return Math.toDegrees(angleRadians.toDouble()).toFloat()
+    }
+    
+    /**
+     * Calculate gravity component on Z-axis accelerometer based on tilt angle.
+     * 
+     * Formula: gravity_z = 9.8 * cos(tilt_angle)
+     * - 0° (horizontal): gravity_z = 9.8 m/s² (full gravity)
+     * - 45°: gravity_z = 4.9 m/s² (half gravity)
+     * - 90° (vertical): gravity_z = 0 m/s² (no gravity on Z-axis)
+     * 
+     * @param tiltAngleDegrees Tilt angle in degrees
+     * @return Gravity component on Z-axis in m/s²
+     */
+    private fun calculateGravityZ(tiltAngleDegrees: Float): Float {
+        val tiltAngleRadians = Math.toRadians(tiltAngleDegrees.toDouble())
+        return GRAVITY * kotlin.math.cos(tiltAngleRadians).toFloat()
     }
     
     private fun detectGesture(sample: SensorSample, timestamp: Long) {
@@ -224,20 +274,30 @@ class GestureDetector(
                 // Calculate deviations from baseline
                 val gyroXDeviation = sample.gyroX - baselineMean.gyroX
                 val gyroZDeviation = sample.gyroZ - baselineMean.gyroZ
-                val accelZDeviation = abs(sample.accelZ - baselineMean.accelZ)
+                
+                // Calculate current tilt angle for gravity compensation
+                currentTiltAngle = calculateTiltAngle(sample.accelX, sample.accelY, sample.accelZ)
+                
+                // Calculate gravity-compensated accelerometer Z values
+                val currentGravityZ = calculateGravityZ(currentTiltAngle)
+                val baselineGravityZ = calculateGravityZ(baselineTiltAngle)
+                
+                val accelZCompensated = sample.accelZ - currentGravityZ
+                val baselineAccelZCompensated = baselineMean.accelZ - baselineGravityZ
+                val accelZDeviation = abs(accelZCompensated - baselineAccelZCompensated)
                 
                 // Improved detection algorithm based on data analysis:
                 // 1. Primary filter: gyro_z must be near baseline (filters out negative samples)
                 //    Negative samples have 2.9x more gyro_z activity (mean abs = 0.68 vs 0.24)
-                // 2. Primary detector: gyro_x < -4.0 rad/s (wrist flexion)
-                // 3. Secondary detector: accel_z > 8.0 m/s² (backup confirmation)
+                // 2. Primary detector: gyro_x < -2.5 rad/s (wrist flexion)
+                // 3. Secondary detector: accel_z (gravity-compensated) > 6.0 m/s² (backup confirmation)
                 
                 val gyroZNearBaseline = abs(gyroZDeviation) <= FLEXION_GYRO_Z_BASELINE_TOLERANCE
                 
                 // Primary flexion detector: gyro_x threshold with gyro_z constraint
                 val flexionDetected = gyroXDeviation < FLEXION_GYRO_X_THRESHOLD && gyroZNearBaseline
                 
-                // Secondary flexion detector: accel_z threshold with gyro_z constraint
+                // Secondary flexion detector: gravity-compensated accel_z threshold with gyro_z constraint
                 val flexionDetectedSecondary = accelZDeviation > FLEXION_ACCEL_Z_THRESHOLD && gyroZNearBaseline
                 
                 if (flexionDetected || flexionDetectedSecondary) {
@@ -249,9 +309,19 @@ class GestureDetector(
                 val elapsed = timestamp - detectionStartTime
                 val gyroXDeviation = sample.gyroX - baselineMean.gyroX
                 val gyroZDeviation = sample.gyroZ - baselineMean.gyroZ
-                val accelZDeviation = abs(sample.accelZ - baselineMean.accelZ)
                 
-                // Update flexion peaks
+                // Calculate current tilt angle for gravity compensation
+                currentTiltAngle = calculateTiltAngle(sample.accelX, sample.accelY, sample.accelZ)
+                
+                // Calculate gravity-compensated accelerometer Z values
+                val currentGravityZ = calculateGravityZ(currentTiltAngle)
+                val baselineGravityZ = calculateGravityZ(baselineTiltAngle)
+                
+                val accelZCompensated = sample.accelZ - currentGravityZ
+                val baselineAccelZCompensated = baselineMean.accelZ - baselineGravityZ
+                val accelZDeviation = abs(accelZCompensated - baselineAccelZCompensated)
+                
+                // Update flexion peaks (using gravity-compensated values)
                 if (gyroXDeviation < peakGyroX) {
                     peakGyroX = gyroXDeviation
                     peakTime = timestamp
@@ -261,11 +331,13 @@ class GestureDetector(
                     peakTime = timestamp
                 }
                 
-                // Check for return to baseline
+                // Check for return to baseline (using gravity-compensated values)
                 val baselineBound = BASELINE_STD_MULTIPLIER
                 val gyroXDev = sample.gyroX - baselineMean.gyroX
                 val gyroXInBounds = abs(gyroXDev) <= baselineStd.gyroX * baselineBound
-                val accelZDev = sample.accelZ - baselineMean.accelZ
+                
+                // Use gravity-compensated accel_z for baseline check
+                val accelZDev = accelZCompensated - baselineAccelZCompensated
                 val accelZInBounds = abs(accelZDev) <= baselineStd.accelZ * baselineBound
                 
                 // Verify still flexion (gyro_z near baseline)

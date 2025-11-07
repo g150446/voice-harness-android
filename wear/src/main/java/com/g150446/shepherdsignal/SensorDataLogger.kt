@@ -22,12 +22,7 @@ enum class SensorMode {
     FLEXION_DATA_COLLECTION,        // Log wrist flexion gesture data to CSV
     NEGATIVE_SAMPLES_COLLECTION,    // Log negative samples (non-gesture movements) to CSV
     GESTURE_TEST_MODE,              // Test gesture detection - show detection status on screen
-    GESTURE_CONTROL_MODE,           // Control mode - toggle recording with gestures
-    TILT_ANGLE_DISPLAY              // Display tilt angle on screen
-}
-
-interface TiltAngleListener {
-    fun onTiltAngleChanged(angleDegrees: Float)
+    GESTURE_CONTROL_MODE           // Control mode - toggle recording with gestures
 }
 
 class SensorDataLogger(
@@ -61,10 +56,13 @@ class SensorDataLogger(
     private var hasGyroData = false
     private var lastWriteTime = 0L
     
-    // Tilt angle listener for TILT_ANGLE_DISPLAY mode
-    private var tiltAngleListener: TiltAngleListener? = null
-    private var lastTiltAngleUpdateTime = 0L
-    private val TILT_ANGLE_UPDATE_INTERVAL_MS = 100L // Update at ~10 Hz
+    // Thread-safe access to latest gyro values for cumulative calculation
+    @Volatile
+    private var currentGyroX: Float = 0f
+    @Volatile
+    private var currentGyroY: Float = 0f
+    @Volatile
+    private var currentGyroZ: Float = 0f
     
     companion object {
         private const val SENSOR_SAMPLE_RATE = 50 // Hz
@@ -109,7 +107,6 @@ class SensorDataLogger(
                 SensorMode.NEGATIVE_SAMPLES_COLLECTION -> "negative_samples"
                 SensorMode.GESTURE_TEST_MODE -> "flexion" // Default (not used for CSV)
                 SensorMode.GESTURE_CONTROL_MODE -> "flexion" // Default (not used for CSV)
-                SensorMode.TILT_ANGLE_DISPLAY -> "flexion" // Default (not used for CSV)
             }
             val gestureFolder = File(context.getExternalFilesDir(null), "gesture_data/$gestureFolderName")
             gestureFolder.mkdirs() // Ensure folder exists
@@ -135,9 +132,6 @@ class SensorDataLogger(
                 SensorMode.GESTURE_CONTROL_MODE -> {
                     Log.d(TAG, "Sensor monitoring started (gesture control mode)")
                 }
-                SensorMode.TILT_ANGLE_DISPLAY -> {
-                    Log.d(TAG, "Sensor monitoring started (tilt angle display mode)")
-                }
             }
             
             // Register sensor listeners
@@ -158,6 +152,10 @@ class SensorDataLogger(
                         }
                         Sensor.TYPE_GYROSCOPE -> {
                             latestGyroValues = Triple(event.values[0], event.values[1], event.values[2])
+                            // Update volatile values for thread-safe access
+                            currentGyroX = event.values[0]
+                            currentGyroY = event.values[1]
+                            currentGyroZ = event.values[2]
                             hasGyroData = true
                         }
                     }
@@ -166,34 +164,6 @@ class SensorDataLogger(
                     // Always forward events, even during calibration
                     if (mode == SensorMode.GESTURE_TEST_MODE || mode == SensorMode.GESTURE_CONTROL_MODE) {
                         gestureDetector?.onSensorChanged(event)
-                    }
-                    
-                    // Calculate and report tilt angle if in tilt angle display mode
-                    // Tilt angle is the angle between the watch face normal (Z-axis) and vertical (gravity direction)
-                    // Method 2: Uses full accelerometer vector magnitude for accurate calculation
-                    if (mode == SensorMode.TILT_ANGLE_DISPLAY && event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-                        val accelX = event.values[0]
-                        val accelY = event.values[1]
-                        val accelZ = event.values[2]
-                        
-                        // Method 2: Calculate using full accelerometer vector magnitude
-                        // This is more accurate than using only accelZ because it accounts for all acceleration components
-                        val accelMagnitude = kotlin.math.sqrt(accelX * accelX + accelY * accelY + accelZ * accelZ)
-                        
-                        if (accelMagnitude > 0.1f) { // Avoid division by zero
-                            // Calculate angle between Z-axis (perpendicular to watch face) and vertical (gravity)
-                            // When watch is horizontal (face up): accelZ ≈ 9.81 m/s², angle ≈ 0°
-                            // When watch is vertical: accelZ ≈ 0, angle ≈ 90°
-                            val angleRadians = kotlin.math.acos(accelZ / accelMagnitude)
-                            val angleDegrees = Math.toDegrees(angleRadians.toDouble()).toFloat()
-                            
-                            // Throttle updates to ~10 Hz (every 100ms) to avoid UI overload
-                            // This provides smooth display without excessive UI updates
-                            if (currentTime - lastTiltAngleUpdateTime >= TILT_ANGLE_UPDATE_INTERVAL_MS) {
-                                tiltAngleListener?.onTiltAngleChanged(angleDegrees)
-                                lastTiltAngleUpdateTime = currentTime
-                            }
-                        }
                     }
                     
                     // Buffer data in memory only in data collection modes (don't write to file yet)
@@ -240,7 +210,6 @@ class SensorDataLogger(
                     SensorMode.NEGATIVE_SAMPLES_COLLECTION -> "START NEGATIVE SAMPLE NOW"
                     SensorMode.GESTURE_TEST_MODE -> "" // Should not reach here
                     SensorMode.GESTURE_CONTROL_MODE -> "" // Should not reach here
-                    SensorMode.TILT_ANGLE_DISPLAY -> "" // Should not reach here
                 }
                 for (gestureNum in 1..TOTAL_GESTURES) {
                     currentGestureNumber = gestureNum
@@ -271,7 +240,6 @@ class SensorDataLogger(
                     SensorMode.NEGATIVE_SAMPLES_COLLECTION -> "negative"
                     SensorMode.GESTURE_TEST_MODE -> "idle" // Should not be collecting in test mode
                     SensorMode.GESTURE_CONTROL_MODE -> "idle" // Should not be collecting in control mode
-                    SensorMode.TILT_ANGLE_DISPLAY -> "idle" // Should not be collecting in tilt angle mode
                 }
                 if (elapsedTime >= gestureStartTime && elapsedTime < gestureEndTime) {
                     Pair(gestureTypeName, currentGestureNumber)
@@ -388,9 +356,6 @@ class SensorDataLogger(
                     SensorMode.GESTURE_CONTROL_MODE -> {
                         Log.d(TAG, "Sensor monitoring stopped (gesture control mode)")
                     }
-                    SensorMode.TILT_ANGLE_DISPLAY -> {
-                        Log.d(TAG, "Sensor monitoring stopped (tilt angle display mode)")
-                    }
                     else -> {}
                 }
             }
@@ -426,8 +391,8 @@ class SensorDataLogger(
         }
     }
     
-    // Set tilt angle listener for TILT_ANGLE_DISPLAY mode
-    fun setTiltAngleListener(listener: TiltAngleListener?) {
-        tiltAngleListener = listener
+    // Get current gyro values (thread-safe for cumulative calculation)
+    fun getCurrentGyroValues(): Triple<Float, Float, Float> {
+        return Triple(currentGyroX, currentGyroY, currentGyroZ)
     }
 }
