@@ -6,7 +6,8 @@ import android.util.Log
 import kotlin.math.abs
 
 enum class GestureType {
-    WRIST_FLEXION
+    WRIST_FLEXION,
+    EXTERNAL_ROTATION
 }
 
 interface GestureDetectionListener {

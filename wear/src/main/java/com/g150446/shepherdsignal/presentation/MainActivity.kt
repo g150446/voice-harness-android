@@ -102,11 +102,14 @@ class MainActivity : ComponentActivity() {
     // Sensor data logger and gesture detector
     private var sensorDataLogger: SensorDataLogger? = null
     private var gestureDetector: GestureDetector? = null
-    private var gestureTestMode: Boolean = true // Track if we're in test mode
+    private var gestureTestMode: Boolean = false // Track if we're in test mode (false = gesture control mode)
     private var dataCollectionMode: Boolean = false // Enable data collection mode
     private var negativeSamplesCollection: Boolean = false // Collect negative samples (true = negative samples, false = flexion)
     private var gestureDetectedMessage by mutableStateOf("") // Message shown when gesture detected in test mode
     private var gestureTestJob: Job? = null // Job to handle test mode timing
+    private var closeConfirmationMessage by mutableStateOf("") // Message shown when external rotation detected in recording mode
+    private var closeConfirmationJob: Job? = null // Job to handle close confirmation timeout
+    private var showTranscriptionInResult by mutableStateOf(false) // Control whether to show transcription in result display
     
     companion object {
         private const val TAG = "WatchMainActivity"
@@ -189,7 +192,7 @@ class MainActivity : ComponentActivity() {
         setTheme(android.R.style.Theme_DeviceDefault)
         
         setContent {
-            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage)
+            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage, closeConfirmationMessage, showTranscriptionInResult)
         }
     }
     
@@ -293,6 +296,159 @@ class MainActivity : ComponentActivity() {
             delay(1500)
             gestureDetectedMessage = ""
         }
+    }
+    
+    /**
+     * Comprehensive gesture analysis for control mode (recording scene).
+     * Analyzes gesture for 0.5 seconds and determines type.
+     * - Wrist Flexion: Toggles recording
+     * - External Rotation: Shows close confirmation
+     */
+    private fun startGestureAnalysisForControl() {
+        wakeLockScope.launch {
+            val startTime = System.currentTimeMillis()
+            val duration = 500L // 0.5 seconds
+            val sampleInterval = 20L // 20ms = ~50Hz (matches sensor sample rate)
+            
+            // Cumulative values (absolute sum)
+            var cumulativeGyroX = 0f
+            var cumulativeGyroY = 0f
+            var cumulativeGyroZ = 0f
+            var cumulativeAccelX = 0f
+            var cumulativeAccelY = 0f
+            var cumulativeAccelZ = 0f
+            
+            // Peak values (maximum absolute values)
+            var peakGyroX = 0f
+            var peakGyroY = 0f
+            var peakGyroZ = 0f
+            var peakAccelX = 0f
+            var peakAccelY = 0f
+            var peakAccelZ = 0f
+            
+            var sampleCount = 0
+            
+            Log.d(TAG, "*** Starting gesture analysis for control mode (0.5 seconds) ***")
+            
+            while (System.currentTimeMillis() - startTime < duration) {
+                // Get current sensor values from sensor logger
+                val gyroValues = sensorDataLogger?.getCurrentGyroValues() ?: Triple(0f, 0f, 0f)
+                val accelValues = sensorDataLogger?.getCurrentAccelValues() ?: Triple(0f, 0f, 0f)
+                
+                // Calculate absolute values for tracking
+                val absGyroX = kotlin.math.abs(gyroValues.first)
+                val absGyroY = kotlin.math.abs(gyroValues.second)
+                val absGyroZ = kotlin.math.abs(gyroValues.third)
+                val absAccelX = kotlin.math.abs(accelValues.first)
+                val absAccelY = kotlin.math.abs(accelValues.second)
+                val absAccelZ = kotlin.math.abs(accelValues.third)
+                
+                // Accumulate values
+                cumulativeGyroX += absGyroX
+                cumulativeGyroY += absGyroY
+                cumulativeGyroZ += absGyroZ
+                cumulativeAccelX += absAccelX
+                cumulativeAccelY += absAccelY
+                cumulativeAccelZ += absAccelZ
+                
+                // Track peak values
+                if (absGyroX > peakGyroX) peakGyroX = absGyroX
+                if (absGyroY > peakGyroY) peakGyroY = absGyroY
+                if (absGyroZ > peakGyroZ) peakGyroZ = absGyroZ
+                if (absAccelX > peakAccelX) peakAccelX = absAccelX
+                if (absAccelY > peakAccelY) peakAccelY = absAccelY
+                if (absAccelZ > peakAccelZ) peakAccelZ = absAccelZ
+                
+                sampleCount++
+                
+                delay(sampleInterval)
+            }
+            
+            // Determine gesture type based on Option 1: Cumulative Gyro X threshold
+            // Threshold: 50 rad/s (flexion max: 3.23, rotation min: 108.64)
+            val GESTURE_DISTINCTION_THRESHOLD = 50.0f
+            val isExternalRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
+            
+            Log.d(TAG, "*** Gesture Analysis Results (Control Mode) ***")
+            Log.d(TAG, "  Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s")
+            Log.d(TAG, "  Gesture Type: ${if (isExternalRotation) "External Rotation" else "Wrist Flexion"}")
+            
+            if (isExternalRotation) {
+                // External rotation: Show close confirmation
+                Log.d(TAG, "*** EXTERNAL ROTATION DETECTED - SHOWING CLOSE CONFIRMATION ***")
+                showCloseConfirmation()
+            } else {
+                // Wrist flexion: Toggle recording
+                Log.d(TAG, "*** WRIST FLEXION DETECTED - TOGGLING RECORDING ***")
+                toggleRecording()
+            }
+        }
+    }
+    
+    /**
+     * Shows close confirmation message when external rotation is detected.
+     * User can cancel by performing wrist flexion gesture.
+     */
+    private fun showCloseConfirmation() {
+        // Cancel any existing confirmation job
+        closeConfirmationJob?.cancel()
+        
+        // Show confirmation message
+        closeConfirmationMessage = "Close app?\nFlex to cancel"
+        
+        // Set timeout: if no action taken, close app after 3 seconds
+        closeConfirmationJob = wakeLockScope.launch {
+            delay(3000) // 3 seconds timeout
+            if (closeConfirmationMessage.isNotBlank()) {
+                // Timeout: close the app
+                Log.d(TAG, "Close confirmation timeout - closing app")
+                closeConfirmationMessage = ""
+                finish()
+            }
+        }
+    }
+    
+    /**
+     * Gesture analysis during close confirmation.
+     * If wrist flexion detected, cancels confirmation. External rotation is ignored.
+     */
+    private fun startGestureAnalysisForControlDuringConfirmation() {
+        wakeLockScope.launch {
+            val startTime = System.currentTimeMillis()
+            val duration = 500L // 0.5 seconds
+            val sampleInterval = 20L // 20ms = ~50Hz
+            
+            var cumulativeGyroX = 0f
+            var sampleCount = 0
+            
+            while (System.currentTimeMillis() - startTime < duration) {
+                val gyroValues = sensorDataLogger?.getCurrentGyroValues() ?: Triple(0f, 0f, 0f)
+                cumulativeGyroX += kotlin.math.abs(gyroValues.first)
+                sampleCount++
+                delay(sampleInterval)
+            }
+            
+            val GESTURE_DISTINCTION_THRESHOLD = 50.0f
+            val isExternalRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
+            
+            if (!isExternalRotation) {
+                // Wrist flexion: cancel confirmation
+                cancelCloseConfirmation()
+            } else {
+                // External rotation: ignore (already in confirmation)
+                Log.d(TAG, "External rotation during confirmation - ignored")
+            }
+        }
+    }
+    
+    /**
+     * Cancels close confirmation when wrist flexion is detected during confirmation.
+     */
+    private fun cancelCloseConfirmation() {
+        closeConfirmationJob?.cancel()
+        closeConfirmationJob = null
+        closeConfirmationMessage = ""
+        Log.d(TAG, "Close confirmation cancelled by wrist flexion")
     }
     
     /**
@@ -442,9 +598,15 @@ class MainActivity : ComponentActivity() {
             // Initialize gesture detector for control mode
             gestureDetector = GestureDetector(object : GestureDetectionListener {
                 override fun onGestureDetected(type: GestureType) {
-                    // Control mode: toggle recording
-                    Log.d(TAG, "*** WRIST FLEXION DETECTED - TOGGLING RECORDING ***")
-                    toggleRecording()
+                    // Control mode: analyze gesture to distinguish type
+                    // If confirmation is showing, analyze gesture to see if it's wrist flexion (cancel) or external rotation (ignore)
+                    if (closeConfirmationMessage.isNotBlank()) {
+                        // During confirmation: analyze to determine if wrist flexion (cancel) or external rotation (ignore)
+                        startGestureAnalysisForControlDuringConfirmation()
+                    } else {
+                        // Normal state: analyze gesture to determine type
+                        startGestureAnalysisForControl()
+                    }
                 }
             })
             
@@ -535,6 +697,7 @@ class MainActivity : ComponentActivity() {
             isRecording = true
             statusMessage = "Recording..."
             exitMessage = "" // Reset exit message when starting new recording
+            showTranscriptionInResult = false // Reset transcription display flag
             Log.v(TAG, "Recording started, screen kept on") // Suppressed for data collection
             
             // Initialize VAD: setup AudioRecord and start monitoring
@@ -572,8 +735,9 @@ class MainActivity : ComponentActivity() {
             mediaRecorder = null
         }
         isRecording = false
-        statusMessage = "Processing..."
+        statusMessage = "" // Clear status - will show transcription when received
         exitMessage = "" // Reset exit message on manual stop
+        showTranscriptionInResult = false // Reset transcription display flag
         // Keep screen on during processing - window flag and wake lock remain active
         keepScreenOn()
         
@@ -597,6 +761,8 @@ class MainActivity : ComponentActivity() {
             Log.d(TAG, "Missing API key error displayed, screen will stay on for 15 seconds")
             return
         }
+        // Show "Processing..." message with same style as recording scene
+        statusMessage = "Processing..."
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val client = OkHttpClient()
@@ -632,13 +798,20 @@ class MainActivity : ComponentActivity() {
                     val text = responseBody.ifBlank { "(no text)" }
                     runOnUiThread {
                         transcriptionText = text
-                        statusMessage = "Generating..."
+                        statusMessage = "" // Clear status message to show transcription
+                        showTranscriptionInResult = true // Show transcription for 1 second
+                    }
+                    // Wait 1 second to show transcription before calling LLM
+                    delay(1000)
+                    runOnUiThread {
+                        showTranscriptionInResult = false // Hide transcription in result display
+                        statusMessage = "" // Don't show "Generating..." - transcription will be shown instead
                     }
                     // Call Groq Chat Completions with transcription
                     val chat = callGroqChat(apiKey, text)
                     runOnUiThread {
                         llmResponseText = chat.ifBlank { "(no response)" }
-                        statusMessage = "Done"
+                        statusMessage = "" // Don't show "Done" in result display
                         // Keep screen on and schedule release after 15 seconds
                         keepScreenOn()
                         resultDisplayTime = System.currentTimeMillis()
@@ -1032,7 +1205,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String) {
+fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String, closeConfirmationMessage: String, showTranscriptionInResult: Boolean) {
     ShepherdSignalTheme {
         val scrollState = rememberScrollState()
         Box(
@@ -1056,7 +1229,9 @@ fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, 
                     exitMessage = exitMessage,
                     currentCount = currentCount,
                     gestureTestMode = gestureTestMode,
-                    gestureDetectedMessage = gestureDetectedMessage
+                    gestureDetectedMessage = gestureDetectedMessage,
+                    closeConfirmationMessage = closeConfirmationMessage,
+                    showTranscriptionInResult = showTranscriptionInResult
                 )
             }
         }
@@ -1093,7 +1268,7 @@ fun BlinkingMicIcon() {
 }
 
 @Composable
-fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int, gestureTestMode: Boolean, gestureDetectedMessage: String) {
+fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int, gestureTestMode: Boolean, gestureDetectedMessage: String, closeConfirmationMessage: String, showTranscriptionInResult: Boolean) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -1121,6 +1296,17 @@ fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseTe
         }
         
         // Control mode UI (original recording interface)
+        // Show close confirmation message if set (takes priority over recording display)
+        if (closeConfirmationMessage.isNotBlank()) {
+            Text(
+                text = closeConfirmationMessage,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colors.primary,
+                style = MaterialTheme.typography.title2
+            )
+            return@Column
+        }
+        
         if (isRecording || exitMessage.isNotBlank()) {
             if (exitMessage.isNotBlank()) {
                 // Show exit message in primary color (same as "Ask gpt-oss")
@@ -1131,25 +1317,32 @@ fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseTe
                 BlinkingMicIcon()
             }
         } else {
-            if (transcriptionText.isNotBlank()) {
-                Text(text = "You:", textAlign = TextAlign.Center, color = MaterialTheme.colors.primary, style = MaterialTheme.typography.caption2)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(text = transcriptionText, textAlign = TextAlign.Center, color = MaterialTheme.colors.onBackground, style = MaterialTheme.typography.caption1)
-                Spacer(modifier = Modifier.height(12.dp))
+            // Show transcription during 1-second display period (before result display) or while waiting for LLM
+            if (transcriptionText.isNotBlank() && (showTranscriptionInResult || llmResponseText.isBlank())) {
+                Text(
+                    text = transcriptionText,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colors.primary, // Same color as "Ask gpt-oss" in recording scene
+                    style = MaterialTheme.typography.title2 // Same size as "Ask gpt-oss" in recording scene
+                )
             } else if (statusMessage.isNotBlank()) {
-                // Show status message (like "Processing...")
-                Text(text = statusMessage, textAlign = TextAlign.Center, color = MaterialTheme.colors.secondaryVariant, style = MaterialTheme.typography.caption2)
+                // Show status message (like "Processing...") with same style as recording scene
+                Text(
+                    text = statusMessage,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colors.primary, // Same color as "Ask gpt-oss" in recording scene
+                    style = MaterialTheme.typography.title2 // Same size as "Ask gpt-oss" in recording scene
+                )
             }
-            // "Tap ring to start" message removed - app auto-starts recording
+            // Result display: Show only LLM response text (no labels, transcription is hidden)
             if (llmResponseText.isNotBlank()) {
-                Text(text = "gpt-oss:", textAlign = TextAlign.Center, color = MaterialTheme.colors.primary, style = MaterialTheme.typography.caption2)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(text = llmResponseText, textAlign = TextAlign.Center, color = MaterialTheme.colors.onBackground, style = MaterialTheme.typography.caption1)
+                Text(
+                    text = llmResponseText,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colors.onBackground,
+                    style = MaterialTheme.typography.caption1
+                )
                 Spacer(modifier = Modifier.height(8.dp))
-            }
-            // Only show statusMessage at bottom if we're showing transcription (to avoid duplication)
-            if (statusMessage.isNotBlank() && transcriptionText.isNotBlank()) {
-                Text(text = statusMessage, textAlign = TextAlign.Center, color = MaterialTheme.colors.secondaryVariant, style = MaterialTheme.typography.caption2)
             }
         }
     }
@@ -1158,5 +1351,5 @@ fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseTe
 @Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true)
 @Composable
 fun DefaultPreview() {
-    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "")
+    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "", closeConfirmationMessage = "", showTranscriptionInResult = false)
 }
