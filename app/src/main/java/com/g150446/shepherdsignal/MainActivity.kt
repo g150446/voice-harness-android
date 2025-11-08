@@ -1,18 +1,11 @@
 package com.g150446.shepherdsignal
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -57,26 +50,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var nodeClient: NodeClient
     private var isServiceRunning = false
 
-    private val notificationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            requestAudioPermissionAndStartService()
-        } else {
-            Log.w("MainActivity", "Notification permission denied")
-        }
-    }
-
-    private val audioPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            startRingListenerService()
-        } else {
-            Log.w("MainActivity", "Audio permission denied, starting service anyway")
-            startRingListenerService()
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,9 +57,6 @@ class MainActivity : ComponentActivity() {
 
         messageClient = Wearable.getMessageClient(this)
         nodeClient = Wearable.getNodeClient(this)
-
-        // Request notification permission and start service
-        requestNotificationPermissionAndStartService()
 
         setContent {
             ShepherdSignalTheme {
@@ -101,109 +71,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestNotificationPermissionAndStartService() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            when {
-                ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) == PackageManager.PERMISSION_GRANTED -> {
-                    requestAudioPermissionAndStartService()
-                }
-                else -> {
-                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
-            }
-        } else {
-            requestAudioPermissionAndStartService()
-        }
-    }
-
-    private fun requestAudioPermissionAndStartService() {
-        val audioPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_AUDIO
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-
-        when {
-            ContextCompat.checkSelfPermission(this, audioPermission) == PackageManager.PERMISSION_GRANTED -> {
-                startRingListenerService()
-            }
-            else -> {
-                audioPermissionLauncher.launch(audioPermission)
-            }
-        }
-    }
-
-    private fun startRingListenerService() {
-        // Use Auxio-style service instead of complex multi-service approach
-        val intent = Intent(this, AuxioStyleService::class.java)
-        ContextCompat.startForegroundService(this, intent)
-        isServiceRunning = true
-        Log.d("MainActivity", "Auxio-style service started")
-        
-        // Check and request battery optimization exemption
-        checkBatteryOptimization()
-    }
-    
-    private fun checkBatteryOptimization() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-                if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                    Log.d("MainActivity", "App is not exempt from battery optimization")
-                    DebugMessageManager.addMessage("🔋 Battery optimization detected")
-                    DebugMessageManager.addMessage("⚠ Ring gestures may not work reliably in sleep mode")
-                    DebugMessageManager.addMessage("💡 Tap 'Disable Battery Optimization' button below")
-                } else {
-                    Log.d("MainActivity", "App is exempt from battery optimization")
-                    DebugMessageManager.addMessage("✅ Battery optimization disabled - ring gestures will work reliably")
-                }
-            } else {
-                DebugMessageManager.addMessage("✅ Battery optimization not applicable on this Android version")
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error checking battery optimization", e)
-            DebugMessageManager.addMessage("❌ Error checking battery optimization status")
-        }
-    }
-
-    private fun openBatteryOptimizationSettings() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                }
-                startActivity(intent)
-                Log.d("MainActivity", "Opened battery optimization settings")
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Failed to open battery optimization settings", e)
-            // Fallback to general battery settings
-            try {
-                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                startActivity(intent)
-                Log.d("MainActivity", "Opened general battery optimization settings")
-            } catch (e2: Exception) {
-                Log.e("MainActivity", "Failed to open general battery settings", e2)
-            }
-        }
-    }
-
-
-    private fun stopRingListenerService() {
-        val intent = Intent(this, RingListenerService::class.java)
-        stopService(intent)
-        isServiceRunning = false
-        Log.d("MainActivity", "Ring listener service stopped")
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        // Don't stop the service - let it run in background
-        // stopRingListenerService()
-    }
 }
 
 @Composable
@@ -216,7 +83,6 @@ fun LaunchWearAppScreen(
     var statusMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val debugMessages by DebugMessageManager.messages.collectAsState()
-    val playbackState by PlaybackStateManager.state.collectAsState()
     val context = LocalContext.current
 
     Column(
@@ -237,43 +103,11 @@ fun LaunchWearAppScreen(
                 modifier = Modifier.padding(bottom = 8.dp)
             )
             Text(
-                text = if (playbackState.isPlaying) "🎵 Playing: ${playbackState.currentTrack}" else "⏸ Paused: ${playbackState.currentTrack}",
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-            Text(
-                text = "Tap your ring to launch watch app",
+                text = "Launch watch app manually",
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
-
-            // Play/Pause button
-            Button(
-                onClick = {
-                    val intent = Intent(context, AuxioStyleService::class.java).apply {
-                        action = "TOGGLE_PLAYBACK"
-                    }
-                    context.startService(intent)
-                },
-                modifier = Modifier.padding(bottom = 8.dp)
-            ) {
-                Text(if (playbackState.isPlaying) "⏸ Pause Music" else "▶ Play Music")
-            }
-
-            // Battery Optimization button
-            Button(
-                onClick = {
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                    }
-                    context.startActivity(intent)
-                },
-                modifier = Modifier.padding(bottom = 16.dp)
-            ) {
-                Text("🔋 Disable Battery Optimization")
-            }
 
                 // Groq Settings button
                 OutlinedButton(
@@ -349,7 +183,7 @@ fun LaunchWearAppScreen(
                 .padding(8.dp)
         ) {
             Text(
-                text = "Debug Log (Ring Tap Detection)",
+                text = "Debug Log",
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace,
                 modifier = Modifier.padding(bottom = 4.dp)
@@ -363,7 +197,7 @@ fun LaunchWearAppScreen(
 
             if (debugMessages.isEmpty()) {
                 Text(
-                    text = "Waiting for ring tap events...",
+                    text = "No debug messages...",
                     fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace,
                     textAlign = TextAlign.Center,

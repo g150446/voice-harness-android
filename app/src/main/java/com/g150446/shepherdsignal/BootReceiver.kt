@@ -14,13 +14,8 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,
             Intent.ACTION_PACKAGE_REPLACED -> {
-                Log.d(TAG, "Boot completed - starting RingListenerService")
-                
-                // Start the service automatically on boot
-                val serviceIntent = Intent(context, RingListenerService::class.java)
-                context.startForegroundService(serviceIntent)
-                
-                Log.d(TAG, "RingListenerService started on boot")
+                Log.d(TAG, "Boot completed - no services to start")
+                // MusicPlayer services removed - no longer needed
             }
         }
     }
