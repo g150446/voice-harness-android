@@ -42,6 +42,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
@@ -110,6 +112,8 @@ class MainActivity : ComponentActivity() {
     private var closeConfirmationMessage by mutableStateOf("") // Message shown when external rotation detected in recording mode
     private var closeConfirmationJob: Job? = null // Job to handle close confirmation timeout
     private var showTranscriptionInResult by mutableStateOf(false) // Control whether to show transcription in result display
+    private var scrollDownRequest by mutableStateOf(0) // Counter to trigger scroll down action
+    private var resultDisplayTimeoutJob: Job? = null // Job to track result display timeout (can be cancelled/reset)
     
     companion object {
         private const val TAG = "WatchMainActivity"
@@ -192,7 +196,7 @@ class MainActivity : ComponentActivity() {
         setTheme(android.R.style.Theme_DeviceDefault)
         
         setContent {
-            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage, closeConfirmationMessage, showTranscriptionInResult)
+            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage, closeConfirmationMessage, showTranscriptionInResult, scrollDownRequest)
         }
     }
     
@@ -621,6 +625,67 @@ class MainActivity : ComponentActivity() {
         }
     }
     
+    private fun initializeGestureDetectionForResultDisplay() {
+        try {
+            Log.d(TAG, "=== INITIALIZING GESTURE DETECTION FOR RESULT DISPLAY ===")
+            
+            // Stop any existing gesture detection first
+            if (sensorDataLogger != null) {
+                Log.d(TAG, "Stopping existing sensor logger")
+                sensorDataLogger?.stopLogging()
+            }
+            sensorDataLogger = null
+            gestureDetector = null
+            
+            // Initialize sensor monitoring in control mode (reuse same mode)
+            sensorDataLogger = SensorDataLogger(this, SensorMode.GESTURE_CONTROL_MODE)
+            Log.d(TAG, "Sensor logger created: ${sensorDataLogger != null}")
+            
+            // Initialize gesture detector for result display scrolling
+            gestureDetector = GestureDetector(object : GestureDetectionListener {
+                override fun onGestureDetected(type: GestureType) {
+                    // Result display mode: wrist flexion scrolls down
+                    Log.d(TAG, "*** onGestureDetected() called in result display mode: type=$type ***")
+                    if (type == GestureType.WRIST_FLEXION) {
+                        Log.d(TAG, "Wrist flexion detected in result display - scrolling down")
+                        triggerScrollDown()
+                    } else {
+                        Log.d(TAG, "Ignoring gesture type $type in result display mode")
+                    }
+                }
+            })
+            Log.d(TAG, "Gesture detector created: ${gestureDetector != null}")
+            
+            // Start sensor monitoring first
+            sensorDataLogger?.startLogging()
+            Log.d(TAG, "Sensor logging started, isLogging should be true")
+            
+            // Connect gesture detector to sensor logger and start calibration
+            sensorDataLogger?.setGestureDetector(gestureDetector)
+            sensorDataLogger?.notifyGestureDetectorReady()
+            
+            Log.d(TAG, "=== Gesture detection initialized for result display scrolling ===")
+            Log.d(TAG, "Sensor logger state: ${sensorDataLogger != null}, Gesture detector: ${gestureDetector != null}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize gesture detection for result display", e)
+        }
+    }
+    
+    private fun triggerScrollDown() {
+        // Increment counter to trigger scroll in composable
+        scrollDownRequest++
+        Log.d(TAG, "*** triggerScrollDown() called - scrollDownRequest incremented to: $scrollDownRequest ***")
+        
+        // Reset/extend the timeout when user performs gesture (actively scrolling)
+        if (llmResponseText.isNotBlank() && !isRecording) {
+            Log.d(TAG, "Gesture detected - extending result display timeout")
+            resultDisplayTimeoutJob?.cancel()
+            resultDisplayTimeoutJob = null
+            resultDisplayTime = System.currentTimeMillis()
+            scheduleWakeLockRelease()  // Schedule new 15-second timeout
+        }
+    }
+    
     private fun toggleRecording() {
         // If exit message is showing, cancel auto-close and restart recording
         if (exitMessage.isNotBlank()) {
@@ -676,6 +741,17 @@ class MainActivity : ComponentActivity() {
 
     private fun startRecording() {
         try {
+            // Clean up result display gesture detection if active
+            if (llmResponseText.isNotBlank() && !isRecording) {
+                Log.d(TAG, "=== STARTING RECORDING - Cleaning up result display gesture detection ===")
+                resultDisplayTimeoutJob?.cancel()
+                resultDisplayTimeoutJob = null
+                sensorDataLogger?.stopLogging()
+                sensorDataLogger = null
+                gestureDetector = null
+                Log.d(TAG, "Result display gesture detection cleaned up")
+            }
+            
             // OPTION A: Disable ambient mode and keep screen on during recording
             disableAmbientMode() // Explicitly prevent ambient mode
             keepScreenOnDirect() // Multiple methods to keep screen on
@@ -748,6 +824,8 @@ class MainActivity : ComponentActivity() {
             keepScreenOn()
             resultDisplayTime = System.currentTimeMillis()
             scheduleWakeLockRelease()
+            // Initialize gesture detection for result display scrolling (even on error)
+            initializeGestureDetectionForResultDisplay()
             Log.d(TAG, "No audio error displayed, screen will stay on for 15 seconds")
             return
         }
@@ -758,6 +836,8 @@ class MainActivity : ComponentActivity() {
             keepScreenOn()
             resultDisplayTime = System.currentTimeMillis()
             scheduleWakeLockRelease()
+            // Initialize gesture detection for result display scrolling (even on error)
+            initializeGestureDetectionForResultDisplay()
             Log.d(TAG, "Missing API key error displayed, screen will stay on for 15 seconds")
             return
         }
@@ -792,6 +872,8 @@ class MainActivity : ComponentActivity() {
                         keepScreenOn()
                         resultDisplayTime = System.currentTimeMillis()
                         scheduleWakeLockRelease()
+                        // Initialize gesture detection for result display scrolling (even on error)
+                        initializeGestureDetectionForResultDisplay()
                         Log.d(TAG, "Groq error displayed, screen will stay on for 15 seconds")
                     }
                 } else {
@@ -816,6 +898,8 @@ class MainActivity : ComponentActivity() {
                         keepScreenOn()
                         resultDisplayTime = System.currentTimeMillis()
                         scheduleWakeLockRelease()
+                        // Initialize gesture detection for result display scrolling
+                        initializeGestureDetectionForResultDisplay()
                         Log.d(TAG, "Groq result displayed, screen will stay on for 15 seconds")
                     }
                 }
@@ -826,6 +910,8 @@ class MainActivity : ComponentActivity() {
                     keepScreenOn()
                     resultDisplayTime = System.currentTimeMillis()
                     scheduleWakeLockRelease()
+                    // Initialize gesture detection for result display scrolling (even on error)
+                    initializeGestureDetectionForResultDisplay()
                     Log.d(TAG, "Upload error displayed, screen will stay on for 15 seconds")
                 }
             } finally {
@@ -1155,12 +1241,27 @@ class MainActivity : ComponentActivity() {
     }
     
     private fun scheduleWakeLockRelease() {
+        // Cancel any existing timeout job
+        resultDisplayTimeoutJob?.cancel()
+        
         // Schedule screen off 15 seconds after result is displayed
-        wakeLockScope.launch {
+        resultDisplayTimeoutJob = wakeLockScope.launch {
             delay(RESULT_DISPLAY_TIMEOUT_MS)
+            // Clean up gesture detection for result display
+            Log.d(TAG, "=== RESULT DISPLAY TIMEOUT - Cleaning up gesture detection ===")
+            if (llmResponseText.isNotBlank() && !isRecording) {
+                Log.d(TAG, "Stopping sensor logger and clearing gesture detector")
+                sensorDataLogger?.stopLogging()
+                sensorDataLogger = null
+                gestureDetector = null
+                Log.d(TAG, "Gesture detection cleaned up after result display timeout")
+            } else {
+                Log.d(TAG, "Skipping cleanup - llmResponseText blank: ${llmResponseText.isBlank()}, isRecording: $isRecording")
+            }
             allowScreenOff()
             releaseWakeLock()
             Log.d(TAG, "Screen can turn off after 15 seconds from result display")
+            resultDisplayTimeoutJob = null
         }
     }
     
@@ -1205,9 +1306,32 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String, closeConfirmationMessage: String, showTranscriptionInResult: Boolean) {
+fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String, closeConfirmationMessage: String, showTranscriptionInResult: Boolean, scrollDownRequest: Int) {
     ShepherdSignalTheme {
         val scrollState = rememberScrollState()
+        val configuration = LocalConfiguration.current
+        val density = LocalDensity.current
+        
+        // Watch for scroll requests and perform instant scroll
+        LaunchedEffect(scrollDownRequest) {
+            if (scrollDownRequest > 0) {
+                // Calculate 2/3 screen height in pixels for scroll amount
+                val screenHeightDp = configuration.screenHeightDp.dp
+                val screenHeightPx = with(density) { screenHeightDp.toPx() }
+                val scrollAmount = (screenHeightPx * 2f / 3f).toInt()
+                val currentScroll = scrollState.value
+                val maxScroll = scrollState.maxValue
+                // Scroll to current position + scroll amount (instant scroll)
+                val newScrollPosition = (currentScroll + scrollAmount).coerceAtMost(maxScroll)
+                if (newScrollPosition >= maxScroll) {
+                    android.util.Log.w("WatchMainActivity", "Scroll reached maximum value ($maxScroll) - cannot scroll further")
+                } else {
+                    android.util.Log.d("WatchMainActivity", "Scrolling: $currentScroll -> $newScrollPosition (max: $maxScroll)")
+                }
+                scrollState.scrollTo(newScrollPosition)
+            }
+        }
+        
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1351,5 +1475,5 @@ fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseTe
 @Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true)
 @Composable
 fun DefaultPreview() {
-    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "", closeConfirmationMessage = "", showTranscriptionInResult = false)
+    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "", closeConfirmationMessage = "", showTranscriptionInResult = false, scrollDownRequest = 0)
 }

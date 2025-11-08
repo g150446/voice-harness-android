@@ -32,7 +32,7 @@ This project originated as **RingXwatch**, which was designed to control an AI v
 - API key is configured on the phone app and synced to the watch automatically
 - **Screen stays on**: Ambient mode is disabled and screen remains fully interactive during recording
 - **Extended visibility**: Screen remains on for 15 seconds after displaying transcription and LLM response results
-- **Gesture scrolling**: When LLM response text is too long to fit on screen, use wrist flexion gestures to scroll down and read more content. Each gesture scrolls by half screen height instantly. The display timeout automatically extends while actively scrolling (resets to 15 seconds with each gesture)
+- **Gesture scrolling**: When LLM response text is too long to fit on screen, use wrist flexion gestures to scroll down and read more content. Each gesture scrolls by two-thirds screen height instantly. The display timeout automatically extends while actively scrolling (resets to 15 seconds with each gesture)
 
 ### 🤲 Wrist Gesture Detection
 - **Real-time sensor monitoring**: Accelerometer and gyroscope data analyzed at 50Hz
@@ -74,7 +74,7 @@ This project originated as **RingXwatch**, which was designed to control an AI v
 - **Integration**: 
   - **Test Mode**: Shows detection status with gesture type distinction instead of recording interface
   - **Control Mode**: Gestures toggle voice recording
-  - **Result Display Mode**: Wrist flexion gestures scroll through long LLM response text (half screen height per gesture)
+  - **Result Display Mode**: Wrist flexion gestures scroll through long LLM response text (two-thirds screen height per gesture)
 - **Periodic Baseline Recalibration**: 
   - Automatically recalibrates baseline after each gesture detection to handle baseline drift
   - Ensures reliable gesture detection even after multiple gestures or wrist position changes
@@ -194,7 +194,7 @@ This project originated as **RingXwatch**, which was designed to control an AI v
 - Can be launched manually from phone app button
 - When open: wrist flexion gesture starts voice recording; gesture again to stop and transcribe via Groq; text appears on screen
 - External rotation gesture shows close confirmation (can be cancelled with wrist flexion)
-- **Scrolling long results**: If the LLM response is too long to fit on screen, perform wrist flexion gestures to scroll down. Each gesture scrolls by half the screen height instantly. The display timeout extends automatically while you're actively scrolling
+- **Scrolling long results**: If the LLM response is too long to fit on screen, perform wrist flexion gestures to scroll down. Each gesture scrolls by two-thirds of the screen height instantly. The display timeout extends automatically while you're actively scrolling
 
 ## Technical Details
 
@@ -289,7 +289,7 @@ implementation(platform("androidx.compose:compose-bom:2024.04.01"))
 ### v3.4 - Result Display Gesture Scrolling
 - **Gesture-Based Scrolling**: Wrist flexion gestures can now scroll through long LLM response text in the result display scene
 - **Scroll Behavior**:
-  - Each wrist flexion gesture scrolls down by half screen height instantly
+  - Each wrist flexion gesture scrolls down by two-thirds screen height instantly
   - Scrolls forward only (no backward scrolling)
   - Works seamlessly with existing gesture detection system
 - **Periodic Baseline Recalibration**:
@@ -319,7 +319,7 @@ implementation(platform("androidx.compose:compose-bom:2024.04.01"))
 - Baseline calibration system
 - Gravity compensation for accurate accelerometer readings
 - Organized data collection (gesture-specific folders)
-- **Result display gesture scrolling** - wrist flexion gestures scroll through long LLM response text (half screen height per gesture)
+- **Result display gesture scrolling** - wrist flexion gestures scroll through long LLM response text (two-thirds screen height per gesture)
 - **Periodic baseline recalibration** - automatic recalibration after each gesture to handle baseline drift
 - **Smart timeout extension** - result display timeout automatically extends when user is actively scrolling
 
