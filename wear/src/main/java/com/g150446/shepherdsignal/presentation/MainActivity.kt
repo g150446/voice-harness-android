@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
     // Sensor data logger and gesture detector
     private var sensorDataLogger: SensorDataLogger? = null
     private var gestureDetector: GestureDetector? = null
-    private var gestureTestMode: Boolean = false // Track if we're in test mode (false = gesture control mode)
+    private var gestureTestMode: Boolean = false // Track if we're in test mode (true = gesture test mode, false = gesture control mode)
     private var dataCollectionMode: Boolean = false // Enable data collection mode
     private var negativeSamplesCollection: Boolean = false // Collect negative samples (true = negative samples, false = flexion)
     private var gestureDetectedMessage by mutableStateOf("") // Message shown when gesture detected in test mode
@@ -114,6 +114,7 @@ class MainActivity : ComponentActivity() {
     private var showTranscriptionInResult by mutableStateOf(false) // Control whether to show transcription in result display
     private var scrollDownRequest by mutableStateOf(0) // Counter to trigger scroll down action
     private var resultDisplayTimeoutJob: Job? = null // Job to track result display timeout (can be cancelled/reset)
+    private var errorMessageClearJob: Job? = null // Job to clear error message after timeout
     
     companion object {
         private const val TAG = "WatchMainActivity"
@@ -241,6 +242,8 @@ class MainActivity : ComponentActivity() {
         // VAD cleanup is already handled in stopAndReleaseRecorderIfNeeded, but ensure it's done
         cleanupVAD()
         cancelAutoClose() // Cancel auto-close job if activity is being destroyed
+        errorMessageClearJob?.cancel() // Cancel error message clear job
+        resultDisplayTimeoutJob?.cancel() // Cancel result display timeout job
         allowScreenOff()
         releaseWakeLock()
     }
@@ -299,6 +302,93 @@ class MainActivity : ComponentActivity() {
         gestureTestJob = wakeLockScope.launch {
             delay(1500)
             gestureDetectedMessage = ""
+        }
+    }
+    
+    /**
+     * Comprehensive gesture analysis for result display mode.
+     * Analyzes gesture for 0.5 seconds and determines type.
+     * - Wrist Flexion: Scrolls down
+     * - External Rotation: Returns to recording scene
+     */
+    private fun startGestureAnalysisForResultDisplay() {
+        wakeLockScope.launch {
+            val startTime = System.currentTimeMillis()
+            val duration = 500L // 0.5 seconds
+            val sampleInterval = 20L // 20ms = ~50Hz (matches sensor sample rate)
+            
+            // Cumulative values (absolute sum)
+            var cumulativeGyroX = 0f
+            var cumulativeGyroY = 0f
+            var cumulativeGyroZ = 0f
+            var cumulativeAccelX = 0f
+            var cumulativeAccelY = 0f
+            var cumulativeAccelZ = 0f
+            
+            // Peak values (maximum absolute values)
+            var peakGyroX = 0f
+            var peakGyroY = 0f
+            var peakGyroZ = 0f
+            var peakAccelX = 0f
+            var peakAccelY = 0f
+            var peakAccelZ = 0f
+            
+            var sampleCount = 0
+            
+            Log.d(TAG, "*** Starting gesture analysis for result display mode (0.5 seconds) ***")
+            
+            while (System.currentTimeMillis() - startTime < duration) {
+                // Get current sensor values from sensor logger
+                val gyroValues = sensorDataLogger?.getCurrentGyroValues() ?: Triple(0f, 0f, 0f)
+                val accelValues = sensorDataLogger?.getCurrentAccelValues() ?: Triple(0f, 0f, 0f)
+                
+                // Calculate absolute values for tracking
+                val absGyroX = kotlin.math.abs(gyroValues.first)
+                val absGyroY = kotlin.math.abs(gyroValues.second)
+                val absGyroZ = kotlin.math.abs(gyroValues.third)
+                val absAccelX = kotlin.math.abs(accelValues.first)
+                val absAccelY = kotlin.math.abs(accelValues.second)
+                val absAccelZ = kotlin.math.abs(accelValues.third)
+                
+                // Accumulate values
+                cumulativeGyroX += absGyroX
+                cumulativeGyroY += absGyroY
+                cumulativeGyroZ += absGyroZ
+                cumulativeAccelX += absAccelX
+                cumulativeAccelY += absAccelY
+                cumulativeAccelZ += absAccelZ
+                
+                // Track peak values
+                if (absGyroX > peakGyroX) peakGyroX = absGyroX
+                if (absGyroY > peakGyroY) peakGyroY = absGyroY
+                if (absGyroZ > peakGyroZ) peakGyroZ = absGyroZ
+                if (absAccelX > peakAccelX) peakAccelX = absAccelX
+                if (absAccelY > peakAccelY) peakAccelY = absAccelY
+                if (absAccelZ > peakAccelZ) peakAccelZ = absAccelZ
+                
+                sampleCount++
+                
+                delay(sampleInterval)
+            }
+            
+            // Determine gesture type based on Option 1: Cumulative Gyro X threshold
+            // Threshold: 50 rad/s (flexion max: 3.23, rotation min: 108.64)
+            val GESTURE_DISTINCTION_THRESHOLD = 50.0f
+            val isExternalRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
+            
+            Log.d(TAG, "*** Gesture Analysis Results (Result Display Mode) ***")
+            Log.d(TAG, "  Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s")
+            Log.d(TAG, "  Gesture Type: ${if (isExternalRotation) "External Rotation" else "Wrist Flexion"}")
+            
+            if (isExternalRotation) {
+                // External rotation: Return to recording scene
+                Log.d(TAG, "*** EXTERNAL ROTATION DETECTED - RETURNING TO RECORDING SCENE ***")
+                returnToRecordingScene()
+            } else {
+                // Wrist flexion: Scroll down
+                Log.d(TAG, "*** WRIST FLEXION DETECTED - SCROLLING DOWN ***")
+                triggerScrollDown()
+            }
         }
     }
     
@@ -644,14 +734,11 @@ class MainActivity : ComponentActivity() {
             // Initialize gesture detector for result display scrolling
             gestureDetector = GestureDetector(object : GestureDetectionListener {
                 override fun onGestureDetected(type: GestureType) {
-                    // Result display mode: wrist flexion scrolls down
+                    // Result display mode: analyze gesture to distinguish type (same algorithm as recording mode)
+                    // Wrist flexion scrolls down, external rotation returns to recording
                     Log.d(TAG, "*** onGestureDetected() called in result display mode: type=$type ***")
-                    if (type == GestureType.WRIST_FLEXION) {
-                        Log.d(TAG, "Wrist flexion detected in result display - scrolling down")
-                        triggerScrollDown()
-                    } else {
-                        Log.d(TAG, "Ignoring gesture type $type in result display mode")
-                    }
+                    // Use same gesture analysis as recording mode to distinguish gesture types
+                    startGestureAnalysisForResultDisplay()
                 }
             })
             Log.d(TAG, "Gesture detector created: ${gestureDetector != null}")
@@ -683,6 +770,47 @@ class MainActivity : ComponentActivity() {
             resultDisplayTimeoutJob = null
             resultDisplayTime = System.currentTimeMillis()
             scheduleWakeLockRelease()  // Schedule new 15-second timeout
+        }
+    }
+    
+    private fun returnToRecordingScene() {
+        Log.d(TAG, "=== RETURNING TO RECORDING SCENE ===")
+        
+        // Cancel timeout cleanup if in progress (edge case: gesture during timeout cleanup)
+        resultDisplayTimeoutJob?.cancel()
+        resultDisplayTimeoutJob = null
+        Log.d(TAG, "Result display timeout cancelled")
+        
+        // Clear result display state
+        llmResponseText = ""
+        transcriptionText = ""
+        statusMessage = ""
+        showTranscriptionInResult = false
+        scrollDownRequest = 0  // Reset scroll counter
+        Log.d(TAG, "Result display state cleared")
+        
+        // Clean up result display gesture detection
+        sensorDataLogger?.stopLogging()
+        sensorDataLogger = null
+        gestureDetector = null
+        Log.d(TAG, "Result display gesture detection cleaned up")
+        
+        // Start new recording
+        // If recording fails, show error message for a while and stay in recording scene
+        try {
+            startRecording()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start recording when returning from result display", e)
+            // Error message will be shown by startRecording() error handling
+            // Clear error message after 5 seconds (edge case: show error for a while)
+            errorMessageClearJob?.cancel()
+            errorMessageClearJob = wakeLockScope.launch {
+                delay(5000) // Show error for 5 seconds
+                if (statusMessage.isNotBlank() && !isRecording) {
+                    statusMessage = ""
+                    Log.d(TAG, "Error message cleared after timeout")
+                }
+            }
         }
     }
     
@@ -1247,6 +1375,14 @@ class MainActivity : ComponentActivity() {
         // Schedule screen off 15 seconds after result is displayed
         resultDisplayTimeoutJob = wakeLockScope.launch {
             delay(RESULT_DISPLAY_TIMEOUT_MS)
+            // Check if external rotation was detected during timeout (edge case: gesture during timeout cleanup)
+            // If llmResponseText is blank, user already returned to recording scene
+            if (llmResponseText.isBlank() || isRecording) {
+                Log.d(TAG, "Result display already cleared or recording started - skipping timeout cleanup")
+                resultDisplayTimeoutJob = null
+                return@launch
+            }
+            
             // Clean up gesture detection for result display
             Log.d(TAG, "=== RESULT DISPLAY TIMEOUT - Cleaning up gesture detection ===")
             if (llmResponseText.isNotBlank() && !isRecording) {

@@ -44,6 +44,7 @@ class SensorDataLogger(
     private var gestureJob: Job? = null
     private var currentGestureNumber = 0
     private var isCollectionComplete = false // Track if all 10 gestures are collected
+    private var gestureDetectorNullLogged = false // Track if we've logged the null detector warning
     
     // Data buffer - store CSV lines in memory until collection is complete
     // Use synchronized list to prevent ConcurrentModificationException
@@ -81,6 +82,7 @@ class SensorDataLogger(
     }
     
     fun startLogging() {
+        Log.d(TAG, "=== startLogging() called ===")
         if (isLogging) {
             Log.w(TAG, "Already logging")
             return
@@ -124,6 +126,7 @@ class SensorDataLogger(
             isLogging = true
             startTime = System.currentTimeMillis()
             currentGestureNumber = 0
+            Log.d(TAG, "isLogging set to TRUE, startTime=$startTime")
             
             when (mode) {
                 SensorMode.FLEXION_DATA_COLLECTION -> {
@@ -145,7 +148,9 @@ class SensorDataLogger(
             // Register sensor listeners
             sensorEventListener = object : SensorEventListener {
                 override fun onSensorChanged(event: SensorEvent) {
-                    if (!isLogging) return
+                    if (!isLogging) {
+                        return
+                    }
                     
                     val currentTime = System.currentTimeMillis()
                     val elapsedTime = currentTime - startTime
@@ -176,7 +181,15 @@ class SensorDataLogger(
                     // Forward to gesture detector if in test or control mode (forward both accel and gyro events)
                     // Always forward events, even during calibration
                     if (mode == SensorMode.GESTURE_TEST_MODE || mode == SensorMode.GESTURE_CONTROL_MODE) {
-                        gestureDetector?.onSensorChanged(event)
+                        if (gestureDetector != null) {
+                            gestureDetector?.onSensorChanged(event)
+                        } else {
+                            // Only log once when detector becomes null
+                            if (!gestureDetectorNullLogged) {
+                                Log.w(TAG, "Sensor event received but gestureDetector is null - events not being forwarded")
+                                gestureDetectorNullLogged = true
+                            }
+                        }
                     }
                     
                     // Buffer data in memory only in data collection modes (don't write to file yet)
@@ -312,11 +325,17 @@ class SensorDataLogger(
     }
     
     fun stopLogging() {
-        if (!isLogging) return
+        Log.d(TAG, "=== stopLogging() called ===")
+        if (!isLogging) {
+            Log.w(TAG, "stopLogging() called but isLogging is already false")
+            return
+        }
         
+        Log.d(TAG, "Stopping sensor logging, unregistering listeners")
         isLogging = false
         gestureJob?.cancel()
         gestureJob = null
+        Log.d(TAG, "isLogging set to FALSE")
         
         sensorManager?.unregisterListener(sensorEventListener)
         sensorEventListener = null
@@ -389,6 +408,7 @@ class SensorDataLogger(
     
     fun setGestureDetector(detector: GestureDetector?) {
         gestureDetector = detector
+        gestureDetectorNullLogged = false // Reset flag when detector is set
         // Don't start calibration here - wait for notifyGestureDetectorReady()
         // to ensure sensors are already registering
     }

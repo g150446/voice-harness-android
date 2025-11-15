@@ -51,6 +51,9 @@ class GestureDetector(
     private var hasAccelData = false
     private var hasGyroData = false
     
+    // Gesture count tracking for periodic recalibration
+    private var gestureCount = 0
+    
     companion object {
         // Wrist Flexion Thresholds (aggressively relaxed to detect very weak gestures)
         private const val FLEXION_GYRO_X_THRESHOLD = -1.2f // rad/s (negative = flexion) - further relaxed from -1.8 to detect very weak gestures
@@ -66,6 +69,9 @@ class GestureDetector(
         
         // Cooldown to prevent false positives
         private const val GESTURE_COOLDOWN_MS = 500L
+        
+        // Periodic recalibration: recalibrate after every N gestures to handle baseline drift
+        private const val RECALIBRATE_AFTER_GESTURES = 1 // Recalibrate after each gesture
         
         // Gravity constant (m/s²)
         private const val GRAVITY = 9.8f
@@ -97,13 +103,16 @@ class GestureDetector(
             return
         }
         
+        Log.d(TAG, "*** Starting baseline calibration ***")
         isCalibrating = true
         calibrationStartTime = System.currentTimeMillis()
         baselineSamples.clear()
         hasAccelData = false
         hasGyroData = false
         state = DetectionState.IDLE
-        Log.d(TAG, "Baseline calibration started (${BASELINE_DURATION_MS}ms, min ${MIN_BASELINE_SAMPLES} samples)")
+        // Reset gesture count on fresh calibration
+        gestureCount = 0
+        Log.d(TAG, "Baseline calibration started (${BASELINE_DURATION_MS}ms, min ${MIN_BASELINE_SAMPLES} samples), state set to IDLE")
     }
     
     fun onSensorChanged(event: SensorEvent) {
@@ -213,11 +222,13 @@ class GestureDetector(
         val baselineGravityZ = calculateGravityZ(baselineTiltAngle)
         val baselineAccelZCompensated = baselineMean.accelZ - baselineGravityZ
         
-        Log.d(TAG, "Baseline calibration complete:")
+        Log.d(TAG, "*** Baseline calibration complete - ready for gesture detection ***")
+        Log.d(TAG, "  Samples collected: ${baselineSamples.size}")
         Log.d(TAG, "  Accel: X=${String.format("%.4f", baselineMean.accelX)}+-${String.format("%.4f", baselineStd.accelX)}, Y=${String.format("%.4f", baselineMean.accelY)}+-${String.format("%.4f", baselineStd.accelY)}, Z=${String.format("%.4f", baselineMean.accelZ)}+-${String.format("%.4f", baselineStd.accelZ)}")
         Log.d(TAG, "  Gyro: X=${String.format("%.4f", baselineMean.gyroX)}+-${String.format("%.4f", baselineStd.gyroX)}, Y=${String.format("%.4f", baselineMean.gyroY)}+-${String.format("%.4f", baselineStd.gyroY)}, Z=${String.format("%.4f", baselineMean.gyroZ)}+-${String.format("%.4f", baselineStd.gyroZ)}")
         Log.d(TAG, "  Baseline Tilt Angle: ${String.format("%.2f", baselineTiltAngle)}°")
         Log.d(TAG, "  Baseline Gravity Z: ${String.format("%.4f", baselineGravityZ)} m/s², Accel Z (compensated): ${String.format("%.4f", baselineAccelZCompensated)} m/s²")
+        Log.d(TAG, "  State set to IDLE, isCalibrating=false")
     }
     
     private fun calculateStdDev(values: List<Float>, mean: Float): Float {
@@ -263,7 +274,8 @@ class GestureDetector(
     private fun detectGesture(sample: SensorSample, timestamp: Long) {
         // Check cooldown
         if (state == DetectionState.COOLDOWN) {
-            if (timestamp - lastDetectionTime >= GESTURE_COOLDOWN_MS) {
+            val cooldownElapsed = timestamp - lastDetectionTime
+            if (cooldownElapsed >= GESTURE_COOLDOWN_MS) {
                 state = DetectionState.IDLE
             } else {
                 return
@@ -302,6 +314,8 @@ class GestureDetector(
                 val flexionDetectedSecondary = accelZDeviation > FLEXION_ACCEL_Z_THRESHOLD && gyroZNearBaseline
                 
                 if (flexionDetected || flexionDetectedSecondary) {
+                    val detectorType = if (flexionDetected) "PRIMARY (gyroX)" else "SECONDARY (accelZ)"
+                    Log.d(TAG, "Flexion threshold crossed via $detectorType: gyroXDev=${String.format("%.3f", gyroXDeviation)}, accelZDev=${String.format("%.3f", accelZDeviation)}, transitioning to DETECTING")
                     startDetecting(sample, timestamp)
                 }
             }
@@ -347,10 +361,12 @@ class GestureDetector(
                 // Confirm if returned to baseline and duration valid
                 if ((gyroXInBounds || accelZInBounds) && gyroZNearBaseline && 
                     elapsed >= FLEXION_MIN_DURATION_MS && elapsed <= FLEXION_MAX_DURATION_MS) {
+                    Log.d(TAG, "Gesture confirmed: returned to baseline, duration=${elapsed}ms, transitioning to CONFIRMED")
                     state = DetectionState.CONFIRMED
                     confirmGesture(timestamp)
                 } else if (elapsed > FLEXION_MAX_DURATION_MS) {
                     // Too long, reset
+                    Log.w(TAG, "Gesture too long (${elapsed}ms), resetting to IDLE")
                     state = DetectionState.IDLE
                 }
             }
@@ -383,17 +399,39 @@ class GestureDetector(
         
         Log.d(TAG, "*** WRIST FLEXION DETECTED ***")
         Log.d(TAG, "  Peak: gyro_x=${String.format("%.4f", peakGyroX)}, accel_z=${String.format("%.4f", peakAccelZ)}, duration=${duration}ms")
+        Log.d(TAG, "  Gesture count before increment: $gestureCount")
         
         lastDetectionTime = timestamp
         state = DetectionState.COOLDOWN
+        Log.d(TAG, "State set to COOLDOWN, lastDetectionTime=$lastDetectionTime")
         
-        listener?.onGestureDetected(GestureType.WRIST_FLEXION)
+        // Notify listener first
+        if (listener != null) {
+            Log.d(TAG, "Notifying listener of gesture detection")
+            listener?.onGestureDetected(GestureType.WRIST_FLEXION)
+        } else {
+            Log.e(TAG, "ERROR: Listener is null! Gesture will not be processed.")
+        }
+        
+        // Increment gesture count and check if recalibration is needed
+        gestureCount++
+        Log.d(TAG, "Gesture count after increment: $gestureCount (threshold: $RECALIBRATE_AFTER_GESTURES)")
+        if (gestureCount >= RECALIBRATE_AFTER_GESTURES) {
+            Log.d(TAG, "*** Recalibrating baseline after $gestureCount gesture(s) to handle baseline drift ***")
+            gestureCount = 0 // Reset counter
+            // Start recalibration - it will happen during the cooldown period and extend it slightly
+            // The startCalibration() method has built-in checks to prevent duplicate calibrations
+            startCalibration()
+        } else {
+            Log.d(TAG, "No recalibration needed yet (count: $gestureCount < threshold: $RECALIBRATE_AFTER_GESTURES)")
+        }
     }
     
     fun stop() {
         isCalibrating = false
         state = DetectionState.IDLE
         baselineSamples.clear()
+        gestureCount = 0 // Reset gesture count
         Log.d(TAG, "Gesture detector stopped")
     }
 }
