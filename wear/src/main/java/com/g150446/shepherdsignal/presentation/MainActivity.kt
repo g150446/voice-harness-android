@@ -106,11 +106,12 @@ class MainActivity : ComponentActivity() {
     private var gestureDetector: GestureDetector? = null
     private var gestureTestMode: Boolean = false // Track if we're in test mode (true = gesture test mode, false = gesture control mode)
     private var dataCollectionMode: Boolean = false // Enable data collection mode
-    private var negativeSamplesCollection: Boolean = false // Collect negative samples (true = negative samples, false = flexion)
     private var gestureDetectedMessage by mutableStateOf("") // Message shown when gesture detected in test mode
     private var gestureTestJob: Job? = null // Job to handle test mode timing
-    private var closeConfirmationMessage by mutableStateOf("") // Message shown when external rotation detected in recording mode
+    private var closeConfirmationMessage by mutableStateOf("") // Message shown when rotation detected in recording mode
     private var closeConfirmationJob: Job? = null // Job to handle close confirmation timeout
+    private var closeConfirmationShownTime: Long = 0 // Timestamp when confirmation was shown (to prevent immediate false detections)
+    private var lastRotationDetectionTime: Long = 0 // Timestamp when rotation was detected (to extend cooldown and prevent false flexion)
     private var showTranscriptionInResult by mutableStateOf(false) // Control whether to show transcription in result display
     private var scrollDownRequest by mutableStateOf(0) // Counter to trigger scroll down action
     private var resultDisplayTimeoutJob: Job? = null // Job to track result display timeout (can be cancelled/reset)
@@ -177,7 +178,7 @@ class MainActivity : ComponentActivity() {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 when {
                     dataCollectionMode -> {
-                        // Start data collection mode (external rotation or flexion)
+                        // Start data collection mode (rotation or flexion)
                         startDataCollection()
                     }
                     gestureTestMode -> {
@@ -293,9 +294,16 @@ class MainActivity : ComponentActivity() {
         // Cancel any existing test job
         gestureTestJob?.cancel()
         
-        // Don't show message immediately - wait for gesture analysis
+        // Show immediate message based on detected type (will be refined by analysis)
+        val immediateMessage = when (gestureType) {
+            GestureType.FLEXION -> "flexion"
+            GestureType.ROTATION -> "rotation"
+        }
+        gestureDetectedMessage = immediateMessage
+        Log.d(TAG, "*** Immediate gesture display: $immediateMessage ***")
+        
         // Start comprehensive gesture analysis for 0.5 seconds after detection
-        // This will determine the gesture type and update the message
+        // This will refine the gesture type and update the message
         startGestureAnalysis()
         
         // After 1.5 seconds total (0.5s analysis + 1s display), return to "waiting gesture" message
@@ -308,8 +316,8 @@ class MainActivity : ComponentActivity() {
     /**
      * Comprehensive gesture analysis for result display mode.
      * Analyzes gesture for 0.5 seconds and determines type.
-     * - Wrist Flexion: Scrolls down
-     * - External Rotation: Returns to recording scene
+     * - Flexion: Scrolls down
+     * - Rotation: Returns to recording scene
      */
     private fun startGestureAnalysisForResultDisplay() {
         wakeLockScope.launch {
@@ -374,19 +382,27 @@ class MainActivity : ComponentActivity() {
             // Determine gesture type based on Option 1: Cumulative Gyro X threshold
             // Threshold: 50 rad/s (flexion max: 3.23, rotation min: 108.64)
             val GESTURE_DISTINCTION_THRESHOLD = 50.0f
-            val isExternalRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
+            val isRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
             
             Log.d(TAG, "*** Gesture Analysis Results (Result Display Mode) ***")
             Log.d(TAG, "  Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s")
-            Log.d(TAG, "  Gesture Type: ${if (isExternalRotation) "External Rotation" else "Wrist Flexion"}")
+            Log.d(TAG, "  Gesture Type: ${if (isRotation) "rotation" else "flexion"}")
             
-            if (isExternalRotation) {
-                // External rotation: Return to recording scene
-                Log.d(TAG, "*** EXTERNAL ROTATION DETECTED - RETURNING TO RECORDING SCENE ***")
+            // Suppress false flexion detection after rotation
+            if (isRotation) {
+                // Rotation detected - extend cooldown to prevent false flexion from residual motion
+                lastRotationDetectionTime = System.currentTimeMillis()
+                gestureDetector?.extendCooldownAfterRotation()
+                Log.d(TAG, "*** Rotation detected - extending cooldown to 0.5 second ***")
+            }
+            
+            if (isRotation) {
+                // Rotation: Return to recording scene
+                Log.d(TAG, "*** ROTATION DETECTED - RETURNING TO RECORDING SCENE ***")
                 returnToRecordingScene()
             } else {
-                // Wrist flexion: Scroll down
-                Log.d(TAG, "*** WRIST FLEXION DETECTED - SCROLLING DOWN ***")
+                // Flexion: Scroll down
+                Log.d(TAG, "*** FLEXION DETECTED - SCROLLING DOWN ***")
                 triggerScrollDown()
             }
         }
@@ -395,8 +411,8 @@ class MainActivity : ComponentActivity() {
     /**
      * Comprehensive gesture analysis for control mode (recording scene).
      * Analyzes gesture for 0.5 seconds and determines type.
-     * - Wrist Flexion: Toggles recording
-     * - External Rotation: Shows close confirmation
+     * - Flexion: Toggles recording
+     * - Rotation: Shows close confirmation
      */
     private fun startGestureAnalysisForControl() {
         wakeLockScope.launch {
@@ -461,42 +477,52 @@ class MainActivity : ComponentActivity() {
             // Determine gesture type based on Option 1: Cumulative Gyro X threshold
             // Threshold: 50 rad/s (flexion max: 3.23, rotation min: 108.64)
             val GESTURE_DISTINCTION_THRESHOLD = 50.0f
-            val isExternalRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
+            val isRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
             
             Log.d(TAG, "*** Gesture Analysis Results (Control Mode) ***")
             Log.d(TAG, "  Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s")
-            Log.d(TAG, "  Gesture Type: ${if (isExternalRotation) "External Rotation" else "Wrist Flexion"}")
+            Log.d(TAG, "  Gesture Type: ${if (isRotation) "rotation" else "flexion"}")
             
-            if (isExternalRotation) {
-                // External rotation: Show close confirmation
-                Log.d(TAG, "*** EXTERNAL ROTATION DETECTED - SHOWING CLOSE CONFIRMATION ***")
+            // Suppress false flexion detection after rotation
+            if (isRotation) {
+                // Rotation detected - extend cooldown to prevent false flexion from residual motion
+                lastRotationDetectionTime = System.currentTimeMillis()
+                gestureDetector?.extendCooldownAfterRotation()
+                Log.d(TAG, "*** Rotation detected - extending cooldown to 0.5 second ***")
+            }
+            
+            if (isRotation) {
+                // Rotation: Show close confirmation
+                Log.d(TAG, "*** ROTATION DETECTED - SHOWING CLOSE CONFIRMATION ***")
                 showCloseConfirmation()
             } else {
-                // Wrist flexion: Toggle recording
-                Log.d(TAG, "*** WRIST FLEXION DETECTED - TOGGLING RECORDING ***")
+                // Flexion: Toggle recording
+                Log.d(TAG, "*** FLEXION DETECTED - TOGGLING RECORDING ***")
                 toggleRecording()
             }
         }
     }
     
     /**
-     * Shows close confirmation message when external rotation is detected.
-     * User can cancel by performing wrist flexion gesture.
+     * Shows close message when rotation is detected.
+     * App will close automatically after 3 seconds - no cancellation possible.
      */
     private fun showCloseConfirmation() {
         // Cancel any existing confirmation job
         closeConfirmationJob?.cancel()
         
-        // Show confirmation message
-        closeConfirmationMessage = "Close app?\nFlex to cancel"
+        // Show close message
+        closeConfirmationMessage = "Rotation detected\nClosing app..."
+        closeConfirmationShownTime = System.currentTimeMillis() // Track when confirmation was shown
         
-        // Set timeout: if no action taken, close app after 3 seconds
+        // Set timeout: close app after 3 seconds
         closeConfirmationJob = wakeLockScope.launch {
             delay(3000) // 3 seconds timeout
             if (closeConfirmationMessage.isNotBlank()) {
                 // Timeout: close the app
-                Log.d(TAG, "Close confirmation timeout - closing app")
-                closeConfirmationMessage = ""
+                // Keep closeConfirmationMessage set so UI continues showing closing message until activity finishes
+                Log.d(TAG, "Rotation detected - closing app")
+                closeConfirmationShownTime = 0
                 finish()
             }
         }
@@ -504,16 +530,30 @@ class MainActivity : ComponentActivity() {
     
     /**
      * Gesture analysis during close confirmation.
-     * If wrist flexion detected, cancels confirmation. External rotation is ignored.
+     * Uses quick distinction check (0.2-0.3 seconds) to filter false positives from rotation motion.
+     * If flexion detected, cancels confirmation. Rotation is ignored.
      */
     private fun startGestureAnalysisForControlDuringConfirmation() {
         wakeLockScope.launch {
+            // Check minimum delay: ignore gestures detected too soon after confirmation was shown
+            // This prevents false detections from residual motion of the rotation gesture
+            val timeSinceConfirmation = System.currentTimeMillis() - closeConfirmationShownTime
+            val MIN_DELAY_MS = 250L // 250ms minimum delay after confirmation is shown
+            
+            if (timeSinceConfirmation < MIN_DELAY_MS) {
+                Log.d(TAG, "Gesture detected too soon after confirmation (${timeSinceConfirmation}ms < ${MIN_DELAY_MS}ms) - ignoring to prevent false positive")
+                return@launch
+            }
+            
+            // Use shorter analysis window (0.25 seconds) for faster response to intentional gestures
             val startTime = System.currentTimeMillis()
-            val duration = 500L // 0.5 seconds
+            val duration = 250L // 0.25 seconds (faster than 0.5s for better responsiveness)
             val sampleInterval = 20L // 20ms = ~50Hz
             
             var cumulativeGyroX = 0f
             var sampleCount = 0
+            
+            Log.d(TAG, "*** Starting quick gesture distinction during confirmation (${duration}ms) ***")
             
             while (System.currentTimeMillis() - startTime < duration) {
                 val gyroValues = sensorDataLogger?.getCurrentGyroValues() ?: Triple(0f, 0f, 0f)
@@ -522,33 +562,43 @@ class MainActivity : ComponentActivity() {
                 delay(sampleInterval)
             }
             
-            val GESTURE_DISTINCTION_THRESHOLD = 50.0f
+            // Adjust threshold proportionally for shorter analysis window
+            // Original: 50 rad/s over 0.5s = 100 rad/s per second
+            // New: 25 rad/s over 0.25s = 100 rad/s per second (same rate)
+            val GESTURE_DISTINCTION_THRESHOLD = 25.0f
             val isExternalRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
             
+            Log.d(TAG, "*** Gesture Analysis Results (During Confirmation) ***")
+            Log.d(TAG, "  Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s")
+            Log.d(TAG, "  Gesture Type: ${if (isExternalRotation) "rotation" else "flexion"}")
+            Log.d(TAG, "  Time since confirmation: ${timeSinceConfirmation}ms")
+            
             if (!isExternalRotation) {
-                // Wrist flexion: cancel confirmation
+                // Flexion: cancel confirmation
+                Log.d(TAG, "*** FLEXION DETECTED DURING CONFIRMATION - CANCELLING ***")
                 cancelCloseConfirmation()
             } else {
-                // External rotation: ignore (already in confirmation)
-                Log.d(TAG, "External rotation during confirmation - ignored")
+                // Rotation: ignore (residual motion from original gesture)
+                Log.d(TAG, "Rotation during confirmation - ignored (residual motion)")
             }
         }
     }
     
     /**
-     * Cancels close confirmation when wrist flexion is detected during confirmation.
+     * Cancels close confirmation when flexion is detected during confirmation.
      */
     private fun cancelCloseConfirmation() {
         closeConfirmationJob?.cancel()
         closeConfirmationJob = null
         closeConfirmationMessage = ""
-        Log.d(TAG, "Close confirmation cancelled by wrist flexion")
+        closeConfirmationShownTime = 0 // Reset timestamp
+        Log.d(TAG, "Close confirmation cancelled by flexion")
     }
     
     /**
-     * Comprehensive gesture analysis for 0.5 seconds after wrist flexion detection.
+     * Comprehensive gesture analysis for 0.5 seconds after gesture detection.
      * Tracks cumulative and peak values for both gyroscope and accelerometer.
-     * Determines gesture type (Wrist Flexion vs External Rotation) based on cumulative gyro X.
+     * Determines gesture type (flexion vs rotation) based on cumulative gyro X.
      * Updates UI message after 0.5 seconds with the determined gesture type.
      */
     private fun startGestureAnalysis() {
@@ -575,7 +625,7 @@ class MainActivity : ComponentActivity() {
             
             var sampleCount = 0
             
-            Log.d(TAG, "*** Starting gesture analysis for 0.5 seconds after wrist flexion detection ***")
+            Log.d(TAG, "*** Starting gesture analysis for 0.5 seconds after gesture detection ***")
             
             while (System.currentTimeMillis() - startTime < duration) {
                 // Get current sensor values from sensor logger
@@ -612,7 +662,7 @@ class MainActivity : ComponentActivity() {
             }
             
             // Log comprehensive analysis results
-            Log.d(TAG, "*** Gesture Analysis Results (0.5 seconds after wrist flexion detection) ***")
+            Log.d(TAG, "*** Gesture Analysis Results (0.5 seconds after gesture detection) ***")
             Log.d(TAG, "  Sample count: $sampleCount")
             Log.d(TAG, "")
             Log.d(TAG, "  Cumulative Gyro X: ${String.format("%.4f", cumulativeGyroX)} rad/s")
@@ -640,10 +690,21 @@ class MainActivity : ComponentActivity() {
             // Determine gesture type based on Option 1: Cumulative Gyro X threshold
             // Threshold: 50 rad/s (flexion max: 3.23, rotation min: 108.64)
             val GESTURE_DISTINCTION_THRESHOLD = 50.0f
-            val gestureType = if (cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD) {
-                "External Rotation"
+            val isRotation = cumulativeGyroX > GESTURE_DISTINCTION_THRESHOLD
+            val gestureType = if (isRotation) {
+                "rotation"
             } else {
-                "Wrist Flexion"
+                "flexion"
+            }
+            
+            // Suppress false flexion detection after rotation
+            // If analysis shows rotation but GestureDetector fired (false flexion), suppress it
+            if (isRotation) {
+                // Rotation detected - suppress false flexion detection
+                lastRotationDetectionTime = System.currentTimeMillis()
+                // Extend cooldown in GestureDetector to prevent false flexion from residual motion
+                gestureDetector?.extendCooldownAfterRotation()
+                Log.d(TAG, "*** Rotation detected - suppressing false flexion, extending cooldown to 1 second ***")
             }
             
             // Update UI message after 0.5 seconds with determined gesture type
@@ -693,10 +754,11 @@ class MainActivity : ComponentActivity() {
             gestureDetector = GestureDetector(object : GestureDetectionListener {
                 override fun onGestureDetected(type: GestureType) {
                     // Control mode: analyze gesture to distinguish type
-                    // If confirmation is showing, analyze gesture to see if it's wrist flexion (cancel) or external rotation (ignore)
+                    // If close confirmation is showing, ignore all gestures (no cancellation)
                     if (closeConfirmationMessage.isNotBlank()) {
-                        // During confirmation: analyze to determine if wrist flexion (cancel) or external rotation (ignore)
-                        startGestureAnalysisForControlDuringConfirmation()
+                        // During close confirmation: ignore all gestures - app will close automatically
+                        Log.d(TAG, "Gesture detected during close confirmation - ignoring (no cancellation)")
+                        return
                     } else {
                         // Normal state: analyze gesture to determine type
                         startGestureAnalysisForControl()
@@ -735,7 +797,7 @@ class MainActivity : ComponentActivity() {
             gestureDetector = GestureDetector(object : GestureDetectionListener {
                 override fun onGestureDetected(type: GestureType) {
                     // Result display mode: analyze gesture to distinguish type (same algorithm as recording mode)
-                    // Wrist flexion scrolls down, external rotation returns to recording
+                    // Flexion scrolls down, rotation returns to recording
                     Log.d(TAG, "*** onGestureDetected() called in result display mode: type=$type ***")
                     // Use same gesture analysis as recording mode to distinguish gesture types
                     startGestureAnalysisForResultDisplay()
@@ -845,20 +907,15 @@ class MainActivity : ComponentActivity() {
             // Also acquire wake lock as backup
             acquireWakeLock()
             
-            // Determine which data type to collect
-            val sensorMode = if (negativeSamplesCollection) {
-                SensorMode.NEGATIVE_SAMPLES_COLLECTION
-            } else {
-                SensorMode.FLEXION_DATA_COLLECTION
-            }
+            // Hardcode data type to "flexion" for now
+            val dataType = "flexion"
             
             // Initialize sensor monitoring in data collection mode
-            sensorDataLogger = SensorDataLogger(this, sensorMode)
+            sensorDataLogger = SensorDataLogger(this, SensorMode.DATA_COLLECTION, dataType)
             
             // Start data collection
             sensorDataLogger?.startLogging()
             
-            val dataType = if (negativeSamplesCollection) "negative samples" else "wrist flexion"
             statusMessage = "Collecting $dataType data..."
             Log.d(TAG, "Started $dataType data collection")
         } catch (e: Exception) {
@@ -1375,7 +1432,7 @@ class MainActivity : ComponentActivity() {
         // Schedule screen off 15 seconds after result is displayed
         resultDisplayTimeoutJob = wakeLockScope.launch {
             delay(RESULT_DISPLAY_TIMEOUT_MS)
-            // Check if external rotation was detected during timeout (edge case: gesture during timeout cleanup)
+            // Check if rotation was detected during timeout (edge case: gesture during timeout cleanup)
             // If llmResponseText is blank, user already returned to recording scene
             if (llmResponseText.isBlank() || isRecording) {
                 Log.d(TAG, "Result display already cleared or recording started - skipping timeout cleanup")
