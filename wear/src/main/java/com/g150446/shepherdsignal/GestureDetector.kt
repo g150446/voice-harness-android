@@ -6,8 +6,8 @@ import android.util.Log
 import kotlin.math.abs
 
 enum class GestureType {
-    WRIST_FLEXION,
-    EXTERNAL_ROTATION
+    FLEXION,
+    ROTATION
 }
 
 interface GestureDetectionListener {
@@ -34,12 +34,17 @@ class GestureDetector(
     private var isCalibrating = false
     private var calibrationStartTime: Long = 0
     private var lastDetectionTime: Long = 0
+    private var rotationCooldownUntil: Long = 0 // Extended cooldown after rotation detection (prevents false flexion)
     
     // Peak tracking
     private var peakTime: Long = 0
     private var peakGyroX: Float = 0f
     private var peakAccelZ: Float = 0f
     private var detectionStartTime: Long = 0
+    
+    // Pre-confirmation rotation check tracking
+    private var cumulativeGyroXForRotationCheck: Float = 0f
+    private var rotationCheckSampleCount: Int = 0
     
     // Tilt angle tracking for gravity compensation
     private var baselineTiltAngle: Float = 0f // Tilt angle during calibration (degrees)
@@ -69,6 +74,15 @@ class GestureDetector(
         
         // Cooldown to prevent false positives
         private const val GESTURE_COOLDOWN_MS = 500L
+        private const val ROTATION_COOLDOWN_MS = 500L // Extended cooldown after rotation (0.5 seconds) to prevent false flexion
+        
+        // Pre-confirmation rotation check thresholds
+        private const val ROTATION_CHECK_DURATION_MS = 250L // 250ms analysis window for rotation check
+        private const val ROTATION_CUMULATIVE_GYRO_X_THRESHOLD = 50.0f // rad/s - if cumulative > this in 250ms, likely rotation (scaled from 100 rad/s in 500ms)
+        private const val ROTATION_PEAK_GYRO_X_THRESHOLD = 8.0f // rad/s - if peak > this, likely rotation (increased from 5.0 to avoid false positives)
+        
+        // Peak gyro X suppression threshold: if abs(peakGyroX) > this, suppress as likely rotation start
+        private const val SUPPRESS_PEAK_GYRO_X_THRESHOLD = 10.0f // rad/s - suppress flexion detection if peak exceeds this
         
         // Periodic recalibration: recalibrate after every N gestures to handle baseline drift
         private const val RECALIBRATE_AFTER_GESTURES = 1 // Recalibrate after each gesture
@@ -272,7 +286,7 @@ class GestureDetector(
     }
     
     private fun detectGesture(sample: SensorSample, timestamp: Long) {
-        // Check cooldown
+        // Check normal cooldown first (allow state transitions)
         if (state == DetectionState.COOLDOWN) {
             val cooldownElapsed = timestamp - lastDetectionTime
             if (cooldownElapsed >= GESTURE_COOLDOWN_MS) {
@@ -280,6 +294,13 @@ class GestureDetector(
             } else {
                 return
             }
+        }
+        
+        // Check rotation cooldown (extended cooldown after rotation detection)
+        // This prevents false flexion detection from residual rotation motion
+        if (timestamp < rotationCooldownUntil) {
+            // Still in rotation cooldown - ignore all detections to prevent false flexion
+            return
         }
         
         when (state) {
@@ -325,6 +346,12 @@ class GestureDetector(
                 val gyroXDeviation = sample.gyroX - baselineMean.gyroX
                 val gyroZDeviation = sample.gyroZ - baselineMean.gyroZ
                 
+                // Track cumulative absolute gyro X for rotation check (first 250ms)
+                if (elapsed <= ROTATION_CHECK_DURATION_MS) {
+                    cumulativeGyroXForRotationCheck += abs(sample.gyroX)
+                    rotationCheckSampleCount++
+                }
+                
                 // Calculate current tilt angle for gravity compensation
                 currentTiltAngle = calculateTiltAngle(sample.accelX, sample.accelY, sample.accelZ)
                 
@@ -358,6 +385,51 @@ class GestureDetector(
                 // Verify still flexion (gyro_z near baseline)
                 val gyroZNearBaseline = abs(gyroZDeviation) <= FLEXION_GYRO_Z_BASELINE_TOLERANCE
                 
+                // Pre-confirmation rotation check: before confirming, check if this is actually rotation
+                // Only check if we've collected enough samples (at least 250ms) AND we're ready to confirm
+                // This prevents early rejection of valid flexion gestures
+                val shouldCheckRotation = elapsed >= ROTATION_CHECK_DURATION_MS && 
+                                         rotationCheckSampleCount > 0 &&
+                                         (gyroXInBounds || accelZInBounds) && 
+                                         gyroZNearBaseline && 
+                                         elapsed >= FLEXION_MIN_DURATION_MS
+                
+                if (shouldCheckRotation) {
+                    val absPeakGyroX = abs(peakGyroX)
+                    
+                    // Check if this is actually rotation, not flexion
+                    if (isRotationNotFlexion(cumulativeGyroXForRotationCheck, absPeakGyroX)) {
+                        Log.d(TAG, "Pre-confirmation rotation check: REJECTED as rotation (cumulative=${String.format("%.2f", cumulativeGyroXForRotationCheck)}, peak=${String.format("%.2f", absPeakGyroX)}, elapsed=${elapsed}ms)")
+                        // Reject as rotation - notify listener that rotation was detected, then reset to IDLE and extend cooldown
+                        listener?.onGestureDetected(GestureType.ROTATION)
+                        state = DetectionState.IDLE
+                        lastDetectionTime = timestamp
+                        extendCooldownAfterRotation()
+                        // Reset tracking variables
+                        cumulativeGyroXForRotationCheck = 0f
+                        rotationCheckSampleCount = 0
+                        return
+                    } else {
+                        Log.d(TAG, "Pre-confirmation rotation check: PASSED (cumulative=${String.format("%.2f", cumulativeGyroXForRotationCheck)}, peak=${String.format("%.2f", absPeakGyroX)}) - proceeding with flexion confirmation")
+                    }
+                }
+                
+                // CRITICAL CHECK: Is this the start of a rotation?
+                // Detect rotation gestures that trigger flexion threshold but have high peakGyroX
+                val absPeakGyroXForSuppression = abs(peakGyroX)
+                if (absPeakGyroXForSuppression > SUPPRESS_PEAK_GYRO_X_THRESHOLD) {
+                    Log.d(TAG, "Peak gyro too high (${String.format("%.2f", absPeakGyroXForSuppression)}), detecting as rotation")
+                    // Detect as rotation - notify listener that rotation was detected
+                    listener?.onGestureDetected(GestureType.ROTATION)
+                    state = DetectionState.IDLE
+                    lastDetectionTime = timestamp
+                    extendCooldownAfterRotation()
+                    // Reset tracking variables
+                    cumulativeGyroXForRotationCheck = 0f
+                    rotationCheckSampleCount = 0
+                    return
+                }
+                
                 // Confirm if returned to baseline and duration valid
                 if ((gyroXInBounds || accelZInBounds) && gyroZNearBaseline && 
                     elapsed >= FLEXION_MIN_DURATION_MS && elapsed <= FLEXION_MAX_DURATION_MS) {
@@ -368,6 +440,9 @@ class GestureDetector(
                     // Too long, reset
                     Log.w(TAG, "Gesture too long (${elapsed}ms), resetting to IDLE")
                     state = DetectionState.IDLE
+                    // Reset tracking variables
+                    cumulativeGyroXForRotationCheck = 0f
+                    rotationCheckSampleCount = 0
                 }
             }
             
@@ -387,6 +462,10 @@ class GestureDetector(
         detectionStartTime = timestamp
         peakTime = timestamp
         
+        // Reset rotation check tracking
+        cumulativeGyroXForRotationCheck = abs(sample.gyroX) // Start with first sample
+        rotationCheckSampleCount = 1
+        
         val gyroXDeviation = sample.gyroX - baselineMean.gyroX
         val accelZDeviation = abs(sample.accelZ - baselineMean.accelZ)
         
@@ -394,8 +473,30 @@ class GestureDetector(
         peakAccelZ = accelZDeviation
     }
     
+    /**
+     * Pre-confirmation rotation check: determines if detected gesture is actually rotation, not flexion.
+     * Uses cumulative gyro X and peak gyro X thresholds to identify rotation patterns.
+     */
+    private fun isRotationNotFlexion(cumulativeGyroX: Float, peakGyroX: Float): Boolean {
+        // Primary check: extremely high cumulative rotation
+        if (cumulativeGyroX > ROTATION_CUMULATIVE_GYRO_X_THRESHOLD) {
+            return true
+        }
+        
+        // Secondary check: high peak rotation velocity
+        if (peakGyroX > ROTATION_PEAK_GYRO_X_THRESHOLD) {
+            return true
+        }
+        
+        return false
+    }
+    
     private fun confirmGesture(timestamp: Long) {
         val duration = timestamp - detectionStartTime
+        
+        // Reset rotation check tracking
+        cumulativeGyroXForRotationCheck = 0f
+        rotationCheckSampleCount = 0
         
         Log.d(TAG, "*** WRIST FLEXION DETECTED ***")
         Log.d(TAG, "  Peak: gyro_x=${String.format("%.4f", peakGyroX)}, accel_z=${String.format("%.4f", peakAccelZ)}, duration=${duration}ms")
@@ -408,7 +509,7 @@ class GestureDetector(
         // Notify listener first
         if (listener != null) {
             Log.d(TAG, "Notifying listener of gesture detection")
-            listener?.onGestureDetected(GestureType.WRIST_FLEXION)
+            listener?.onGestureDetected(GestureType.FLEXION)
         } else {
             Log.e(TAG, "ERROR: Listener is null! Gesture will not be processed.")
         }
@@ -427,11 +528,23 @@ class GestureDetector(
         }
     }
     
+    /**
+     * Extends cooldown after rotation detection to prevent false flexion from residual motion.
+     * Sets rotation cooldown to 1 second from current time.
+     */
+    fun extendCooldownAfterRotation() {
+        rotationCooldownUntil = System.currentTimeMillis() + ROTATION_COOLDOWN_MS
+        Log.d(TAG, "Rotation cooldown extended: ignoring detections for ${ROTATION_COOLDOWN_MS}ms")
+    }
+    
     fun stop() {
         isCalibrating = false
         state = DetectionState.IDLE
         baselineSamples.clear()
         gestureCount = 0 // Reset gesture count
+        rotationCooldownUntil = 0 // Reset rotation cooldown
+        cumulativeGyroXForRotationCheck = 0f // Reset rotation check tracking
+        rotationCheckSampleCount = 0
         Log.d(TAG, "Gesture detector stopped")
     }
 }

@@ -56,7 +56,6 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.graphicsLayer
-import com.g150446.shepherdsignal.CounterManager
 import com.g150446.shepherdsignal.WearGroqPrefs
 import com.g150446.shepherdsignal.SensorDataLogger
 import com.g150446.shepherdsignal.SensorMode
@@ -82,8 +81,7 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
-    private lateinit var counterManager: CounterManager
-    private var currentCount by mutableStateOf(0)
+    private var isInitializing by mutableStateOf(true) // Track initialization state
     private var isRecording by mutableStateOf(false)
     private var transcriptionText by mutableStateOf("")
     private var llmResponseText by mutableStateOf("")
@@ -148,57 +146,59 @@ class MainActivity : ComponentActivity() {
         // Initialize wake lock
         initWakeLock()
         
-        // Set window flags early to prevent screen from turning off
-        // This helps especially on Wear OS where screen behavior can be different
+        // Batch window flag operations for better performance
         window?.let { win ->
             try {
+                // Combine all window flags in a single operation
                 win.addFlags(
                     WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN
                 )
                 win.decorView.keepScreenOn = true
+                
+                // Set brightness if supported
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setTurnScreenOn(true)
+                    setShowWhenLocked(true)
+                }
+                
+                val layoutParams = win.attributes
+                layoutParams?.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL
+                win.attributes = layoutParams
+                
                 Log.v(TAG, "Window flags set in onCreate for persistent screen-on") // Suppressed for data collection
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to set window flags in onCreate", e)
             }
         }
         
-        // OPTION A: Disable Ambient Mode (affects only this app)
-        // Explicitly prevent ambient mode entry - this ONLY affects this activity, NOT other apps
-        disableAmbientMode()
-        
-        // Initialize counter manager
-        counterManager = CounterManager(this)
-        currentCount = counterManager.getCurrentCount()
-        
         handleIntentAction(intent)
-        
-        // Automatically start based on mode
-        if (intent?.action != "TOGGLE_RECORDING") {
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                when {
-                    dataCollectionMode -> {
-                        // Start data collection mode (rotation or flexion)
-                        startDataCollection()
-                    }
-                    gestureTestMode -> {
-                        // In test mode, just start sensor monitoring without recording
-                        initializeGestureDetection()
-                    }
-                    else -> {
-                        // Default: start recording with gesture control
-                        if (!isRecording) {
-                            requestMicPermissionAndToggle()
-                        }
-                    }
-                }
-            }, 100) // Small delay to ensure UI is ready
-        }
         
         setTheme(android.R.style.Theme_DeviceDefault)
         
         setContent {
-            WearApp(currentCount, isRecording, transcriptionText, llmResponseText, statusMessage, exitMessage, gestureTestMode, gestureDetectedMessage, closeConfirmationMessage, showTranscriptionInResult, scrollDownRequest)
+            WearApp(
+                isInitializing = isInitializing,
+                isRecording = isRecording,
+                transcriptionText = transcriptionText,
+                llmResponseText = llmResponseText,
+                statusMessage = statusMessage,
+                exitMessage = exitMessage,
+                gestureTestMode = gestureTestMode,
+                gestureDetectedMessage = gestureDetectedMessage,
+                closeConfirmationMessage = closeConfirmationMessage,
+                showTranscriptionInResult = showTranscriptionInResult,
+                scrollDownRequest = scrollDownRequest,
+                intentAction = intent?.action,
+                dataCollectionMode = dataCollectionMode,
+                onStartRecording = { requestMicPermissionAndToggle() },
+                onStartDataCollection = { startDataCollection() },
+                onInitializeGestureDetection = { initializeGestureDetection() },
+                onInitializationComplete = { isInitializing = false }
+            )
         }
     }
     
@@ -238,7 +238,6 @@ class MainActivity : ComponentActivity() {
         sensorDataLogger?.stopLogging()
         sensorDataLogger = null
         
-        counterManager.cleanup()
         stopAndReleaseRecorderIfNeeded()
         // VAD cleanup is already handled in stopAndReleaseRecorderIfNeeded, but ensure it's done
         cleanupVAD()
@@ -269,10 +268,6 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntentAction(intent: Intent?) {
         when (intent?.action) {
-            "INCREMENT_COUNTER" -> {
-                val newCount = counterManager.incrementCount()
-                currentCount = newCount
-            }
             "TOGGLE_RECORDING" -> {
                 requestMicPermissionAndToggle()
             }
@@ -1499,57 +1494,119 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun WearApp(currentCount: Int, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String, closeConfirmationMessage: String, showTranscriptionInResult: Boolean, scrollDownRequest: Int) {
+fun WearApp(
+    isInitializing: Boolean,
+    isRecording: Boolean,
+    transcriptionText: String,
+    llmResponseText: String,
+    statusMessage: String,
+    exitMessage: String,
+    gestureTestMode: Boolean,
+    gestureDetectedMessage: String,
+    closeConfirmationMessage: String,
+    showTranscriptionInResult: Boolean,
+    scrollDownRequest: Int,
+    intentAction: String?,
+    dataCollectionMode: Boolean,
+    onStartRecording: () -> Unit,
+    onStartDataCollection: () -> Unit,
+    onInitializeGestureDetection: () -> Unit,
+    onInitializationComplete: () -> Unit
+) {
     ShepherdSignalTheme {
-        val scrollState = rememberScrollState()
-        val configuration = LocalConfiguration.current
-        val density = LocalDensity.current
-        
-        // Watch for scroll requests and perform instant scroll
-        LaunchedEffect(scrollDownRequest) {
-            if (scrollDownRequest > 0) {
-                // Calculate 2/3 screen height in pixels for scroll amount
-                val screenHeightDp = configuration.screenHeightDp.dp
-                val screenHeightPx = with(density) { screenHeightDp.toPx() }
-                val scrollAmount = (screenHeightPx * 2f / 3f).toInt()
-                val currentScroll = scrollState.value
-                val maxScroll = scrollState.maxValue
-                // Scroll to current position + scroll amount (instant scroll)
-                val newScrollPosition = (currentScroll + scrollAmount).coerceAtMost(maxScroll)
-                if (newScrollPosition >= maxScroll) {
-                    android.util.Log.w("WatchMainActivity", "Scroll reached maximum value ($maxScroll) - cannot scroll further")
-                } else {
-                    android.util.Log.d("WatchMainActivity", "Scrolling: $currentScroll -> $newScrollPosition (max: $maxScroll)")
-                }
-                scrollState.scrollTo(newScrollPosition)
-            }
-        }
-        
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colors.background)
-                .padding(16.dp) // Add padding for round screens
-        ) {
-            Column(
+        // Fast path: Show minimal UI immediately during initialization
+        if (isInitializing) {
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(scrollState),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                    .background(MaterialTheme.colors.background),
+                contentAlignment = Alignment.Center
             ) {
-                StatusDisplay(
-                    isRecording = isRecording,
-                    transcriptionText = transcriptionText,
-                    llmResponseText = llmResponseText,
-                    statusMessage = statusMessage,
-                    exitMessage = exitMessage,
-                    currentCount = currentCount,
-                    gestureTestMode = gestureTestMode,
-                    gestureDetectedMessage = gestureDetectedMessage,
-                    closeConfirmationMessage = closeConfirmationMessage,
-                    showTranscriptionInResult = showTranscriptionInResult
+                Text(
+                    text = "Preparing...",
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colors.primary,
+                    style = MaterialTheme.typography.title2
                 )
+            }
+            
+            // Start initialization immediately (no delay)
+            LaunchedEffect(Unit) {
+                // Automatically start based on mode (only if not TOGGLE_RECORDING intent)
+                if (intentAction != "TOGGLE_RECORDING") {
+                    when {
+                        dataCollectionMode -> {
+                            // Start data collection mode (rotation or flexion)
+                            onStartDataCollection()
+                        }
+                        gestureTestMode -> {
+                            // In test mode, just start sensor monitoring without recording
+                            onInitializeGestureDetection()
+                        }
+                        else -> {
+                            // Default: start recording with gesture control
+                            if (!isRecording) {
+                                onStartRecording()
+                            }
+                        }
+                    }
+                }
+                
+                // Mark initialization as complete
+                onInitializationComplete()
+            }
+        } else {
+            // Full UI: Only render when initialization is complete
+            val scrollState = rememberScrollState()
+            val configuration = LocalConfiguration.current
+            val density = LocalDensity.current
+            
+            // Watch for scroll requests and perform instant scroll
+            LaunchedEffect(scrollDownRequest) {
+                if (scrollDownRequest > 0) {
+                    // Calculate 2/3 screen height in pixels for scroll amount
+                    val screenHeightDp = configuration.screenHeightDp.dp
+                    val screenHeightPx = with(density) { screenHeightDp.toPx() }
+                    val scrollAmount = (screenHeightPx * 2f / 3f).toInt()
+                    val currentScroll = scrollState.value
+                    val maxScroll = scrollState.maxValue
+                    // Scroll to current position + scroll amount (instant scroll)
+                    val newScrollPosition = (currentScroll + scrollAmount).coerceAtMost(maxScroll)
+                    if (newScrollPosition >= maxScroll) {
+                        android.util.Log.w("WatchMainActivity", "Scroll reached maximum value ($maxScroll) - cannot scroll further")
+                    } else {
+                        android.util.Log.d("WatchMainActivity", "Scrolling: $currentScroll -> $newScrollPosition (max: $maxScroll)")
+                    }
+                    scrollState.scrollTo(newScrollPosition)
+                }
+            }
+            
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colors.background)
+                    .padding(16.dp) // Add padding for round screens
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    StatusDisplay(
+                        isInitializing = isInitializing,
+                        isRecording = isRecording,
+                        transcriptionText = transcriptionText,
+                        llmResponseText = llmResponseText,
+                        statusMessage = statusMessage,
+                        exitMessage = exitMessage,
+                        gestureTestMode = gestureTestMode,
+                        gestureDetectedMessage = gestureDetectedMessage,
+                        closeConfirmationMessage = closeConfirmationMessage,
+                        showTranscriptionInResult = showTranscriptionInResult
+                    )
+                }
             }
         }
     }
@@ -1585,11 +1642,22 @@ fun BlinkingMicIcon() {
 }
 
 @Composable
-fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, currentCount: Int, gestureTestMode: Boolean, gestureDetectedMessage: String, closeConfirmationMessage: String, showTranscriptionInResult: Boolean) {
+fun StatusDisplay(isInitializing: Boolean, isRecording: Boolean, transcriptionText: String, llmResponseText: String, statusMessage: String, exitMessage: String, gestureTestMode: Boolean, gestureDetectedMessage: String, closeConfirmationMessage: String, showTranscriptionInResult: Boolean) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Show "Preparing..." message during initialization
+        if (isInitializing) {
+            Text(
+                text = "Preparing...",
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colors.primary,
+                style = MaterialTheme.typography.title2
+            )
+            return@Column
+        }
+        
         // Gesture test mode UI (shows detection status instead of recording)
         if (gestureTestMode) {
             if (gestureDetectedMessage.isNotBlank()) {
@@ -1668,5 +1736,23 @@ fun StatusDisplay(isRecording: Boolean, transcriptionText: String, llmResponseTe
 @Preview(device = WearDevices.SMALL_ROUND, showSystemUi = true)
 @Composable
 fun DefaultPreview() {
-    WearApp(currentCount = 42, isRecording = false, transcriptionText = "Hello world", llmResponseText = "Summary: Hello", statusMessage = "Done", exitMessage = "", gestureTestMode = false, gestureDetectedMessage = "", closeConfirmationMessage = "", showTranscriptionInResult = false, scrollDownRequest = 0)
+    WearApp(
+        isInitializing = false,
+        isRecording = false,
+        transcriptionText = "Hello world",
+        llmResponseText = "Summary: Hello",
+        statusMessage = "Done",
+        exitMessage = "",
+        gestureTestMode = false,
+        gestureDetectedMessage = "",
+        closeConfirmationMessage = "",
+        showTranscriptionInResult = false,
+        scrollDownRequest = 0,
+        intentAction = null,
+        dataCollectionMode = false,
+        onStartRecording = {},
+        onStartDataCollection = {},
+        onInitializeGestureDetection = {},
+        onInitializationComplete = {}
+    )
 }
