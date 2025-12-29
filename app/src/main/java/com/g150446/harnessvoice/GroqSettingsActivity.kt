@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal
+package com.g150446.harnessvoice
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -15,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
-import com.g150446.shepherdsignal.ui.theme.ShepherdSignalTheme
+import com.g150446.harnessvoice.ui.theme.HarnessVoiceTheme
 import com.google.android.gms.wearable.DataClient
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
@@ -32,7 +32,7 @@ class GroqSettingsActivity : ComponentActivity() {
         val existing = prefs.getString("groq_api_key", "") ?: ""
 
         setContent {
-            ShepherdSignalTheme {
+            HarnessVoiceTheme {
                 Scaffold { padding ->
                     var apiKey by remember { mutableStateOf(existing) }
                     var status by remember { mutableStateOf("") }

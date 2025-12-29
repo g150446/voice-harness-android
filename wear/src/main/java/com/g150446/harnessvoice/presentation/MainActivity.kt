@@ -3,7 +3,7 @@
  * most up to date changes to the libraries and their usages.
  */
 
-package com.g150446.shepherdsignal.presentation
+package com.g150446.harnessvoice.presentation
 
 import android.content.Intent
 import android.content.Context
@@ -56,13 +56,13 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.graphicsLayer
-import com.g150446.shepherdsignal.WearGroqPrefs
-import com.g150446.shepherdsignal.SensorDataLogger
-import com.g150446.shepherdsignal.SensorMode
-import com.g150446.shepherdsignal.GestureDetector
-import com.g150446.shepherdsignal.GestureType
-import com.g150446.shepherdsignal.GestureDetectionListener
-import com.g150446.shepherdsignal.presentation.theme.ShepherdSignalTheme
+import com.g150446.harnessvoice.WearGroqPrefs
+import com.g150446.harnessvoice.SensorDataLogger
+import com.g150446.harnessvoice.SensorMode
+import com.g150446.harnessvoice.GestureDetector
+import com.g150446.harnessvoice.GestureType
+import com.g150446.harnessvoice.GestureDetectionListener
+import com.g150446.harnessvoice.presentation.theme.HarnessVoiceTheme
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -210,14 +210,14 @@ class MainActivity : ComponentActivity() {
             try {
                 wakeLock = powerManager.newWakeLock(
                     PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                    "ShepherdSignal::RecordingWakeLock"
+                    "HarnessVoice::RecordingWakeLock"
                 )
                 Log.v(TAG, "FULL_WAKE_LOCK initialized (most aggressive)") // Suppressed for data collection
             } catch (e: Exception) {
                 // Fallback to SCREEN_BRIGHT_WAKE_LOCK if FULL_WAKE_LOCK not available
                 wakeLock = powerManager.newWakeLock(
                     PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                    "ShepherdSignal::RecordingWakeLock"
+                    "HarnessVoice::RecordingWakeLock"
                 )
                 Log.v(TAG, "SCREEN_BRIGHT_WAKE_LOCK initialized (fallback)") // Suppressed for data collection
             }
@@ -1513,7 +1513,7 @@ fun WearApp(
     onInitializeGestureDetection: () -> Unit,
     onInitializationComplete: () -> Unit
 ) {
-    ShepherdSignalTheme {
+    HarnessVoiceTheme {
         // Fast path: Show minimal UI immediately during initialization
         if (isInitializing) {
             Box(

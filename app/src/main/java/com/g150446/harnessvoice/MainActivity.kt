@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal
+package com.g150446.harnessvoice
 
 import android.content.Intent
 import android.net.Uri
@@ -37,7 +37,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.util.Log
-import com.g150446.shepherdsignal.ui.theme.ShepherdSignalTheme
+import com.g150446.harnessvoice.ui.theme.HarnessVoiceTheme
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.NodeClient
 import com.google.android.gms.wearable.Wearable
@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
         nodeClient = Wearable.getNodeClient(this)
 
         setContent {
-            ShepherdSignalTheme {
+            HarnessVoiceTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     LaunchWearAppScreen(
                         modifier = Modifier.padding(innerPadding),
@@ -98,7 +98,7 @@ fun LaunchWearAppScreen(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "ShepherdSignal Phone App",
+                text = "Harness Voice Phone App",
                 fontSize = 20.sp,
                 modifier = Modifier.padding(bottom = 8.dp)
             )

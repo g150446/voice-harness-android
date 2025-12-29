@@ -1,10 +1,10 @@
-package com.g150446.shepherdsignal.presentation.theme
+package com.g150446.harnessvoice.presentation.theme
 
 import androidx.compose.runtime.Composable
 import androidx.wear.compose.material.MaterialTheme
 
 @Composable
-fun ShepherdSignalTheme(
+fun HarnessVoiceTheme(
     content: @Composable () -> Unit
 ) {
     /**

@@ -1,14 +1,14 @@
-# Shepherd Signal
+# Harness Voice
 
 An Android application for Wear OS that enables wrist gesture detection to control voice recording. The app uses sensor-based gesture recognition to toggle recording, providing hands-free control of voice transcription features.
 
 ## Migration from RingXwatch
 
-This project originated as **RingXwatch**, which was designed to control an AI voice assistant using ring tap gestures. The app has been migrated and rebranded to **Shepherd Signal** with a new focus on wrist gesture detection.
+This project originated as **RingXwatch**, which was designed to control an AI voice assistant using ring tap gestures. The app has been migrated and rebranded to **Harness Voice** with a new focus on wrist gesture detection.
 
 **Key Changes:**
-- **Project Name**: RingXwatch → Shepherd Signal
-- **Package Name**: `com.g150446.ringxwatch` → `com.g150446.shepherdsignal`
+- **Project Name**: RingXwatch → Harness Voice
+- **Package Name**: `com.g150446.ringxwatch` → `com.g150446.harnessvoice`
 - **Primary Function**: Ring gesture control → Wrist gesture detection
 - **Target Gestures**: Ring tap gestures → Wrist flexion and external rotation
 
@@ -163,7 +163,7 @@ This project originated as **RingXwatch**, which was designed to control an AI v
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/g150446/RingXwatch.git
+   git clone https://github.com/g150446/harness-voice.git
    ```
 
 2. Open in Android Studio
@@ -247,7 +247,7 @@ implementation(platform("androidx.compose:compose-bom:2024.04.01"))
 - **Result display protection**: Keeps screen on for 15 seconds after transcription and LLM response are shown
 
 ### v3.0 - Wrist Gesture Detection
-- **Project Migration**: Rebranded from RingXwatch to Shepherd Signal
+- **Project Migration**: Rebranded from RingXwatch to Harness Voice
 - **Threshold-Based Gesture Detection**: Implemented wrist flexion detection using threshold algorithm
 - **Gesture Detection Algorithm**: 
   - Wrist flexion: gyro_x < -1.2 rad/s with gyro_z near baseline (relaxed thresholds for better detection rate)

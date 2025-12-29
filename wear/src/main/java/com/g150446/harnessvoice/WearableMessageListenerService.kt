@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal
+package com.g150446.harnessvoice
 
 import android.app.ActivityManager
 import android.content.Context
@@ -7,7 +7,7 @@ import android.hardware.display.DisplayManager
 import android.os.PowerManager
 import android.util.Log
 import android.view.Display
-import com.g150446.shepherdsignal.presentation.MainActivity
+import com.g150446.harnessvoice.presentation.MainActivity
 import com.google.android.gms.wearable.DataEvent
 import com.google.android.gms.wearable.DataEventBuffer
 import com.google.android.gms.wearable.DataMapItem
@@ -24,25 +24,28 @@ class WearableMessageListenerService : WearableListenerService() {
 
         Log.d(TAG, "Message received: ${messageEvent.path} from ${messageEvent.sourceNodeId}")
 
-        if (messageEvent.path == "/ring_tap") {
-            Log.d(TAG, "Ring tap message received - processing...")
-            // Only proceed if the screen is ON (either interactive or ambient)
-            if (!isScreenOnOrAmbient()) {
-                Log.d(TAG, "Screen is OFF - ignoring ring tap event")
-                return
+        when (messageEvent.path) {
+            "/ring_tap", "/launch_app" -> {
+                Log.d(TAG, "Launch message received (${messageEvent.path}) - processing...")
+                // Only proceed if the screen is ON (either interactive or ambient)
+                if (!isScreenOnOrAmbient()) {
+                    Log.d(TAG, "Screen is OFF - ignoring launch event")
+                    return
+                }
+
+                // Check if the app is already running
+                if (isAppRunning()) {
+                    Log.d(TAG, "App is already running - toggling recording")
+                    sendToggleRecordingIntent()
+                } else {
+                    Log.d(TAG, "App is not running - launching main activity")
+                    // Launch the app normally
+                    launchMainActivity()
+                }
             }
-            
-            // Check if the app is already running
-            if (isAppRunning()) {
-                Log.d(TAG, "App is already running - toggling recording")
-                sendToggleRecordingIntent()
-            } else {
-                Log.d(TAG, "App is not running - launching main activity")
-                // Launch the app normally
-                launchMainActivity()
+            else -> {
+                Log.d(TAG, "Unknown message path: ${messageEvent.path}")
             }
-        } else {
-            Log.d(TAG, "Unknown message path: ${messageEvent.path}")
         }
     }
 

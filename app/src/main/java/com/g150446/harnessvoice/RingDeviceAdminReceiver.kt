@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal
+package com.g150446.harnessvoice
 
 import android.app.admin.DeviceAdminReceiver
 import android.content.Context

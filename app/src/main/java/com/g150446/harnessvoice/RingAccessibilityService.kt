@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal
+package com.g150446.harnessvoice
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
@@ -218,12 +218,12 @@ class RingAccessibilityService : AccessibilityService() {
             // Create wake locks for reliable operation
             wakeLock = powerManager?.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
-                "ShepherdSignal:AccessibilityWakeLock"
+                "HarnessVoice:AccessibilityWakeLock"
             )
             
             screenWakeLock = powerManager?.newWakeLock(
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                "ShepherdSignal:AccessibilityScreenWakeLock"
+                "HarnessVoice:AccessibilityScreenWakeLock"
             )
             
             Log.d(TAG, "Wake locks created")

@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal.ui.theme
+package com.g150446.harnessvoice.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

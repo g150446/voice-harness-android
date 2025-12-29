@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal
+package com.g150446.harnessvoice
 
 import android.content.Context
 import android.media.AudioManager
@@ -58,7 +58,7 @@ class RingWorker(
         try {
             wakeLock = powerManager?.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
-                "ShepherdSignal:WorkManagerWakeLock"
+                "HarnessVoice:WorkManagerWakeLock"
             )
             wakeLock?.acquire(60000) // 1 minute
             Log.d(TAG, "Wake lock acquired")

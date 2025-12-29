@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal.tile
+package com.g150446.harnessvoice.tile
 
 import android.content.Context
 import androidx.wear.protolayout.ColorBuilders.argb

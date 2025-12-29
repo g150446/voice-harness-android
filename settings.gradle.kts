@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ShepherdSignal"
+rootProject.name = "HarnessVoice"
 include(":app")
 include(":wear")

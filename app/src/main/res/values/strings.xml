@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">Shepherd Signal</string>
-    <string name="accessibility_service_description">Shepherd Signal Accessibility Service provides accessibility features for users with disabilities while enabling gesture detection. The service monitors system events and provides accessibility feedback, allowing the app to launch your paired Wear OS watch when you perform gestures, even when the phone is in sleep mode. This service runs with system-level privileges to ensure reliable operation and accessibility support.</string>
+    <string name="app_name">Harness Voice</string>
+    <string name="accessibility_service_description">Harness Voice Accessibility Service provides accessibility features for users with disabilities while enabling gesture detection. The service monitors system events and provides accessibility feedback, allowing the app to launch your paired Wear OS watch when you perform gestures, even when the phone is in sleep mode. This service runs with system-level privileges to ensure reliable operation and accessibility support.</string>
 </resources>

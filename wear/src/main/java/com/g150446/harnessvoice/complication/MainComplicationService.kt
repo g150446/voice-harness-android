@@ -1,4 +1,4 @@
-package com.g150446.shepherdsignal.complication
+package com.g150446.harnessvoice.complication
 
 import androidx.wear.watchface.complications.data.ComplicationData
 import androidx.wear.watchface.complications.data.ComplicationType

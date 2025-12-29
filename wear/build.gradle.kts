@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.g150446.shepherdsignal"
+    namespace = "com.g150446.harnessvoice"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.g150446.shepherdsignal"
+        applicationId = "com.g150446.harnessvoice"
         minSdk = 30
         targetSdk = 36
         versionCode = 1
