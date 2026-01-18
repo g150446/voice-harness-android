@@ -7,7 +7,8 @@ import kotlin.math.abs
 
 enum class GestureType {
     FLEXION,
-    ROTATION
+    ROTATION,
+    PALM_TAP
 }
 
 interface GestureDetectionListener {
@@ -22,7 +23,8 @@ enum class DetectionState {
 }
 
 class GestureDetector(
-    private val listener: GestureDetectionListener?
+    private val listener: GestureDetectionListener?,
+    private val gestureMode: String = "flexion"
 ) {
     private val TAG = "GestureDetector"
     
@@ -40,6 +42,7 @@ class GestureDetector(
     private var peakTime: Long = 0
     private var peakGyroX: Float = 0f
     private var peakAccelZ: Float = 0f
+    private var peakAccelY: Float = 0f // For PALM_TAP gesture
     private var detectionStartTime: Long = 0
     
     // Pre-confirmation rotation check tracking
@@ -66,6 +69,13 @@ class GestureDetector(
         private const val FLEXION_MIN_DURATION_MS = 120L // 0.12s minimum gesture - further relaxed from 150ms for very fast weak gestures
         private const val FLEXION_MAX_DURATION_MS = 3000L // 3s maximum gesture
         private const val FLEXION_GYRO_Z_BASELINE_TOLERANCE = 0.8f // rad/s (gyro_z should be near baseline for flexion) - further relaxed from 0.7
+        
+        // PALM_TAP Thresholds (4-finger palm tap gesture)
+        private const val TAP_ACCEL_THRESHOLD = 8.0f // m/s² (accel_y or accel_z peak)
+        private const val TAP_GYRO_MAX_THRESHOLD = 0.5f // rad/s (all axes, to ensure no wrist movement)
+        private const val TAP_MIN_DURATION_MS = 50L // 0.05s minimum gesture
+        private const val TAP_MAX_DURATION_MS = 500L // 0.5s maximum gesture
+        private const val TAP_COOLDOWN_MS = 500L
         
         // Baseline Calibration
         private const val BASELINE_DURATION_MS = 800L // 0.8 seconds - optimized from analysis
@@ -286,6 +296,17 @@ class GestureDetector(
     }
     
     private fun detectGesture(sample: SensorSample, timestamp: Long) {
+        // Branch based on gesture mode
+        if (gestureMode == "tap") {
+            detectTapGesture(sample, timestamp)
+            return
+        }
+
+        // Flexion mode (default behavior)
+        detectFlexionGesture(sample, timestamp)
+    }
+
+    private fun detectFlexionGesture(sample: SensorSample, timestamp: Long) {
         // Check normal cooldown first (allow state transitions)
         if (state == DetectionState.COOLDOWN) {
             val cooldownElapsed = timestamp - lastDetectionTime
@@ -295,14 +316,14 @@ class GestureDetector(
                 return
             }
         }
-        
+
         // Check rotation cooldown (extended cooldown after rotation detection)
         // This prevents false flexion detection from residual rotation motion
         if (timestamp < rotationCooldownUntil) {
             // Still in rotation cooldown - ignore all detections to prevent false flexion
             return
         }
-        
+
         when (state) {
             DetectionState.IDLE -> {
                 // Calculate deviations from baseline
@@ -536,7 +557,105 @@ class GestureDetector(
         rotationCooldownUntil = System.currentTimeMillis() + ROTATION_COOLDOWN_MS
         Log.d(TAG, "Rotation cooldown extended: ignoring detections for ${ROTATION_COOLDOWN_MS}ms")
     }
-    
+
+    /**
+     * PALM_TAP gesture detection logic.
+     * Detects 4-finger palm tap using accelerometer peaks + gyro stability check.
+     */
+    private fun detectTapGesture(sample: SensorSample, timestamp: Long) {
+        when (state) {
+            DetectionState.IDLE -> {
+                // Calculate deviations from baseline
+                val accelYDeviation = abs(sample.accelY - baselineMean.accelY)
+                val accelZDeviation = abs(sample.accelZ - baselineMean.accelZ)
+                val gyroXDeviation = abs(sample.gyroX - baselineMean.gyroX)
+                val gyroYDeviation = abs(sample.gyroY - baselineMean.gyroY)
+                val gyroZDeviation = abs(sample.gyroZ - baselineMean.gyroZ)
+
+                // Check for palm tap: accel peak + gyro stability
+                val accelPeakDetected = accelYDeviation > TAP_ACCEL_THRESHOLD || accelZDeviation > TAP_ACCEL_THRESHOLD
+                val gyroStable = gyroXDeviation < TAP_GYRO_MAX_THRESHOLD &&
+                                 gyroYDeviation < TAP_GYRO_MAX_THRESHOLD &&
+                                 gyroZDeviation < TAP_GYRO_MAX_THRESHOLD
+
+                if (accelPeakDetected && gyroStable) {
+                    Log.d(TAG, "Palm tap threshold crossed: accelYDev=${String.format("%.3f", accelYDeviation)}, accelZDev=${String.format("%.3f", accelZDeviation)}, transitioning to DETECTING")
+                    startDetectingTap(sample, timestamp)
+                }
+            }
+
+            DetectionState.DETECTING -> {
+                val elapsed = timestamp - detectionStartTime
+
+                // Update peak values
+                val accelYDeviation = abs(sample.accelY - baselineMean.accelY)
+                val accelZDeviation = abs(sample.accelZ - baselineMean.accelZ)
+                if (accelYDeviation > peakAccelY) peakAccelY = accelYDeviation
+                if (accelZDeviation > peakAccelZ) peakAccelZ = accelZDeviation
+
+                // Check for return to baseline
+                val baselineBound = BASELINE_STD_MULTIPLIER
+                val accelYInBounds = abs(sample.accelY - baselineMean.accelY) <= baselineStd.accelY * baselineBound
+                val accelZInBounds = abs(sample.accelZ - baselineMean.accelZ) <= baselineStd.accelZ * baselineBound
+                val gyroStable = abs(sample.gyroX - baselineMean.gyroX) < TAP_GYRO_MAX_THRESHOLD &&
+                                 abs(sample.gyroY - baselineMean.gyroY) < TAP_GYRO_MAX_THRESHOLD &&
+                                 abs(sample.gyroZ - baselineMean.gyroZ) < TAP_GYRO_MAX_THRESHOLD
+
+                // Confirm if returned to baseline and duration valid
+                if ((accelYInBounds || accelZInBounds) && gyroStable &&
+                    elapsed >= TAP_MIN_DURATION_MS && elapsed <= TAP_MAX_DURATION_MS) {
+                    Log.d(TAG, "Palm tap confirmed: returned to baseline, duration=${elapsed}ms, transitioning to CONFIRMED")
+                    state = DetectionState.CONFIRMED
+                    confirmTapGesture(timestamp)
+                } else if (elapsed > TAP_MAX_DURATION_MS) {
+                    // Too long, reset
+                    Log.w(TAG, "Palm tap too long (${elapsed}ms), resetting to IDLE")
+                    state = DetectionState.IDLE
+                }
+            }
+
+            DetectionState.CONFIRMED -> {
+                // Should not reach here, but handle gracefully
+                state = DetectionState.IDLE
+            }
+
+            DetectionState.COOLDOWN -> {
+                val cooldownElapsed = timestamp - lastDetectionTime
+                if (cooldownElapsed >= TAP_COOLDOWN_MS) {
+                    state = DetectionState.IDLE
+                }
+            }
+        }
+    }
+
+    private fun startDetectingTap(sample: SensorSample, timestamp: Long) {
+        state = DetectionState.DETECTING
+        detectionStartTime = timestamp
+        peakTime = timestamp
+
+        // Initialize peak values
+        peakAccelY = abs(sample.accelY - baselineMean.accelY)
+        peakAccelZ = abs(sample.accelZ - baselineMean.accelZ)
+    }
+
+    private fun confirmTapGesture(timestamp: Long) {
+        val duration = timestamp - detectionStartTime
+
+        Log.d(TAG, "*** PALM_TAP DETECTED ***")
+        Log.d(TAG, "  Peak: accel_y=${String.format("%.4f", peakAccelY)}, accel_z=${String.format("%.4f", peakAccelZ)}, duration=${duration}ms")
+
+        lastDetectionTime = timestamp
+        state = DetectionState.COOLDOWN
+
+        // Notify listener
+        if (listener != null) {
+            Log.d(TAG, "Notifying listener of palm tap gesture detection")
+            listener?.onGestureDetected(GestureType.PALM_TAP)
+        } else {
+            Log.e(TAG, "ERROR: Listener is null! Gesture will not be processed.")
+        }
+    }
+
     fun stop() {
         isCalibrating = false
         state = DetectionState.IDLE

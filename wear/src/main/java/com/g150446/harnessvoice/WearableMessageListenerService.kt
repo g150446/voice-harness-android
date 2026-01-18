@@ -62,6 +62,14 @@ class WearableMessageListenerService : WearableListenerService() {
                             WearGroqPrefs.saveApiKey(this, apiKey)
                             Log.d(TAG, "Saved Groq API key from phone")
                         }
+                        val gestureMode = dataMap.getString("gesture_mode")
+                        if (!gestureMode.isNullOrEmpty()) {
+                            WearGroqPrefs.saveGestureMode(this, gestureMode)
+                            Log.d(TAG, "Saved gesture mode from phone: $gestureMode")
+                            // Send broadcast to notify MainActivity to reload gesture detection
+                            val intent = Intent("com.g150446.harnessvoice.ACTION_SETTINGS_CHANGED")
+                            sendBroadcast(intent)
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to parse settings", e)
                     }

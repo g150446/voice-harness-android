@@ -109,14 +109,14 @@ fun LaunchWearAppScreen(
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
-                // Groq Settings button
+                // Settings button
                 OutlinedButton(
                     onClick = {
                         context.startActivity(Intent(context, GroqSettingsActivity::class.java))
                     },
                     modifier = Modifier.padding(bottom = 16.dp)
                 ) {
-                    Text("🔑 Groq API Settings")
+                    Text("⚙️ Settings")
                 }
 
             if (isLaunching) {

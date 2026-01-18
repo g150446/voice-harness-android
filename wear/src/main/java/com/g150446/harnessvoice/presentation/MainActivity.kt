@@ -6,6 +6,8 @@
 package com.g150446.harnessvoice.presentation
 
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import android.content.Context
 import android.Manifest
 import android.content.pm.PackageManager
@@ -114,11 +116,12 @@ class MainActivity : ComponentActivity() {
     private var scrollDownRequest by mutableStateOf(0) // Counter to trigger scroll down action
     private var resultDisplayTimeoutJob: Job? = null // Job to track result display timeout (can be cancelled/reset)
     private var errorMessageClearJob: Job? = null // Job to clear error message after timeout
-    
+    private var isActivityReady = false // Track if activity is fully initialized
+
     companion object {
         private const val TAG = "WatchMainActivity"
         private const val RESULT_DISPLAY_TIMEOUT_MS = 15_000L // 15 seconds
-        
+
         // VAD constants
         private const val VAD_SILENCE_TIMEOUT_MS = 3_600_000L // Disabled for data collection - 1 hour timeout
         private const val VAD_CHECK_INTERVAL_MS = 100L // Check audio every 100ms
@@ -126,6 +129,34 @@ class MainActivity : ComponentActivity() {
         private const val VAD_SAMPLE_RATE = 16000 // Match MediaRecorder sample rate
         private const val VAD_BUFFER_SIZE_MULTIPLIER = 2 // Buffer size multiplier
         private const val VAD_EXIT_MESSAGE_DISPLAY_MS = 5_000L // Show exit message for 5 seconds before closing
+    }
+
+    private val settingsChangedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            try {
+                // Only process if activity is ready and not recording
+                if (!isActivityReady) {
+                    Log.d(TAG, "Activity not ready, ignoring settings change")
+                    return
+                }
+
+                Log.d(TAG, "Settings changed - reloading gesture detection")
+                // Reload gesture detection if currently recording or showing results
+                if (isRecording || llmResponseText.isNotBlank()) {
+                    // Stop sensor logging
+                    sensorDataLogger?.stopLogging()
+
+                    // Reinitialize gesture detection with new mode
+                    if (isRecording) {
+                        initializeGestureDetectionForRecording()
+                    } else {
+                        initializeGestureDetectionForResultDisplay()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in settings changed receiver", e)
+            }
+        }
     }
 
     private val audioPermissionLauncher = registerForActivityResult(
@@ -200,8 +231,11 @@ class MainActivity : ComponentActivity() {
                 onInitializationComplete = { isInitializing = false }
             )
         }
+
+        // Mark activity as ready
+        isActivityReady = true
     }
-    
+
     private fun initWakeLock() {
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -234,6 +268,13 @@ class MainActivity : ComponentActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
+        // Unregister broadcast receiver (mark as not ready first)
+        isActivityReady = false
+        try {
+            unregisterReceiver(settingsChangedReceiver)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to unregister settings changed receiver", e)
+        }
         // Stop sensor data logger
         sensorDataLogger?.stopLogging()
         sensorDataLogger = null
@@ -250,6 +291,12 @@ class MainActivity : ComponentActivity() {
     
     override fun onPause() {
         super.onPause()
+        // Unregister broadcast receiver when paused
+        try {
+            unregisterReceiver(settingsChangedReceiver)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to unregister settings changed receiver in onPause", e)
+        }
         // Only allow screen off if we're not recording and not showing results
         if (!isRecording && llmResponseText.isBlank() && transcriptionText.isBlank()) {
             allowScreenOff()
@@ -258,6 +305,12 @@ class MainActivity : ComponentActivity() {
     
     override fun onResume() {
         super.onResume()
+        // Register broadcast receiver for settings changes (only when activity is active)
+        try {
+            registerReceiver(settingsChangedReceiver, IntentFilter("com.g150446.harnessvoice.ACTION_SETTINGS_CHANGED"))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register settings changed receiver in onResume", e)
+        }
         // OPTION A: Always disable ambient mode when activity resumes
         // If recording or showing results, ensure screen stays fully on
         disableAmbientMode()
@@ -293,14 +346,24 @@ class MainActivity : ComponentActivity() {
         val immediateMessage = when (gestureType) {
             GestureType.FLEXION -> "flexion"
             GestureType.ROTATION -> "rotation"
+            GestureType.PALM_TAP -> "tap"
         }
         gestureDetectedMessage = immediateMessage
         Log.d(TAG, "*** Immediate gesture display: $immediateMessage ***")
-        
+
+        // For PALM_TAP, just show message (no analysis needed)
+        if (gestureType == GestureType.PALM_TAP) {
+            gestureTestJob = wakeLockScope.launch {
+                delay(1500)
+                gestureDetectedMessage = ""
+            }
+            return
+        }
+
         // Start comprehensive gesture analysis for 0.5 seconds after detection
         // This will refine the gesture type and update the message
         startGestureAnalysis()
-        
+
         // After 1.5 seconds total (0.5s analysis + 1s display), return to "waiting gesture" message
         gestureTestJob = wakeLockScope.launch {
             delay(1500)
@@ -715,22 +778,26 @@ class MainActivity : ComponentActivity() {
             keepScreenOnDirect() // Multiple methods to keep screen on
             // Also acquire wake lock as backup
             acquireWakeLock()
-            
+
+            // Read gesture mode setting (default to "flexion" if not set)
+            val gestureMode = WearGroqPrefs.getGestureMode(this) ?: "flexion"
+            Log.d(TAG, "Gesture mode (test mode): $gestureMode")
+
             // Initialize sensor monitoring in test mode
             sensorDataLogger = SensorDataLogger(this, SensorMode.GESTURE_TEST_MODE)
-            
-            // Initialize gesture detector for test mode
+
+            // Initialize gesture detector for test mode with gesture mode
             gestureDetector = GestureDetector(object : GestureDetectionListener {
                 override fun onGestureDetected(type: GestureType) {
                     // Test mode: show detection message with gesture type
                     Log.d(TAG, "*** ${type.name} DETECTED (TEST MODE) ***")
                     handleGestureDetectedInTestMode(type)
                 }
-            })
-            
+            }, gestureMode)
+
             // Start sensor monitoring first
             sensorDataLogger?.startLogging()
-            
+
             // Connect gesture detector to sensor logger and start calibration
             sensorDataLogger?.setGestureDetector(gestureDetector)
             sensorDataLogger?.notifyGestureDetectorReady()
@@ -742,28 +809,41 @@ class MainActivity : ComponentActivity() {
     
     private fun initializeGestureDetectionForRecording() {
         try {
+            // Read gesture mode setting (default to "flexion" if not set)
+            val gestureMode = WearGroqPrefs.getGestureMode(this) ?: "flexion"
+            Log.d(TAG, "Gesture mode: $gestureMode")
+
             // Initialize sensor monitoring in control mode
             sensorDataLogger = SensorDataLogger(this, SensorMode.GESTURE_CONTROL_MODE)
-            
-            // Initialize gesture detector for control mode
+
+            // Initialize gesture detector for control mode with gesture mode
             gestureDetector = GestureDetector(object : GestureDetectionListener {
                 override fun onGestureDetected(type: GestureType) {
-                    // Control mode: analyze gesture to distinguish type
+                    // Control mode: handle based on gesture type
                     // If close confirmation is showing, ignore all gestures (no cancellation)
                     if (closeConfirmationMessage.isNotBlank()) {
                         // During close confirmation: ignore all gestures - app will close automatically
                         Log.d(TAG, "Gesture detected during close confirmation - ignoring (no cancellation)")
                         return
-                    } else {
-                        // Normal state: analyze gesture to determine type
-                        startGestureAnalysisForControl()
+                    }
+
+                    // Handle gesture based on type
+                    when (type) {
+                        GestureType.PALM_TAP -> {
+                            Log.d(TAG, "PALM_TAP DETECTED - TOGGLING RECORDING")
+                            toggleRecording()
+                        }
+                        GestureType.FLEXION, GestureType.ROTATION -> {
+                            // Flexion/Rotation mode: analyze gesture to distinguish type
+                            startGestureAnalysisForControl()
+                        }
                     }
                 }
-            })
-            
+            }, gestureMode)
+
             // Start sensor monitoring first
             sensorDataLogger?.startLogging()
-            
+
             // Connect gesture detector to sensor logger and start calibration
             sensorDataLogger?.setGestureDetector(gestureDetector)
             sensorDataLogger?.notifyGestureDetectorReady()
