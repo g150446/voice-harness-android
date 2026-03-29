@@ -363,11 +363,17 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             ((hi shl 8) or lo).toShort() / 32768f
         }
 
-        // Normalize loudness for VAD: nRF52840 PDM mic records at very low gain (~0.006 peak).
-        // Silero was trained on normally-gained speech. Scale so peak ≥ 0.1 before VAD.
+        // Remove DC offset: nRF52840 PDM mic output often has a large DC bias
+        // (e.g. peak=0.093 but nearly all of it is a constant offset, leaving
+        // speech AC components at only ~0.003). Without DC removal, normalization
+        // amplifies the bias rather than the speech signal.
+        val mean = allSamples.average().toFloat()
+        for (i in allSamples.indices) allSamples[i] -= mean
+
+        // Normalize peak to 0.5 so Silero sees speech at a normal level
         val peakAmp = allSamples.maxOfOrNull { if (it < 0) -it else it } ?: 0f
-        val gain = if (peakAmp in 0.001f..0.1f) 0.1f / peakAmp else 1f
-        Log.d(TAG, "Silero VAD: peakAmp=${"%.4f".format(peakAmp)}, gain=${"%.1f".format(gain)}")
+        val gain = if (peakAmp > 0.001f) 0.5f / peakAmp else 1f
+        Log.d(TAG, "Silero VAD: dcOffset=${"%.4f".format(mean)}, peakAfterDC=${"%.4f".format(peakAmp)}, gain=${"%.1f".format(gain)}")
 
         vad.reset()
         var speechFrames = 0
