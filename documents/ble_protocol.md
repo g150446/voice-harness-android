@@ -1,6 +1,6 @@
 # BLE プロトコル仕様
 
-nRF52840 (`voice-bridge-ble/nrf52-handy` ファームウェア) と Android アプリ間の BLE 通信仕様。
+nRF52840 (`harness-node/nordic-main` ファームウェア) と Android アプリ間の BLE 通信仕様。
 
 ## GATT サービス構成
 
