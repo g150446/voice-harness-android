@@ -19,6 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "HarnessVoice"
+rootProject.name = "VoiceHarnessAndroid"
 include(":app")
-include(":wear")
