@@ -397,7 +397,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         }
 
         val frameRatio = if (totalFrames > 0) speechFrames.toDouble() / totalFrames else 0.0
-        Log.d(TAG, "VAD: $speechFrames/$totalFrames speech frames (%.1f%%, threshold=${(SPEECH_FRAME_MIN_RATIO * 100).toInt()}%)".format(frameRatio * 100))
+        Log.d(TAG, "VAD: $speechFrames/$totalFrames speech frames (${"%.1f".format(frameRatio * 100)}%, threshold=${(SPEECH_FRAME_MIN_RATIO * 100).toInt()}%)")
         return frameRatio >= SPEECH_FRAME_MIN_RATIO
     }
 
