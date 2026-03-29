@@ -3,10 +3,13 @@ package com.g150446.harnessvoice
 import android.app.Application
 import android.media.MediaRecorder
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -22,11 +25,16 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import kotlin.math.sqrt
 
 private const val TAG = "VoiceViewModel"
 private const val PCM_SAMPLE_RATE = 16000
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
+
+// VAD thresholds
+private const val VAD_AMPLITUDE_THRESHOLD = 500   // MediaRecorder.getMaxAmplitude() range 0-32767
+private const val VAD_PCM_RMS_THRESHOLD = 300.0   // 16-bit signed PCM RMS
 
 enum class VoiceState {
     READY,
@@ -51,17 +59,17 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private val _errorMessage = MutableStateFlow("")
     val errorMessage: StateFlow<String> = _errorMessage
 
-    // BLE state mirrored from BleConnectionService
     private val _bleConnectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
     val bleConnectionState: StateFlow<BleConnectionState> = _bleConnectionState
 
-    // true when recording is driven by BLE (nRF52840), false when using phone mic
     private val _bleMode = MutableStateFlow(false)
     val bleMode: StateFlow<Boolean> = _bleMode
 
     // Phone mic recording
     private var mediaRecorder: MediaRecorder? = null
     private var audioFile: File? = null
+    private var maxAmplitudeSeen = 0
+    private var amplitudePollingJob: Job? = null
 
     // BLE PCM accumulation
     private val pcmBuffer = ByteArrayOutputStream()
@@ -74,14 +82,12 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     init {
         tts = TextToSpeech(application, this)
 
-        // Mirror BLE connection state (flows live in companion object — always non-null)
         viewModelScope.launch {
             BleConnectionService.connectionState.collect { state ->
                 _bleConnectionState.value = state
             }
         }
 
-        // React to BLE gesture events (motion settled = gesture trigger)
         viewModelScope.launch {
             BleConnectionService.bleEvents.collect { event ->
                 if (event is BleEvent.GestureDetected) {
@@ -90,7 +96,6 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             }
         }
 
-        // Accumulate incoming PCM packets during BLE recording
         viewModelScope.launch {
             BleConnectionService.audioPackets.collect { packet ->
                 if (isCollectingPcm) {
@@ -114,9 +119,14 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
 
     private fun handleGestureEvent() {
         when (_state.value) {
+            VoiceState.SPEAKING -> {
+                // Interrupt TTS and start a new dialogue immediately
+                stopSpeaking()
+                startBleRecording()
+            }
             VoiceState.READY, VoiceState.ERROR -> startBleRecording()
             VoiceState.RECORDING -> if (_bleMode.value) stopBleRecordingAndProcess()
-            else -> { /* ignore gesture while transcribing/responding/speaking */ }
+            else -> { /* ignore while transcribing/responding */ }
         }
     }
 
@@ -140,7 +150,16 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         val pcmData = pcmBuffer.toByteArray()
         pcmBuffer.reset()
         _bleMode.value = false
-        Log.d(TAG, "BLE recording stopped, ${pcmData.size} bytes of PCM collected")
+        Log.d(TAG, "BLE recording stopped, ${pcmData.size} bytes of PCM")
+
+        // Always stop TTS even if VAD finds no speech
+        tts?.stop()
+
+        if (!hasSpeechInPcm(pcmData)) {
+            Log.d(TAG, "VAD: no speech in BLE audio — skipping Groq")
+            _state.value = VoiceState.READY
+            return
+        }
 
         val apiKey = getApiKey()
         if (apiKey.isBlank()) {
@@ -150,8 +169,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val wavFile = buildWavFile(pcmData)
-            if (wavFile == null) {
+            val wavFile = buildWavFile(pcmData) ?: run {
                 _errorMessage.value = "WAV ファイルの作成に失敗しました"
                 _state.value = VoiceState.ERROR
                 return@launch
@@ -184,6 +202,15 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             _transcription.value = ""
             _response.value = ""
             _errorMessage.value = ""
+            maxAmplitudeSeen = 0
+            // Poll amplitude every 100ms to track peak during recording
+            amplitudePollingJob = viewModelScope.launch {
+                while (_state.value == VoiceState.RECORDING && !_bleMode.value) {
+                    delay(100)
+                    val amp = mediaRecorder?.maxAmplitude ?: 0
+                    if (amp > maxAmplitudeSeen) maxAmplitudeSeen = amp
+                }
+            }
             Log.d(TAG, "Phone mic recording started: ${file.absolutePath}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
@@ -195,19 +222,33 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
 
     fun stopRecordingAndProcess() {
         if (_state.value != VoiceState.RECORDING) return
-        // Delegate to BLE stop if recording via BLE
         if (_bleMode.value) {
             stopBleRecordingAndProcess()
             return
         }
 
+        amplitudePollingJob?.cancel()
+        amplitudePollingJob = null
+        val finalMaxAmplitude = maxAmplitudeSeen
+        maxAmplitudeSeen = 0
+
         val file = audioFile ?: return
         try {
             mediaRecorder?.apply { stop(); reset(); release() }
             mediaRecorder = null
-            Log.d(TAG, "Phone mic recording stopped")
+            Log.d(TAG, "Phone mic recording stopped, maxAmplitude=$finalMaxAmplitude")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop recording", e)
+        }
+
+        // Always stop TTS even if VAD finds no speech
+        tts?.stop()
+
+        if (finalMaxAmplitude < VAD_AMPLITUDE_THRESHOLD) {
+            Log.d(TAG, "VAD: no speech detected (maxAmplitude=$finalMaxAmplitude) — skipping Groq")
+            _state.value = VoiceState.READY
+            file.delete()
+            return
         }
 
         val apiKey = getApiKey()
@@ -230,24 +271,19 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         _errorMessage.value = ""
 
         try {
-            // Step 1: Whisper transcription
             val transcriptionBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart(
-                    "file",
-                    file.name,
-                    file.asRequestBody(mimeType.toMediaType())
-                )
+                .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))
                 .addFormDataPart("model", "whisper-large-v3-turbo")
                 .addFormDataPart("response_format", "text")
                 .build()
 
-            val transcriptionRequest = Request.Builder()
-                .url("https://api.groq.com/openai/v1/audio/transcriptions")
-                .addHeader("Authorization", "Bearer $apiKey")
-                .post(transcriptionBody)
-                .build()
-
-            val transcriptionResponse = httpClient.newCall(transcriptionRequest).execute()
+            val transcriptionResponse = httpClient.newCall(
+                Request.Builder()
+                    .url("https://api.groq.com/openai/v1/audio/transcriptions")
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .post(transcriptionBody)
+                    .build()
+            ).execute()
             val transcriptionBodyText = transcriptionResponse.body?.string() ?: ""
 
             if (!transcriptionResponse.isSuccessful) {
@@ -260,7 +296,6 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             _transcription.value = transcribed
             Log.d(TAG, "Transcription: $transcribed")
 
-            // Step 2: Chat completion
             _state.value = VoiceState.RESPONDING
 
             val chatJson = JSONObject().apply {
@@ -273,14 +308,14 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
                 })
             }.toString()
 
-            val chatRequest = Request.Builder()
-                .url("https://api.groq.com/openai/v1/chat/completions")
-                .addHeader("Authorization", "Bearer $apiKey")
-                .addHeader("Content-Type", "application/json")
-                .post(chatJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .build()
-
-            val chatResponse = httpClient.newCall(chatRequest).execute()
+            val chatResponse = httpClient.newCall(
+                Request.Builder()
+                    .url("https://api.groq.com/openai/v1/chat/completions")
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .post(chatJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+            ).execute()
             val chatBodyText = chatResponse.body?.string().orEmpty()
 
             if (!chatResponse.isSuccessful) {
@@ -289,18 +324,14 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
                 return
             }
 
-            val chatObj = JSONObject(chatBodyText)
-            val choices = chatObj.optJSONArray("choices")
+            val choices = JSONObject(chatBodyText).optJSONArray("choices")
             val responseText = if (choices != null && choices.length() > 0) {
                 choices.getJSONObject(0).optJSONObject("message")?.optString("content").orEmpty()
-            } else {
-                "(返答なし)"
-            }
+            } else "(返答なし)"
 
             _response.value = responseText.ifBlank { "(返答なし)" }
             Log.d(TAG, "Response: $responseText")
 
-            // Step 3: TTS playback
             speakResponse(responseText)
 
         } catch (e: Exception) {
@@ -312,7 +343,24 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         }
     }
 
-    // --- WAV file builder (for BLE PCM data) ---
+    // --- VAD helpers ---
+
+    private fun hasSpeechInPcm(pcmData: ByteArray): Boolean {
+        val samples = pcmData.size / 2
+        if (samples == 0) return false
+        var sumSq = 0.0
+        for (i in 0 until samples) {
+            val lo = pcmData[i * 2].toInt() and 0xFF
+            val hi = pcmData[i * 2 + 1].toInt()  // signed byte (upper byte)
+            val sample = (hi shl 8) or lo
+            sumSq += sample.toDouble() * sample.toDouble()
+        }
+        val rms = sqrt(sumSq / samples)
+        Log.d(TAG, "VAD: BLE PCM RMS=$rms (threshold=$VAD_PCM_RMS_THRESHOLD)")
+        return rms > VAD_PCM_RMS_THRESHOLD
+    }
+
+    // --- WAV file builder ---
 
     private fun buildWavFile(pcmData: ByteArray): File? {
         return try {
@@ -321,15 +369,14 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             val byteRate = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_BITS_PER_SAMPLE / 8
             val blockAlign = (PCM_CHANNELS * PCM_BITS_PER_SAMPLE / 8).toShort()
             val dataSize = pcmData.size
-            val fileSize = 36 + dataSize
 
             val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
                 put("RIFF".toByteArray())
-                putInt(fileSize)
+                putInt(36 + dataSize)
                 put("WAVE".toByteArray())
                 put("fmt ".toByteArray())
-                putInt(16)                              // PCM chunk size
-                putShort(1)                             // PCM format
+                putInt(16)
+                putShort(1)
                 putShort(PCM_CHANNELS.toShort())
                 putInt(PCM_SAMPLE_RATE)
                 putInt(byteRate)
@@ -343,7 +390,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
                 out.write(header)
                 out.write(pcmData)
             }
-            Log.d(TAG, "WAV file created: ${file.absolutePath} (${file.length()} bytes)")
+            Log.d(TAG, "WAV file: ${file.absolutePath} (${file.length()} bytes)")
             file
         } catch (e: Exception) {
             Log.e(TAG, "Failed to build WAV file", e)
@@ -356,16 +403,30 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private fun speakResponse(text: String) {
         _state.value = VoiceState.SPEAKING
         if (ttsReady && text.isNotBlank()) {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "response_${System.currentTimeMillis()}")
+            val uid = "response_${System.currentTimeMillis()}"
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        if (_state.value == VoiceState.SPEAKING) _state.value = VoiceState.READY
+                    }
+                }
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        if (_state.value == VoiceState.SPEAKING) _state.value = VoiceState.READY
+                    }
+                }
+            })
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, uid)
+        } else {
+            _state.value = VoiceState.READY
         }
-        _state.value = VoiceState.READY
     }
 
     fun stopSpeaking() {
         tts?.stop()
-        if (_state.value == VoiceState.SPEAKING) {
-            _state.value = VoiceState.READY
-        }
+        _state.value = VoiceState.READY
     }
 
     // --- Helpers ---
@@ -382,6 +443,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
 
     override fun onCleared() {
         super.onCleared()
+        amplitudePollingJob?.cancel()
         releaseRecorder()
         tts?.stop()
         tts?.shutdown()

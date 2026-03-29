@@ -87,7 +87,10 @@ class MainActivity : ComponentActivity() {
         val state = voiceViewModel.state.value
         when (state) {
             VoiceState.RECORDING -> voiceViewModel.stopRecordingAndProcess()
-            VoiceState.SPEAKING -> voiceViewModel.stopSpeaking()
+            VoiceState.SPEAKING -> {
+                voiceViewModel.stopSpeaking()
+                voiceViewModel.startRecording()
+            }
             VoiceState.READY, VoiceState.ERROR -> {
                 if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                     == PackageManager.PERMISSION_GRANTED
