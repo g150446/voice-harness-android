@@ -59,6 +59,8 @@ class BleManager(
         val TX_CHAR_UUID: UUID = UUID.fromString("00000002-0000-1000-8000-00805f9b34fb")
         val RX_CHAR_UUID: UUID = UUID.fromString("00000003-0000-1000-8000-00805f9b34fb")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        val BATTERY_SERVICE_UUID: UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
+        val BATTERY_LEVEL_CHAR_UUID: UUID = UUID.fromString("00002A19-0000-1000-8000-00805f9b34fb")
         const val SCAN_TIMEOUT_MS = 30_000L
     }
 
@@ -79,9 +81,13 @@ class BleManager(
     private val _preferredDevice = MutableStateFlow(preferences.preferredDevice())
     val preferredDevice: StateFlow<BleDeviceInfo?> = _preferredDevice
 
+    private val _batteryLevel = MutableStateFlow<Int?>(null)
+    val batteryLevel: StateFlow<Int?> = _batteryLevel
+
     private var bluetoothManager: BluetoothManager? = null
     private var gatt: BluetoothGatt? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
+    private var batteryLevelCharacteristic: BluetoothGattCharacteristic? = null
     private var isScanning = false
     private var lastSeqNum = -1
 
@@ -289,6 +295,8 @@ class BleManager(
         val currentGatt = gatt
         gatt = null
         rxCharacteristic = null
+        batteryLevelCharacteristic = null
+        _batteryLevel.value = null
         lastSeqNum = -1
         if (currentGatt != null) {
             try {
@@ -356,6 +364,8 @@ class BleManager(
                 return
             }
             rxCharacteristic = service.getCharacteristic(RX_CHAR_UUID)
+            batteryLevelCharacteristic = gatt.getService(BATTERY_SERVICE_UUID)
+                ?.getCharacteristic(BATTERY_LEVEL_CHAR_UUID)
 
             gatt.setCharacteristicNotification(txChar, true)
 
@@ -380,25 +390,48 @@ class BleManager(
             descriptor: BluetoothGattDescriptor,
             status: Int
         ) {
-            if (descriptor.uuid == CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
-                Log.d(TAG, "Notifications enabled — BLE fully connected")
-                reconnectJob?.cancel()
-                reconnectDelayMs = 2_000L
-                _connectionState.value = BleConnectionState.CONNECTED
+            if (descriptor.uuid != CCCD_UUID || status != BluetoothGatt.GATT_SUCCESS) return
 
-                val connectedDevice = BleDeviceInfo(
-                    address = gatt.device.address,
-                    name = gatt.device.name ?: _preferredDevice.value?.name ?: gatt.device.address
-                )
-                if (scanPurpose == ScanPurpose.MANUAL_CONNECT) {
-                    autoReconnectEnabled = true
-                    preferences.savePreferredDevice(connectedDevice, autoReconnectEnabled = true)
-                    _preferredDevice.value = connectedDevice
-                } else if (scanPurpose == ScanPurpose.AUTO_CONNECT) {
-                    preferences.savePreferredDevice(connectedDevice, autoReconnectEnabled = true)
-                    _preferredDevice.value = connectedDevice
+            when (descriptor.characteristic.uuid) {
+                TX_CHAR_UUID -> {
+                    Log.d(TAG, "TX notifications enabled — BLE fully connected")
+                    reconnectJob?.cancel()
+                    reconnectDelayMs = 2_000L
+                    _connectionState.value = BleConnectionState.CONNECTED
+
+                    val connectedDevice = BleDeviceInfo(
+                        address = gatt.device.address,
+                        name = gatt.device.name ?: _preferredDevice.value?.name ?: gatt.device.address
+                    )
+                    if (scanPurpose == ScanPurpose.MANUAL_CONNECT) {
+                        autoReconnectEnabled = true
+                        preferences.savePreferredDevice(connectedDevice, autoReconnectEnabled = true)
+                        _preferredDevice.value = connectedDevice
+                    } else if (scanPurpose == ScanPurpose.AUTO_CONNECT) {
+                        preferences.savePreferredDevice(connectedDevice, autoReconnectEnabled = true)
+                        _preferredDevice.value = connectedDevice
+                    }
+                    pendingTargetAddress = connectedDevice.address
+
+                    // Enable battery level notifications (serialized after TX CCCD)
+                    batteryLevelCharacteristic?.let { char ->
+                        gatt.setCharacteristicNotification(char, true)
+                        val cccd = char.getDescriptor(CCCD_UUID) ?: return@let
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                            @Suppress("DEPRECATION")
+                            gatt.writeDescriptor(cccd)
+                        }
+                    }
                 }
-                pendingTargetAddress = connectedDevice.address
+
+                BATTERY_LEVEL_CHAR_UUID -> {
+                    Log.d(TAG, "Battery notifications enabled — reading initial level")
+                    batteryLevelCharacteristic?.let { gatt.readCharacteristic(it) }
+                }
             }
         }
 
@@ -417,9 +450,49 @@ class BleManager(
         ) {
             handleCharacteristicData(characteristic.uuid, characteristic.value ?: return)
         }
+
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int
+        ) {
+            if (characteristic.uuid == BATTERY_LEVEL_CHAR_UUID && status == BluetoothGatt.GATT_SUCCESS) {
+                if (value.isNotEmpty()) {
+                    val level = (value[0].toInt() and 0xFF).coerceIn(0, 100)
+                    Log.d(TAG, "Battery level: $level%")
+                    _batteryLevel.value = level
+                }
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            if (characteristic.uuid == BATTERY_LEVEL_CHAR_UUID && status == BluetoothGatt.GATT_SUCCESS) {
+                val value = characteristic.value ?: return
+                if (value.isNotEmpty()) {
+                    val level = (value[0].toInt() and 0xFF).coerceIn(0, 100)
+                    Log.d(TAG, "Battery level: $level%")
+                    _batteryLevel.value = level
+                }
+            }
+        }
     }
 
     private fun handleCharacteristicData(uuid: UUID, data: ByteArray) {
+        if (uuid == BATTERY_LEVEL_CHAR_UUID) {
+            if (data.isNotEmpty()) {
+                val level = (data[0].toInt() and 0xFF).coerceIn(0, 100)
+                Log.d(TAG, "Battery level notification: $level%")
+                _batteryLevel.value = level
+            }
+            return
+        }
+
         if (uuid != TX_CHAR_UUID || data.size < 2) return
 
         when (data[1].toInt() and 0xFF) {

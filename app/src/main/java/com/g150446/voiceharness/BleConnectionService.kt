@@ -47,6 +47,9 @@ class BleConnectionService : Service() {
         private val _preferredDevice = MutableStateFlow<BleDeviceInfo?>(null)
         val preferredDevice: StateFlow<BleDeviceInfo?> = _preferredDevice.asStateFlow()
 
+        private val _batteryLevel = MutableStateFlow<Int?>(null)
+        val batteryLevel: StateFlow<Int?> = _batteryLevel.asStateFlow()
+
         private var instance: BleConnectionService? = null
 
         fun sendCommand(byte: Byte) {
@@ -98,13 +101,7 @@ class BleConnectionService : Service() {
             serviceScope.launch {
                 mgr.connectionState.collect { state ->
                     _connectionState.value = state
-                    val text = when (state) {
-                        BleConnectionState.SCANNING -> "BLE: Scanning..."
-                        BleConnectionState.CONNECTING -> "BLE: Connecting..."
-                        BleConnectionState.CONNECTED -> "BLE: Connected"
-                        BleConnectionState.DISCONNECTED -> "BLE: Disconnected"
-                    }
-                    updateNotification(text)
+                    updateNotification(state, _batteryLevel.value)
                 }
             }
             serviceScope.launch {
@@ -118,6 +115,12 @@ class BleConnectionService : Service() {
             }
             serviceScope.launch {
                 mgr.preferredDevice.collect { _preferredDevice.value = it }
+            }
+            serviceScope.launch {
+                mgr.batteryLevel.collect { level ->
+                    _batteryLevel.value = level
+                    updateNotification(_connectionState.value, level)
+                }
             }
         }
     }
@@ -134,6 +137,7 @@ class BleConnectionService : Service() {
         serviceScope.cancel()
         _connectionState.value = BleConnectionState.DISCONNECTED
         _scannedDevices.value = emptyList()
+        _batteryLevel.value = null
         instance = null
     }
 
@@ -176,7 +180,13 @@ class BleConnectionService : Service() {
         }
     }
 
-    private fun updateNotification(text: String) {
+    private fun updateNotification(state: BleConnectionState, batteryLevel: Int?) {
+        val text = when (state) {
+            BleConnectionState.SCANNING -> "BLE: Scanning..."
+            BleConnectionState.CONNECTING -> "BLE: Connecting..."
+            BleConnectionState.CONNECTED -> batteryLevel?.let { "BLE: Connected  Battery: $it%" } ?: "BLE: Connected"
+            BleConnectionState.DISCONNECTED -> "BLE: Disconnected"
+        }
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, buildNotification(text))
     }

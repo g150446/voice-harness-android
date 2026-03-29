@@ -71,6 +71,9 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private val _selectedBleDeviceAddress = MutableStateFlow<String?>(null)
     val selectedBleDeviceAddress: StateFlow<String?> = _selectedBleDeviceAddress
 
+    private val _batteryLevel = MutableStateFlow<Int?>(null)
+    val batteryLevel: StateFlow<Int?> = _batteryLevel
+
     // BLE PCM accumulation
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
@@ -130,6 +133,12 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         viewModelScope.launch {
             BleConnectionService.preferredDevice.collect { device ->
                 _preferredBleDevice.value = device
+            }
+        }
+
+        viewModelScope.launch {
+            BleConnectionService.batteryLevel.collect { level ->
+                _batteryLevel.value = level
             }
         }
     }

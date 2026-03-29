@@ -120,6 +120,7 @@ fun VoiceScreen(
     val availableBleDevices by viewModel.availableBleDevices.collectAsState()
     val selectedBleDeviceAddress by viewModel.selectedBleDeviceAddress.collectAsState()
     val preferredBleDevice by viewModel.preferredBleDevice.collectAsState()
+    val batteryLevel by viewModel.batteryLevel.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
@@ -151,6 +152,10 @@ fun VoiceScreen(
         ) {
             Canvas(modifier = Modifier.size(8.dp)) { drawCircle(color = dotColor) }
             Text(text = bleLabel, fontSize = 12.sp, color = dotColor)
+            if (bleConnectionState == BleConnectionState.CONNECTED) {
+                val batteryText = batteryLevel?.let { "$it%" } ?: "..."
+                Text(text = batteryText, fontSize = 12.sp, color = dotColor)
+            }
             if (bleMode && state == VoiceState.RECORDING) {
                 Text(text = "(nRF52840 recording)", fontSize = 11.sp, color = Color(0xFF9E9E9E))
             }
