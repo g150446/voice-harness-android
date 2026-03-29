@@ -34,6 +34,19 @@ class BleSpeechDetectorTest {
     }
 
     @Test
+    fun detectSpeechBySpectrum_acceptsQuietSpeechBandTone() {
+        val samples = buildSamples(
+            frequencyHz = 1000.0,
+            amplitude = 0.03f
+        )
+
+        val result = BleSpeechDetector.detectSpeechBySpectrum(samples, 16_000)
+
+        assertTrue(result.hasSpeech(BleSpeechDetector.SPEECH_FRAME_MIN_RATIO))
+        assertTrue(result.maxBandRatio > BleSpeechDetector.SPEECH_RATIO_THRESHOLD)
+    }
+
+    @Test
     fun detectSpeechBySpectrum_rejectsLowFrequencyTone() {
         val samples = buildSamples(frequencyHz = 100.0)
 

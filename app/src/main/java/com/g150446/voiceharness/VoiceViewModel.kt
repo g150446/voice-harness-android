@@ -33,12 +33,6 @@ private const val PCM_BITS_PER_SAMPLE = 16
 
 // VAD thresholds
 private const val VAD_AMPLITUDE_THRESHOLD = 500    // MediaRecorder.getMaxAmplitude() range 0-32767
-private const val SILERO_SPEECH_THRESHOLD = 0.5f   // Silero per-frame probability threshold
-private const val SILERO_FRAME_MIN_RATIO  = 0.05   // fraction of frames that must be speech
-private const val SILERO_STUCK_MAX_PROB   = 0.01f  // suspiciously low for every frame => fallback
-private const val BLE_RESCUE_PEAK_THRESHOLD = 0.08f
-private const val BLE_RESCUE_RMS_THRESHOLD = 0.015f
-private const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.48
 
 private data class TranscriptionPayload(
     val text: String,
@@ -403,21 +397,25 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             "Silero VAD: $speechFrames/$totalFrames speech frames (${"%.1f".format(Locale.US, ratio * 100)}%), maxProb=${"%.3f".format(Locale.US, maxProb)}, firstProbs=${firstFrameProbs.joinToString(prefix = "[", postfix = "]")}"
         )
 
-        if (ratio >= SILERO_FRAME_MIN_RATIO) {
+        val sileroDecision = decideBleSileroOutcome(
+            speechFrames = speechFrames,
+            totalFrames = totalFrames,
+            maxProb = maxProb
+        )
+        if (sileroDecision.accepted) {
             return true
         }
 
-        if (maxProb <= SILERO_STUCK_MAX_PROB) {
-            Log.w(TAG, "Silero VAD probabilities look stuck (maxProb=${"%.3f".format(Locale.US, maxProb)}) — falling back to spectrum VAD")
-            return hasSpeechBySpectrum(
-                samples = analysis.samples,
-                reason = "Silero output stuck near zero",
-                peakAfterDc = analysis.peakAfterDc,
-                rmsAfterDc = analysis.rmsAfterDc
-            )
-        }
-
-        return false
+        Log.w(
+            TAG,
+            "Silero VAD did not accept BLE audio (reason=${sileroDecision.spectrumReason}, maxProb=${"%.3f".format(Locale.US, maxProb)}) — checking spectrum VAD"
+        )
+        return hasSpeechBySpectrum(
+            samples = analysis.samples,
+            reason = sileroDecision.spectrumReason ?: "Silero rejected audio",
+            peakAfterDc = analysis.peakAfterDc,
+            rmsAfterDc = analysis.rmsAfterDc
+        )
     }
 
     private fun hasSpeechBySpectrum(
@@ -427,11 +425,11 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         rmsAfterDc: Float? = null
     ): Boolean {
         val result = BleSpeechDetector.detectSpeechBySpectrum(samples, PCM_SAMPLE_RATE)
-        val rescued = peakAfterDc != null &&
-            rmsAfterDc != null &&
-            result.maxBandRatio >= BLE_RESCUE_BAND_RATIO_THRESHOLD &&
-            peakAfterDc >= BLE_RESCUE_PEAK_THRESHOLD &&
-            rmsAfterDc >= BLE_RESCUE_RMS_THRESHOLD
+        val rescued = shouldRescueBleSpectrum(
+            peakAfterDc = peakAfterDc,
+            rmsAfterDc = rmsAfterDc,
+            maxBandRatio = result.maxBandRatio
+        )
         Log.d(
             TAG,
             "Spectrum VAD fallback: reason=$reason, speechFrames=${result.speechFrames}/${result.activeFrames} active (${result.totalFrames} total, ${"%.1f".format(Locale.US, result.ratio * 100)}%), maxBandRatio=${"%.3f".format(Locale.US, result.maxBandRatio)}, rescued=$rescued, topBandRatios=${result.topBandRatios.joinToString(prefix = "[", postfix = "]") { "%.3f".format(Locale.US, it) }}"
