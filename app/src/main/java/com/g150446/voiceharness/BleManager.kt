@@ -274,7 +274,8 @@ class BleManager(
                 val seqNum = data[0].toInt() and 0xFF
                 if (lastSeqNum >= 0) {
                     val expected = (lastSeqNum + 1) and 0xFF
-                    if (seqNum != expected) {
+                    // Some firmware increments seqNum every 2 packets; ignore same-seq duplicates
+                    if (seqNum != expected && seqNum != lastSeqNum) {
                         val dropped = (seqNum - expected + 256) and 0xFF
                         Log.w(TAG, "PCM gap: ~$dropped packets dropped (expected $expected, got $seqNum)")
                     }

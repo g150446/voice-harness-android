@@ -356,24 +356,36 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             return false
         }
 
+        // Decode all samples to float
+        val allSamples = FloatArray(nSamples) { i ->
+            val lo = pcmData[i * 2].toInt() and 0xFF
+            val hi = pcmData[i * 2 + 1].toInt()
+            ((hi shl 8) or lo).toShort() / 32768f
+        }
+
+        // Normalize loudness for VAD: nRF52840 PDM mic records at very low gain (~0.006 peak).
+        // Silero was trained on normally-gained speech. Scale so peak ≥ 0.1 before VAD.
+        val peakAmp = allSamples.maxOfOrNull { if (it < 0) -it else it } ?: 0f
+        val gain = if (peakAmp in 0.001f..0.1f) 0.1f / peakAmp else 1f
+        Log.d(TAG, "Silero VAD: peakAmp=${"%.4f".format(peakAmp)}, gain=${"%.1f".format(gain)}")
+
         vad.reset()
         var speechFrames = 0
         var totalFrames  = 0
+        var maxProb = 0f
         var offset = 0
 
         while (offset + frameSize <= nSamples) {
-            val frame = FloatArray(frameSize) { i ->
-                val lo = pcmData[(offset + i) * 2].toInt() and 0xFF
-                val hi = pcmData[(offset + i) * 2 + 1].toInt()
-                ((hi shl 8) or lo).toShort() / 32768f
-            }
-            if (vad.predict(frame) > SILERO_SPEECH_THRESHOLD) speechFrames++
+            val frame = FloatArray(frameSize) { i -> allSamples[offset + i] * gain }
+            val prob = vad.predict(frame)
+            if (prob > maxProb) maxProb = prob
+            if (prob > SILERO_SPEECH_THRESHOLD) speechFrames++
             totalFrames++
             offset += frameSize
         }
 
         val ratio = if (totalFrames > 0) speechFrames.toDouble() / totalFrames else 0.0
-        Log.d(TAG, "Silero VAD: $speechFrames/$totalFrames speech frames (${"%.1f".format(ratio * 100)}%)")
+        Log.d(TAG, "Silero VAD: $speechFrames/$totalFrames speech frames (${"%.1f".format(ratio * 100)}%), maxProb=${"%.3f".format(maxProb)}")
         return ratio >= SILERO_FRAME_MIN_RATIO
     }
 
