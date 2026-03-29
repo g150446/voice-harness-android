@@ -25,10 +25,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 private const val TAG = "VoiceViewModel"
 private const val PCM_SAMPLE_RATE = 16000
@@ -36,15 +32,9 @@ private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
 
 // VAD thresholds
-private const val VAD_AMPLITUDE_THRESHOLD = 500   // MediaRecorder.getMaxAmplitude() range 0-32767
-
-// Spectral VAD for BLE PCM (FFT-based, 300-3400 Hz speech band)
-private const val SPEECH_LOW_HZ  = 300
-private const val SPEECH_HIGH_HZ = 3400
-// Minimum ratio of speech-band energy to total energy (noise ~0.39, speech ~0.55+)
-private const val SPEECH_RATIO_THRESHOLD = 0.50
-// Minimum fraction of frames that must pass both tests to classify as speech
-private const val SPEECH_FRAME_MIN_RATIO = 0.05
+private const val VAD_AMPLITUDE_THRESHOLD = 500    // MediaRecorder.getMaxAmplitude() range 0-32767
+private const val SILERO_SPEECH_THRESHOLD = 0.5f   // Silero per-frame probability threshold
+private const val SILERO_FRAME_MIN_RATIO  = 0.05   // fraction of frames that must be speech
 
 enum class VoiceState {
     READY,
@@ -84,6 +74,13 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     // BLE PCM accumulation
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
+
+    private val sileroVad: SileroVad? = try {
+        SileroVad(application)
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to load Silero VAD — VAD disabled", e)
+        null
+    }
 
     private val httpClient = OkHttpClient()
     private var tts: TextToSpeech? = null
@@ -339,102 +336,45 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     // --- VAD helpers ---
 
     /**
-     * Spectral VAD: classify BLE PCM as speech if enough frames have their energy
-     * concentrated in the 300-3400 Hz speech band.
+     * Silero VAD: classify BLE PCM as speech using the Silero deep-learning model.
      *
-     * Background reasoning:
-     *   - White/pink noise distributes energy uniformly → ~39% falls in speech band
-     *     (bins 9-108 out of 255 for a 512-point FFT at 16 kHz)
-     *   - Human speech concentrates energy in formant bands → ratio > 50%
-     *   - nRF52840 electrical noise floor sits at RMS ~730 but is broadband,
-     *     so simple amplitude thresholding fails; spectral ratio is robust.
+     * Processes 512-sample (32 ms) frames sequentially, passing RNN state (h, c)
+     * between frames so the model captures speech continuity across the recording.
+     * Returns true if ≥5% of frames have speech probability > 0.5.
+     *
+     * Falls back to true (always send) if the ONNX session failed to load.
      */
     private fun hasSpeechInPcm(pcmData: ByteArray): Boolean {
-        val frameSize = 512  // must be power of 2; yields ~32 ms frames at 16 kHz
-        val hopSize   = 256
+        val vad = sileroVad ?: run {
+            Log.w(TAG, "Silero VAD unavailable — skipping VAD check")
+            return true
+        }
+        val frameSize = SileroVad.FRAME_SIZE
         val nSamples  = pcmData.size / 2
         if (nSamples < frameSize) {
-            Log.d(TAG, "VAD: audio too short ($nSamples samples) — skipping")
+            Log.d(TAG, "Silero VAD: audio too short ($nSamples samples) — skipping")
             return false
         }
 
-        val speechLowBin  = SPEECH_LOW_HZ  * frameSize / PCM_SAMPLE_RATE  // 9
-        val speechHighBin = SPEECH_HIGH_HZ * frameSize / PCM_SAMPLE_RATE  // 108
-
+        vad.reset()
         var speechFrames = 0
         var totalFrames  = 0
         var offset = 0
 
-        val re = DoubleArray(frameSize)
-        val im = DoubleArray(frameSize)
-
         while (offset + frameSize <= nSamples) {
-            im.fill(0.0)
-            for (i in 0 until frameSize) {
-                val byteIdx = (offset + i) * 2
-                val lo = pcmData[byteIdx].toInt() and 0xFF
-                val hi = pcmData[byteIdx + 1].toInt()          // signed high byte
-                val sample = ((hi shl 8) or lo).toShort().toDouble()
-                // Hann window to reduce spectral leakage
-                val win = 0.5 * (1.0 - cos(2.0 * PI * i / (frameSize - 1)))
-                re[i] = sample * win
+            val frame = FloatArray(frameSize) { i ->
+                val lo = pcmData[(offset + i) * 2].toInt() and 0xFF
+                val hi = pcmData[(offset + i) * 2 + 1].toInt()
+                ((hi shl 8) or lo).toShort() / 32768f
             }
-
-            fftInPlace(re, im)
-
-            var speechEnergy = 0.0
-            var totalEnergy  = 0.0
-            for (bin in 1 until frameSize / 2) {
-                val mag = re[bin] * re[bin] + im[bin] * im[bin]
-                totalEnergy += mag
-                if (bin in speechLowBin..speechHighBin) speechEnergy += mag
-            }
-
-            val ratio = if (totalEnergy > 0.0) speechEnergy / totalEnergy else 0.0
-            if (ratio > SPEECH_RATIO_THRESHOLD) speechFrames++
+            if (vad.predict(frame) > SILERO_SPEECH_THRESHOLD) speechFrames++
             totalFrames++
-            offset += hopSize
+            offset += frameSize
         }
 
-        val frameRatio = if (totalFrames > 0) speechFrames.toDouble() / totalFrames else 0.0
-        Log.d(TAG, "VAD: $speechFrames/$totalFrames speech frames (${"%.1f".format(frameRatio * 100)}%, threshold=${(SPEECH_FRAME_MIN_RATIO * 100).toInt()}%)")
-        return frameRatio >= SPEECH_FRAME_MIN_RATIO
-    }
-
-    /** In-place radix-2 Cooley-Tukey FFT. Input length must be a power of 2. */
-    private fun fftInPlace(re: DoubleArray, im: DoubleArray) {
-        val n = re.size
-        // Bit-reversal permutation
-        var j = 0
-        for (i in 1 until n) {
-            var bit = n shr 1
-            while (j and bit != 0) { j = j xor bit; bit = bit shr 1 }
-            j = j xor bit
-            if (i < j) {
-                re[i] = re[j].also { re[j] = re[i] }
-                im[i] = im[j].also { im[j] = im[i] }
-            }
-        }
-        // Butterfly stages
-        var len = 2
-        while (len <= n) {
-            val ang = -2.0 * PI / len
-            val wRe = cos(ang); val wIm = sin(ang)
-            var i = 0
-            while (i < n) {
-                var cRe = 1.0; var cIm = 0.0
-                for (k in 0 until len / 2) {
-                    val uRe = re[i + k];          val uIm = im[i + k]
-                    val vRe = re[i+k+len/2]*cRe - im[i+k+len/2]*cIm
-                    val vIm = re[i+k+len/2]*cIm + im[i+k+len/2]*cRe
-                    re[i + k]        = uRe + vRe;  im[i + k]        = uIm + vIm
-                    re[i+k+len/2]    = uRe - vRe;  im[i+k+len/2]    = uIm - vIm
-                    val nCRe = cRe*wRe - cIm*wIm;  cIm = cRe*wIm + cIm*wRe;  cRe = nCRe
-                }
-                i += len
-            }
-            len = len shl 1
-        }
+        val ratio = if (totalFrames > 0) speechFrames.toDouble() / totalFrames else 0.0
+        Log.d(TAG, "Silero VAD: $speechFrames/$totalFrames speech frames (${"%.1f".format(ratio * 100)}%)")
+        return ratio >= SILERO_FRAME_MIN_RATIO
     }
 
     // --- WAV file builder ---
@@ -524,5 +464,6 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         releaseRecorder()
         tts?.stop()
         tts?.shutdown()
+        sileroVad?.close()
     }
 }
