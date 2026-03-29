@@ -13,11 +13,14 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 private const val TAG = "BleConnectionService"
@@ -27,16 +30,18 @@ private const val CHANNEL_ID = "ble_connection"
 class BleConnectionService : Service() {
 
     companion object {
+        // Flows live in the companion object — independent of Service lifecycle.
+        // ViewModel can safely collect from these before the Service starts.
+        private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
+        val connectionState: StateFlow<BleConnectionState> = _connectionState.asStateFlow()
+
+        private val _audioPackets = MutableSharedFlow<AudioPacket>(extraBufferCapacity = 64)
+        val audioPackets: SharedFlow<AudioPacket> = _audioPackets.asSharedFlow()
+
+        private val _bleEvents = MutableSharedFlow<BleEvent>(extraBufferCapacity = 16)
+        val bleEvents: SharedFlow<BleEvent> = _bleEvents.asSharedFlow()
+
         private var instance: BleConnectionService? = null
-
-        val connectionState: StateFlow<BleConnectionState>?
-            get() = instance?.bleManager?.connectionState
-
-        val audioPackets: SharedFlow<AudioPacket>?
-            get() = instance?.bleManager?.audioPackets
-
-        val bleEvents: SharedFlow<BleEvent>?
-            get() = instance?.bleManager?.bleEvents
 
         fun sendCommand(byte: Byte) {
             instance?.bleManager?.sendToRx(byte)
@@ -71,9 +76,10 @@ class BleConnectionService : Service() {
         bleManager = BleManager(applicationContext, serviceScope).also { mgr ->
             mgr.start(bluetoothManager)
 
-            // Update notification text on state changes
+            // Relay BleManager flows → companion object flows (observable by ViewModel)
             serviceScope.launch {
                 mgr.connectionState.collect { state ->
+                    _connectionState.value = state
                     val text = when (state) {
                         BleConnectionState.SCANNING -> "BLE: Scanning..."
                         BleConnectionState.CONNECTING -> "BLE: Connecting..."
@@ -82,6 +88,12 @@ class BleConnectionService : Service() {
                     }
                     updateNotification(text)
                 }
+            }
+            serviceScope.launch {
+                mgr.audioPackets.collect { _audioPackets.tryEmit(it) }
+            }
+            serviceScope.launch {
+                mgr.bleEvents.collect { _bleEvents.tryEmit(it) }
             }
         }
     }
@@ -96,6 +108,7 @@ class BleConnectionService : Service() {
         Log.d(TAG, "Service destroyed")
         bleManager?.disconnect()
         serviceScope.cancel()
+        _connectionState.value = BleConnectionState.DISCONNECTED
         instance = null
     }
 

@@ -74,16 +74,16 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     init {
         tts = TextToSpeech(application, this)
 
-        // Mirror BLE connection state
+        // Mirror BLE connection state (flows live in companion object — always non-null)
         viewModelScope.launch {
-            BleConnectionService.connectionState?.collect { state ->
+            BleConnectionService.connectionState.collect { state ->
                 _bleConnectionState.value = state
             }
         }
 
         // React to BLE gesture events (motion settled = gesture trigger)
         viewModelScope.launch {
-            BleConnectionService.bleEvents?.collect { event ->
+            BleConnectionService.bleEvents.collect { event ->
                 if (event is BleEvent.GestureDetected) {
                     handleGestureEvent()
                 }
@@ -92,7 +92,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
 
         // Accumulate incoming PCM packets during BLE recording
         viewModelScope.launch {
-            BleConnectionService.audioPackets?.collect { packet ->
+            BleConnectionService.audioPackets.collect { packet ->
                 if (isCollectingPcm) {
                     pcmBuffer.write(packet.pcmData)
                 }
