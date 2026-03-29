@@ -75,12 +75,6 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
 
-    // Gesture debounce: ignore repeated GestureDetected events within this window
-    private var lastGestureMs = 0L
-    private companion object {
-        const val GESTURE_COOLDOWN_MS = 2000L
-    }
-
     private val httpClient = OkHttpClient()
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -96,8 +90,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
 
         viewModelScope.launch {
             BleConnectionService.bleEvents.collect { event ->
-                if (event is BleEvent.GestureDetected) {
-                    handleGestureEvent()
+                when (event) {
+                    is BleEvent.RecordingStarted -> handleBleRecordingStarted()
+                    is BleEvent.RecordingStopped -> handleBleRecordingStopped()
+                    else -> {}
                 }
             }
         }
@@ -121,51 +117,29 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         }
     }
 
-    // --- Gesture-triggered BLE recording ---
+    // --- Firmware-initiated BLE recording ---
 
-    private fun handleGestureEvent() {
-        val now = System.currentTimeMillis()
-        if (now - lastGestureMs < GESTURE_COOLDOWN_MS) {
-            Log.d(TAG, "Gesture ignored (cooldown)")
-            return
-        }
-        lastGestureMs = now
-
-        when (_state.value) {
-            VoiceState.SPEAKING -> {
-                // Interrupt TTS and start a new dialogue immediately
-                stopSpeaking()
-                startBleRecording()
-            }
-            VoiceState.READY, VoiceState.ERROR -> startBleRecording()
-            VoiceState.RECORDING -> if (_bleMode.value) stopBleRecordingAndProcess()
-            else -> { /* ignore while transcribing/responding */ }
-        }
-    }
-
-    private fun startBleRecording() {
-        if (_state.value != VoiceState.READY && _state.value != VoiceState.ERROR) return
+    private fun handleBleRecordingStarted() {
+        if (_state.value == VoiceState.RECORDING) return
         pcmBuffer.reset()
         isCollectingPcm = true
         _bleMode.value = true
         _transcription.value = ""
         _response.value = ""
         _errorMessage.value = ""
-        BleConnectionService.sendCommand(0x01)
+        if (_state.value == VoiceState.SPEAKING) tts?.stop()
         _state.value = VoiceState.RECORDING
-        Log.d(TAG, "BLE recording started")
+        Log.d(TAG, "BLE recording started (firmware-initiated)")
     }
 
-    private fun stopBleRecordingAndProcess() {
+    private fun handleBleRecordingStopped() {
         if (_state.value != VoiceState.RECORDING || !_bleMode.value) return
         isCollectingPcm = false
-        BleConnectionService.sendCommand(0x00)
         val pcmData = pcmBuffer.toByteArray()
         pcmBuffer.reset()
         _bleMode.value = false
-        Log.d(TAG, "BLE recording stopped, ${pcmData.size} bytes of PCM")
+        Log.d(TAG, "BLE recording stopped by firmware, ${pcmData.size} bytes of PCM")
 
-        // Always stop TTS even if VAD finds no speech
         tts?.stop()
 
         if (!hasSpeechInPcm(pcmData)) {
@@ -234,11 +208,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     }
 
     fun stopRecordingAndProcess() {
-        if (_state.value != VoiceState.RECORDING) return
-        if (_bleMode.value) {
-            stopBleRecordingAndProcess()
-            return
-        }
+        if (_state.value != VoiceState.RECORDING || _bleMode.value) return
 
         amplitudePollingJob?.cancel()
         amplitudePollingJob = null
