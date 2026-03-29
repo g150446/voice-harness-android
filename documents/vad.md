@@ -1,7 +1,7 @@
 # VAD (Voice Activity Detection) 仕様
 
-音声データを Groq に送信する前に「本当に音声が含まれているか」を判定する仕組み。
-BLE 経路と電話マイク経路で異なるアルゴリズムを使用する。
+音声データを Groq に送信する前に「本当に音声が含まれているか」を判定する仕組み。  
+現行アプリでは音声入力を BLE デバイスのみに統一しており、VAD も BLE PCM に対してのみ実行する。
 
 ## BLE 経路: Silero VAD + スペクトル VAD フォールバック
 
@@ -128,12 +128,7 @@ Spectrum VAD fallback: reason=Silero output stuck near zero, speechFrames=12/31 
 | 無音が通過する | `SPEECH_RATIO_THRESHOLD` を 0.45 → 0.50 に上げる、または `ACTIVE_FRAME_ENERGY_RATIO` を 0.10 → 0.15 に上げる |
 | 声が弾かれる | `SPEECH_RATIO_THRESHOLD` を 0.45 → 0.42 に下げる、または `SPEECH_FRAME_MIN_RATIO` を 0.03 → 0.02 に下げる |
 
-## 電話マイク経路: 振幅 VAD
+## 補足
 
-Android `MediaRecorder.getMaxAmplitude()` を 100 ms ごとにポーリングし、録音中のピーク振幅を追跡する。
-
-| 定数 | 値 | 説明 |
-|---|---|---|
-| `VAD_AMPLITUDE_THRESHOLD` | 500 | 0〜32767 の範囲で無音と判断する上限 |
-
-録音停止時に `maxAmplitudeSeen < 500` であれば Groq 送信をスキップして READY に戻る。
+以前は電話マイク経路に対して振幅ベースの簡易 VAD を持っていたが、現在は削除済み。  
+録音開始/停止は BLE デバイス側ファームウェアが担い、Android アプリは受信した BLE PCM をこの仕様で判定する。

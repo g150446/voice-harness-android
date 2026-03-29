@@ -34,12 +34,18 @@ enum class BleConnectionState { DISCONNECTED, SCANNING, CONNECTING, CONNECTED }
 data class AudioPacket(val seqNum: Int, val pcmData: ByteArray)
 
 sealed class BleEvent {
-    object RecordingStarted : BleEvent()
-    object RecordingStopped : BleEvent()
+    data object RecordingStarted : BleEvent()
+    data object RecordingStopped : BleEvent()
     data class MotionActive(val ax: Float, val ay: Float, val az: Float) : BleEvent()
-    object GestureDetected : BleEvent()
-    object LightSleepEnter : BleEvent()
-    object LightSleepWake : BleEvent()
+    data object GestureDetected : BleEvent()
+    data object LightSleepEnter : BleEvent()
+    data object LightSleepWake : BleEvent()
+}
+
+private enum class ScanPurpose {
+    AUTO_CONNECT,
+    MANUAL_SCAN,
+    MANUAL_CONNECT
 }
 
 @SuppressLint("MissingPermission")
@@ -56,6 +62,8 @@ class BleManager(
         const val SCAN_TIMEOUT_MS = 30_000L
     }
 
+    private val preferences = BleConnectionPreferences(context)
+
     private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
     val connectionState: StateFlow<BleConnectionState> = _connectionState
 
@@ -65,6 +73,13 @@ class BleManager(
     private val _bleEvents = MutableSharedFlow<BleEvent>(extraBufferCapacity = 16)
     val bleEvents: SharedFlow<BleEvent> = _bleEvents
 
+    private val _scannedDevices = MutableStateFlow<List<BleDeviceInfo>>(emptyList())
+    val scannedDevices: StateFlow<List<BleDeviceInfo>> = _scannedDevices
+
+    private val _preferredDevice = MutableStateFlow(preferences.preferredDevice())
+    val preferredDevice: StateFlow<BleDeviceInfo?> = _preferredDevice
+
+    private var bluetoothManager: BluetoothManager? = null
     private var gatt: BluetoothGatt? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
     private var isScanning = false
@@ -72,24 +87,106 @@ class BleManager(
 
     private var reconnectJob: Job? = null
     private var scanTimeoutJob: Job? = null
-    private var reconnectDelayMs = 2000L
+    private var reconnectDelayMs = 2_000L
 
-    // --- Scan ---
+    private val discoveredDevices = LinkedHashMap<String, BluetoothDevice>()
+    private val discoveredDeviceInfo = LinkedHashMap<String, BleDeviceInfo>()
+    private var pendingTargetAddress: String? = null
+    private var scanPurpose: ScanPurpose? = null
+    private var autoReconnectEnabled = preferences.isAutoReconnectEnabled()
+    private var isShuttingDown = false
 
-    fun startScan(bluetoothManager: BluetoothManager) {
+    fun start(bluetoothManager: BluetoothManager) {
+        this.bluetoothManager = bluetoothManager
+        isShuttingDown = false
+        if (autoReconnectEnabled) {
+            startAutoConnect()
+        } else {
+            _connectionState.value = BleConnectionState.DISCONNECTED
+        }
+    }
+
+    fun startManualScan() {
+        reconnectJob?.cancel()
+        pendingTargetAddress = null
+        startScan(scanPurpose = ScanPurpose.MANUAL_SCAN, targetAddress = null)
+    }
+
+    fun connectToDevice(address: String) {
+        reconnectJob?.cancel()
+        autoReconnectEnabled = true
+        pendingTargetAddress = address
+
+        val knownDevice = discoveredDevices[address]
+        if (knownDevice != null) {
+            bluetoothManager?.let { stopScan(it) }
+            connectGatt(knownDevice, ScanPurpose.MANUAL_CONNECT)
+            return
+        }
+
+        startScan(scanPurpose = ScanPurpose.MANUAL_CONNECT, targetAddress = address)
+    }
+
+    fun disconnectManually() {
+        Log.d(TAG, "Manual BLE disconnect requested")
+        autoReconnectEnabled = false
+        preferences.setAutoReconnectEnabled(false)
+        pendingTargetAddress = null
+        reconnectJob?.cancel()
+        bluetoothManager?.let { stopScan(it) }
+        clearDiscoveredDevices()
+        disconnectInternal()
+        _connectionState.value = BleConnectionState.DISCONNECTED
+    }
+
+    fun shutdown() {
+        isShuttingDown = true
+        reconnectJob?.cancel()
+        scanTimeoutJob?.cancel()
+        bluetoothManager?.let { stopScan(it) }
+        disconnectInternal()
+        _connectionState.value = BleConnectionState.DISCONNECTED
+    }
+
+    private fun startAutoConnect() {
+        val preferred = _preferredDevice.value
+        if (preferred == null) {
+            autoReconnectEnabled = false
+            preferences.setAutoReconnectEnabled(false)
+            _connectionState.value = BleConnectionState.DISCONNECTED
+            return
+        }
+        pendingTargetAddress = preferred.address
+        startScan(scanPurpose = ScanPurpose.AUTO_CONNECT, targetAddress = preferred.address)
+    }
+
+    private fun startScan(scanPurpose: ScanPurpose, targetAddress: String?) {
+        val bluetoothManager = bluetoothManager ?: run {
+            Log.w(TAG, "Bluetooth manager unavailable")
+            return
+        }
         val adapter = bluetoothManager.adapter
         if (adapter == null || !adapter.isEnabled) {
             Log.w(TAG, "Bluetooth not enabled")
+            _connectionState.value = BleConnectionState.DISCONNECTED
             return
         }
-        if (isScanning) return
-        isScanning = true
-        _connectionState.value = BleConnectionState.SCANNING
+
+        reconnectJob?.cancel()
+        scanTimeoutJob?.cancel()
+        if (isScanning) {
+            stopScan(bluetoothManager)
+        }
+
+        this.scanPurpose = scanPurpose
+        pendingTargetAddress = targetAddress
+        if (scanPurpose != ScanPurpose.AUTO_CONNECT) {
+            clearDiscoveredDevices()
+        }
 
         val scanner = adapter.bluetoothLeScanner ?: run {
             Log.e(TAG, "BLE scanner unavailable")
             _connectionState.value = BleConnectionState.DISCONNECTED
-            isScanning = false
             return
         }
 
@@ -97,27 +194,24 @@ class BleManager(
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
-        // No ScanFilter: some firmware puts service UUID only in scan response,
-        // which Android's ScanFilter ignores. We match manually in onScanResult
-        // using scanRecord.serviceUuids which covers both AD and scan response.
+        isScanning = true
+        _connectionState.value = BleConnectionState.SCANNING
         scanner.startScan(emptyList(), settings, scanCallback)
-        Log.d(TAG, "BLE scan started (no filter)")
+        Log.d(TAG, "BLE scan started: purpose=$scanPurpose target=${targetAddress ?: "none"}")
 
-        // Stop scan after timeout to avoid draining battery indefinitely
-        scanTimeoutJob?.cancel()
         scanTimeoutJob = scope.launch {
             delay(SCAN_TIMEOUT_MS)
-            if (isScanning) {
-                Log.d(TAG, "Scan timeout — scheduling retry")
-                stopScan(bluetoothManager)
-                scheduleReconnect()
-            }
+            if (!isScanning) return@launch
+            Log.d(TAG, "Scan timeout: purpose=$scanPurpose target=${targetAddress ?: "none"}")
+            stopScan(bluetoothManager)
+            onScanFinishedWithoutConnection(scanPurpose)
         }
     }
 
     private fun stopScan(bluetoothManager: BluetoothManager) {
         if (!isScanning) return
         isScanning = false
+        scanTimeoutJob?.cancel()
         try {
             bluetoothManager.adapter?.bluetoothLeScanner?.stopScan(scanCallback)
         } catch (e: Exception) {
@@ -125,70 +219,115 @@ class BleManager(
         }
     }
 
-    private var bluetoothManager: BluetoothManager? = null
+    private fun onScanFinishedWithoutConnection(purpose: ScanPurpose?) {
+        if (purpose == ScanPurpose.AUTO_CONNECT || purpose == ScanPurpose.MANUAL_CONNECT) {
+            scheduleReconnectIfAllowed()
+        } else {
+            _connectionState.value = BleConnectionState.DISCONNECTED
+        }
+    }
 
-    fun start(bluetoothManager: BluetoothManager) {
-        this.bluetoothManager = bluetoothManager
-        startScan(bluetoothManager)
+    private fun clearDiscoveredDevices() {
+        discoveredDevices.clear()
+        discoveredDeviceInfo.clear()
+        _scannedDevices.value = emptyList()
+    }
+
+    private fun updateScannedDevice(result: ScanResult) {
+        val address = result.device.address ?: return
+        val name = result.device.name
+            ?: result.scanRecord?.deviceName
+            ?: discoveredDeviceInfo[address]?.name
+            ?: address
+        discoveredDevices[address] = result.device
+        discoveredDeviceInfo[address] = BleDeviceInfo(
+            address = address,
+            name = name,
+            rssi = result.rssi
+        )
+        _scannedDevices.value = discoveredDeviceInfo.values
+            .sortedWith(
+                compareByDescending<BleDeviceInfo> { it.rssi ?: Int.MIN_VALUE }
+                    .thenBy { it.name }
+            )
     }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            // Match by service UUID in scanRecord (covers both AD and scan response)
             val uuids = result.scanRecord?.serviceUuids
             if (uuids == null || !uuids.contains(ParcelUuid(SERVICE_UUID))) return
-            Log.d(TAG, "Found target device: ${result.device.address}")
-            scanTimeoutJob?.cancel()
-            bluetoothManager?.let { stopScan(it) }
-            connectToDevice(result.device)
+
+            updateScannedDevice(result)
+            val targetAddress = pendingTargetAddress
+            if (targetAddress != null && result.device.address == targetAddress) {
+                scanTimeoutJob?.cancel()
+                bluetoothManager?.let { stopScan(it) }
+                connectGatt(result.device, scanPurpose ?: ScanPurpose.MANUAL_CONNECT)
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {
             Log.e(TAG, "Scan failed: $errorCode")
             isScanning = false
             _connectionState.value = BleConnectionState.DISCONNECTED
-            scheduleReconnect()
+            onScanFinishedWithoutConnection(scanPurpose)
         }
     }
 
-    // --- Connect ---
-
-    private fun connectToDevice(device: BluetoothDevice) {
+    private fun connectGatt(device: BluetoothDevice, purpose: ScanPurpose) {
+        disconnectInternal(closeOnly = true)
+        scanPurpose = purpose
+        pendingTargetAddress = device.address
         _connectionState.value = BleConnectionState.CONNECTING
         gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        Log.d(TAG, "Connecting to ${device.address}")
+        Log.d(TAG, "Connecting to ${device.address} (purpose=$purpose)")
     }
 
-    fun disconnect() {
-        reconnectJob?.cancel()
+    private fun disconnectInternal(closeOnly: Boolean = false) {
         scanTimeoutJob?.cancel()
-        gatt?.disconnect()
-        gatt?.close()
+        reconnectJob?.cancel()
+        val currentGatt = gatt
         gatt = null
         rxCharacteristic = null
-        isScanning = false
         lastSeqNum = -1
-        _connectionState.value = BleConnectionState.DISCONNECTED
-        Log.d(TAG, "Disconnected")
+        if (currentGatt != null) {
+            try {
+                if (!closeOnly) {
+                    currentGatt.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error disconnecting GATT: ${e.message}")
+            }
+            try {
+                currentGatt.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing GATT: ${e.message}")
+            }
+        }
     }
-
-    // --- GATT Callback ---
 
     private val gattCallback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            val isCurrentGatt = this@BleManager.gatt === gatt
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    if (!isCurrentGatt) return
                     Log.d(TAG, "GATT connected, requesting MTU")
                     gatt.requestMtu(247)
                 }
+
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.d(TAG, "GATT disconnected (status=$status)")
                     gatt.close()
+                    if (!isCurrentGatt) return
                     this@BleManager.gatt = null
                     rxCharacteristic = null
+                    lastSeqNum = -1
                     _connectionState.value = BleConnectionState.DISCONNECTED
-                    scheduleReconnect()
+                    if (!isShuttingDown) {
+                        scheduleReconnectIfAllowed()
+                    }
                 }
             }
         }
@@ -201,18 +340,19 @@ class BleManager(
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.e(TAG, "Service discovery failed: $status")
-                scheduleReconnect()
+                gatt.disconnect()
                 return
             }
 
             val service = gatt.getService(SERVICE_UUID) ?: run {
                 Log.e(TAG, "Audio service not found")
-                scheduleReconnect()
+                gatt.disconnect()
                 return
             }
 
             val txChar = service.getCharacteristic(TX_CHAR_UUID) ?: run {
                 Log.e(TAG, "TX characteristic not found")
+                gatt.disconnect()
                 return
             }
             rxCharacteristic = service.getCharacteristic(RX_CHAR_UUID)
@@ -221,6 +361,7 @@ class BleManager(
 
             val cccd = txChar.getDescriptor(CCCD_UUID) ?: run {
                 Log.e(TAG, "CCCD descriptor not found")
+                gatt.disconnect()
                 return
             }
 
@@ -242,12 +383,25 @@ class BleManager(
             if (descriptor.uuid == CCCD_UUID && status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "Notifications enabled — BLE fully connected")
                 reconnectJob?.cancel()
-                reconnectDelayMs = 2000L
+                reconnectDelayMs = 2_000L
                 _connectionState.value = BleConnectionState.CONNECTED
+
+                val connectedDevice = BleDeviceInfo(
+                    address = gatt.device.address,
+                    name = gatt.device.name ?: _preferredDevice.value?.name ?: gatt.device.address
+                )
+                if (scanPurpose == ScanPurpose.MANUAL_CONNECT) {
+                    autoReconnectEnabled = true
+                    preferences.savePreferredDevice(connectedDevice, autoReconnectEnabled = true)
+                    _preferredDevice.value = connectedDevice
+                } else if (scanPurpose == ScanPurpose.AUTO_CONNECT) {
+                    preferences.savePreferredDevice(connectedDevice, autoReconnectEnabled = true)
+                    _preferredDevice.value = connectedDevice
+                }
+                pendingTargetAddress = connectedDevice.address
             }
         }
 
-        // API 33+ override
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
@@ -256,7 +410,6 @@ class BleManager(
             handleCharacteristicData(characteristic.uuid, value)
         }
 
-        // API < 33 override
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
@@ -274,16 +427,15 @@ class BleManager(
                 val seqNum = data[0].toInt() and 0xFF
                 if (lastSeqNum >= 0) {
                     val expected = (lastSeqNum + 1) and 0xFF
-                    // Some firmware increments seqNum every 2 packets; ignore same-seq duplicates
                     if (seqNum != expected && seqNum != lastSeqNum) {
                         val dropped = (seqNum - expected + 256) and 0xFF
                         Log.w(TAG, "PCM gap: ~$dropped packets dropped (expected $expected, got $seqNum)")
                     }
                 }
                 lastSeqNum = seqNum
-                val pcm = data.copyOfRange(2, data.size)
-                _audioPackets.tryEmit(AudioPacket(seqNum, pcm))
+                _audioPackets.tryEmit(AudioPacket(seqNum, data.copyOfRange(2, data.size)))
             }
+
             0x55 -> {
                 if (data.size < 3) return
                 val event = when (data[2].toInt() and 0xFF) {
@@ -294,6 +446,7 @@ class BleManager(
                         Log.d(TAG, "Gesture detected (motion settled)")
                         BleEvent.GestureDetected
                     }
+
                     0x20 -> BleEvent.LightSleepEnter
                     0x21 -> BleEvent.LightSleepWake
                     else -> null
@@ -304,19 +457,16 @@ class BleManager(
     }
 
     private fun parseMotionActive(data: ByteArray): BleEvent.MotionActive {
-        // Bytes 3-14: 3 × float32 (little-endian)
         fun floatAt(offset: Int): Float {
             if (data.size < offset + 4) return 0f
             val bits = (data[offset].toInt() and 0xFF) or
-                    ((data[offset + 1].toInt() and 0xFF) shl 8) or
-                    ((data[offset + 2].toInt() and 0xFF) shl 16) or
-                    ((data[offset + 3].toInt() and 0xFF) shl 24)
+                ((data[offset + 1].toInt() and 0xFF) shl 8) or
+                ((data[offset + 2].toInt() and 0xFF) shl 16) or
+                ((data[offset + 3].toInt() and 0xFF) shl 24)
             return java.lang.Float.intBitsToFloat(bits)
         }
         return BleEvent.MotionActive(floatAt(3), floatAt(7), floatAt(11))
     }
-
-    // --- Send command to nRF52840 ---
 
     fun sendToRx(byte: Byte) {
         val characteristic = rxCharacteristic ?: run {
@@ -340,16 +490,29 @@ class BleManager(
         }
     }
 
-    // --- Reconnect ---
+    private fun scheduleReconnectIfAllowed() {
+        if (!autoReconnectEnabled) {
+            Log.d(TAG, "Auto reconnect disabled; staying disconnected")
+            return
+        }
+        val bluetoothManager = bluetoothManager ?: return
+        val targetAddress = pendingTargetAddress ?: _preferredDevice.value?.address
+        if (targetAddress.isNullOrBlank()) {
+            Log.d(TAG, "No preferred device to reconnect")
+            return
+        }
 
-    private fun scheduleReconnect() {
-        val bm = bluetoothManager ?: return
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
-            Log.d(TAG, "Reconnecting in ${reconnectDelayMs}ms")
+            Log.d(TAG, "Reconnecting in ${reconnectDelayMs}ms to $targetAddress")
             delay(reconnectDelayMs)
             reconnectDelayMs = (reconnectDelayMs * 2).coerceAtMost(60_000L)
-            startScan(bm)
+            if (!isShuttingDown) {
+                startScan(
+                    scanPurpose = ScanPurpose.AUTO_CONNECT,
+                    targetAddress = targetAddress
+                )
+            }
         }
     }
 }

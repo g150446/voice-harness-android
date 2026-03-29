@@ -41,10 +41,28 @@ class BleConnectionService : Service() {
         private val _bleEvents = MutableSharedFlow<BleEvent>(extraBufferCapacity = 16)
         val bleEvents: SharedFlow<BleEvent> = _bleEvents.asSharedFlow()
 
+        private val _scannedDevices = MutableStateFlow<List<BleDeviceInfo>>(emptyList())
+        val scannedDevices: StateFlow<List<BleDeviceInfo>> = _scannedDevices.asStateFlow()
+
+        private val _preferredDevice = MutableStateFlow<BleDeviceInfo?>(null)
+        val preferredDevice: StateFlow<BleDeviceInfo?> = _preferredDevice.asStateFlow()
+
         private var instance: BleConnectionService? = null
 
         fun sendCommand(byte: Byte) {
             instance?.bleManager?.sendToRx(byte)
+        }
+
+        fun startScan() {
+            instance?.bleManager?.startManualScan()
+        }
+
+        fun connectToDevice(address: String) {
+            instance?.bleManager?.connectToDevice(address)
+        }
+
+        fun disconnectFromDevice() {
+            instance?.bleManager?.disconnectManually()
         }
 
         fun start(context: Context) {
@@ -84,7 +102,7 @@ class BleConnectionService : Service() {
                         BleConnectionState.SCANNING -> "BLE: Scanning..."
                         BleConnectionState.CONNECTING -> "BLE: Connecting..."
                         BleConnectionState.CONNECTED -> "BLE: Connected"
-                        BleConnectionState.DISCONNECTED -> "BLE: Disconnected — reconnecting"
+                        BleConnectionState.DISCONNECTED -> "BLE: Disconnected"
                     }
                     updateNotification(text)
                 }
@@ -94,6 +112,12 @@ class BleConnectionService : Service() {
             }
             serviceScope.launch {
                 mgr.bleEvents.collect { _bleEvents.tryEmit(it) }
+            }
+            serviceScope.launch {
+                mgr.scannedDevices.collect { _scannedDevices.value = it }
+            }
+            serviceScope.launch {
+                mgr.preferredDevice.collect { _preferredDevice.value = it }
             }
         }
     }
@@ -106,9 +130,10 @@ class BleConnectionService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Service destroyed")
-        bleManager?.disconnect()
+        bleManager?.shutdown()
         serviceScope.cancel()
         _connectionState.value = BleConnectionState.DISCONNECTED
+        _scannedDevices.value = emptyList()
         instance = null
     }
 

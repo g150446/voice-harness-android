@@ -1,15 +1,12 @@
 package com.g150446.voiceharness
 
 import android.app.Application
-import android.media.MediaRecorder
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -30,9 +27,6 @@ private const val TAG = "VoiceViewModel"
 private const val PCM_SAMPLE_RATE = 16000
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
-
-// VAD thresholds
-private const val VAD_AMPLITUDE_THRESHOLD = 500    // MediaRecorder.getMaxAmplitude() range 0-32767
 
 private data class TranscriptionPayload(
     val text: String,
@@ -68,11 +62,14 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private val _bleMode = MutableStateFlow(false)
     val bleMode: StateFlow<Boolean> = _bleMode
 
-    // Phone mic recording
-    private var mediaRecorder: MediaRecorder? = null
-    private var audioFile: File? = null
-    private var maxAmplitudeSeen = 0
-    private var amplitudePollingJob: Job? = null
+    private val _availableBleDevices = MutableStateFlow<List<BleDeviceInfo>>(emptyList())
+    val availableBleDevices: StateFlow<List<BleDeviceInfo>> = _availableBleDevices
+
+    private val _preferredBleDevice = MutableStateFlow<BleDeviceInfo?>(null)
+    val preferredBleDevice: StateFlow<BleDeviceInfo?> = _preferredBleDevice
+
+    private val _selectedBleDeviceAddress = MutableStateFlow<String?>(null)
+    val selectedBleDeviceAddress: StateFlow<String?> = _selectedBleDeviceAddress
 
     // BLE PCM accumulation
     private val pcmBuffer = ByteArrayOutputStream()
@@ -114,6 +111,25 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
                 if (isCollectingPcm) {
                     pcmBuffer.write(packet.pcmData)
                 }
+            }
+        }
+
+        viewModelScope.launch {
+            BleConnectionService.scannedDevices.collect { devices ->
+                _availableBleDevices.value = devices
+                val selectedAddress = _selectedBleDeviceAddress.value
+                if (selectedAddress != null && devices.none { it.address == selectedAddress }) {
+                    _selectedBleDeviceAddress.value = null
+                }
+                if (_selectedBleDeviceAddress.value == null && devices.size == 1) {
+                    _selectedBleDeviceAddress.value = devices.first().address
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            BleConnectionService.preferredDevice.collect { device ->
+                _preferredBleDevice.value = device
             }
         }
     }
@@ -173,88 +189,6 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
                 return@launch
             }
             transcribeAndRespondFromFile(wavFile, apiKey, "audio/wav")
-        }
-    }
-
-    // --- Phone mic recording ---
-
-    fun startRecording() {
-        if (_state.value != VoiceState.READY && _state.value != VoiceState.ERROR) return
-        val ctx = getApplication<Application>()
-        val file = File(ctx.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
-        audioFile = file
-
-        try {
-            mediaRecorder = MediaRecorder(ctx).apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioEncodingBitRate(64_000)
-                setAudioSamplingRate(16_000)
-                setOutputFile(file.absolutePath)
-                prepare()
-                start()
-            }
-            _state.value = VoiceState.RECORDING
-            _bleMode.value = false
-            _transcription.value = ""
-            _response.value = ""
-            _errorMessage.value = ""
-            maxAmplitudeSeen = 0
-            // Poll amplitude every 100ms to track peak during recording
-            amplitudePollingJob = viewModelScope.launch {
-                while (_state.value == VoiceState.RECORDING && !_bleMode.value) {
-                    delay(100)
-                    val amp = mediaRecorder?.maxAmplitude ?: 0
-                    if (amp > maxAmplitudeSeen) maxAmplitudeSeen = amp
-                }
-            }
-            Log.d(TAG, "Phone mic recording started: ${file.absolutePath}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start recording", e)
-            releaseRecorder()
-            _errorMessage.value = "録音開始失敗: ${e.message}"
-            _state.value = VoiceState.ERROR
-        }
-    }
-
-    fun stopRecordingAndProcess() {
-        if (_state.value != VoiceState.RECORDING || _bleMode.value) return
-
-        amplitudePollingJob?.cancel()
-        amplitudePollingJob = null
-        val finalMaxAmplitude = maxAmplitudeSeen
-        maxAmplitudeSeen = 0
-
-        val file = audioFile ?: return
-        try {
-            mediaRecorder?.apply { stop(); reset(); release() }
-            mediaRecorder = null
-            Log.d(TAG, "Phone mic recording stopped, maxAmplitude=$finalMaxAmplitude")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to stop recording", e)
-        }
-
-        // Always stop TTS even if VAD finds no speech
-        tts?.stop()
-
-        if (finalMaxAmplitude < VAD_AMPLITUDE_THRESHOLD) {
-            Log.d(TAG, "VAD: no speech detected (maxAmplitude=$finalMaxAmplitude) — skipping Groq")
-            _state.value = VoiceState.READY
-            file.delete()
-            return
-        }
-
-        val apiKey = getApiKey()
-        if (apiKey.isBlank()) {
-            _errorMessage.value = "Groq API キーが未設定です。設定画面で入力してください。"
-            _state.value = VoiceState.ERROR
-            file.delete()
-            return
-        }
-
-        viewModelScope.launch(Dispatchers.IO) {
-            transcribeAndRespondFromFile(file, apiKey, "audio/mp4")
         }
     }
 
@@ -531,6 +465,32 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         _state.value = VoiceState.READY
     }
 
+    fun startBleScan() {
+        _selectedBleDeviceAddress.value = null
+        BleConnectionService.startScan()
+    }
+
+    fun selectBleDevice(address: String) {
+        _selectedBleDeviceAddress.value = address
+    }
+
+    fun connectSelectedBleDevice() {
+        val address = _selectedBleDeviceAddress.value ?: return
+        _errorMessage.value = ""
+        BleConnectionService.connectToDevice(address)
+    }
+
+    fun disconnectBleDevice() {
+        tts?.stop()
+        isCollectingPcm = false
+        pcmBuffer.reset()
+        _bleMode.value = false
+        if (_state.value == VoiceState.RECORDING || _state.value == VoiceState.SPEAKING) {
+            _state.value = VoiceState.READY
+        }
+        BleConnectionService.disconnectFromDevice()
+    }
+
     // --- Helpers ---
 
     private fun parseTranscriptionPayload(responseBody: String): TranscriptionPayload {
@@ -615,15 +575,8 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             .getSharedPreferences("groq_prefs", android.content.Context.MODE_PRIVATE)
             .getString("groq_api_key", "") ?: ""
 
-    private fun releaseRecorder() {
-        try { mediaRecorder?.apply { reset(); release() } } catch (_: Exception) {}
-        mediaRecorder = null
-    }
-
     override fun onCleared() {
         super.onCleared()
-        amplitudePollingJob?.cancel()
-        releaseRecorder()
         tts?.stop()
         tts?.shutdown()
         sileroVad?.close()

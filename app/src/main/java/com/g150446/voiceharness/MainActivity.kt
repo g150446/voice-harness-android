@@ -11,6 +11,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,14 +25,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,12 +51,7 @@ class MainActivity : ComponentActivity() {
 
     private val requestPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val recordGranted = permissions[Manifest.permission.RECORD_AUDIO] == true
-        if (recordGranted) {
-            // BLE service is started separately; just check if we should start recording
-        }
-        // Start BLE service if BLE permissions are now granted
+    ) {
         if (hasBlePermissions()) {
             BleConnectionService.start(this)
         }
@@ -63,7 +61,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Start BLE service if we have permissions
         if (hasBlePermissions()) {
             BleConnectionService.start(this)
         } else {
@@ -75,67 +72,44 @@ class MainActivity : ComponentActivity() {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     VoiceScreen(
                         modifier = Modifier.padding(innerPadding),
-                        viewModel = voiceViewModel,
-                        onRecordClick = { handleRecordButtonClick() }
+                        viewModel = voiceViewModel
                     )
                 }
             }
         }
     }
 
-    private fun handleRecordButtonClick() {
-        val state = voiceViewModel.state.value
-        when (state) {
-            VoiceState.RECORDING -> voiceViewModel.stopRecordingAndProcess()
-            VoiceState.SPEAKING -> {
-                voiceViewModel.stopSpeaking()
-                voiceViewModel.startRecording()
-            }
-            VoiceState.READY, VoiceState.ERROR -> {
-                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-                    == PackageManager.PERMISSION_GRANTED
-                ) {
-                    voiceViewModel.startRecording()
-                } else {
-                    requestAllPermissions()
-                }
-            }
-            else -> {} // ignore taps while transcribing/responding
-        }
-    }
-
     private fun hasBlePermissions(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) ==
-                    PackageManager.PERMISSION_GRANTED &&
-                    ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
-                    PackageManager.PERMISSION_GRANTED
+                PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-                    PackageManager.PERMISSION_GRANTED
+                PackageManager.PERMISSION_GRANTED
         }
     }
 
     private fun requestAllPermissions() {
-        val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            perms.add(Manifest.permission.BLUETOOTH_SCAN)
-            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+            permissions += Manifest.permission.BLUETOOTH_SCAN
+            permissions += Manifest.permission.BLUETOOTH_CONNECT
         } else {
-            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            permissions += Manifest.permission.ACCESS_FINE_LOCATION
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+            permissions += Manifest.permission.POST_NOTIFICATIONS
         }
-        requestPermissionsLauncher.launch(perms.toTypedArray())
+        requestPermissionsLauncher.launch(permissions.toTypedArray())
     }
 }
 
 @Composable
 fun VoiceScreen(
     modifier: Modifier = Modifier,
-    viewModel: VoiceViewModel = viewModel(),
-    onRecordClick: () -> Unit = {}
+    viewModel: VoiceViewModel = viewModel()
 ) {
     val state by viewModel.state.collectAsState()
     val transcription by viewModel.transcription.collectAsState()
@@ -143,6 +117,9 @@ fun VoiceScreen(
     val errorMessage by viewModel.errorMessage.collectAsState()
     val bleConnectionState by viewModel.bleConnectionState.collectAsState()
     val bleMode by viewModel.bleMode.collectAsState()
+    val availableBleDevices by viewModel.availableBleDevices.collectAsState()
+    val selectedBleDeviceAddress by viewModel.selectedBleDeviceAddress.collectAsState()
+    val preferredBleDevice by viewModel.preferredBleDevice.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
@@ -161,12 +138,11 @@ fun VoiceScreen(
             modifier = Modifier.padding(top = 8.dp, bottom = 8.dp)
         )
 
-        // BLE connection status dot
         val (dotColor, bleLabel) = when (bleConnectionState) {
             BleConnectionState.CONNECTED -> Color(0xFF43A047) to "BLE Connected"
             BleConnectionState.CONNECTING -> Color(0xFFFFA726) to "BLE Connecting..."
             BleConnectionState.SCANNING -> Color(0xFF42A5F5) to "BLE Scanning..."
-            BleConnectionState.DISCONNECTED -> Color(0xFF9E9E9E) to "BLE Off"
+            BleConnectionState.DISCONNECTED -> Color(0xFF9E9E9E) to "BLE Disconnected"
         }
         Row(
             modifier = Modifier.padding(bottom = 12.dp),
@@ -176,14 +152,24 @@ fun VoiceScreen(
             Canvas(modifier = Modifier.size(8.dp)) { drawCircle(color = dotColor) }
             Text(text = bleLabel, fontSize = 12.sp, color = dotColor)
             if (bleMode && state == VoiceState.RECORDING) {
-                Text(text = "  (nRF52840)", fontSize = 11.sp, color = Color(0xFF9E9E9E))
+                Text(text = "(nRF52840 recording)", fontSize = 11.sp, color = Color(0xFF9E9E9E))
             }
         }
 
-        // Status indicator
+        preferredBleDevice?.let { device ->
+            Text(
+                text = "Preferred device: ${device.name}",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+            )
+        }
+
         val statusText = when (state) {
-            VoiceState.READY -> "Ready"
-            VoiceState.RECORDING -> if (bleMode) "Recording (BLE)..." else "Recording..."
+            VoiceState.READY -> "Ready for BLE audio"
+            VoiceState.RECORDING -> "Recording (BLE)..."
             VoiceState.TRANSCRIBING -> "Transcribing..."
             VoiceState.RESPONDING -> "Generating response..."
             VoiceState.SPEAKING -> "Speaking..."
@@ -201,7 +187,6 @@ fun VoiceScreen(
             modifier = Modifier.padding(bottom = 16.dp)
         )
 
-        // Error message
         if (errorMessage.isNotEmpty()) {
             Text(
                 text = errorMessage,
@@ -213,72 +198,146 @@ fun VoiceScreen(
             )
         }
 
-        // Transcription
         if (transcription.isNotEmpty()) {
             Text(
                 text = "あなた",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 4.dp)
             )
             Text(
                 text = transcription,
                 fontSize = 15.sp,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
             )
         }
 
-        // AI response
         if (response.isNotEmpty()) {
             Text(
                 text = "AI",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 4.dp)
             )
             Text(
                 text = response,
                 fontSize = 15.sp,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp)
             )
+        }
+
+        Text(
+            text = if (bleConnectionState == BleConnectionState.CONNECTED) {
+                "BLE デバイスのジェスチャーから録音が始まります"
+            } else {
+                "音声入力は BLE デバイスのみです。Scan して接続してください"
+            },
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = viewModel::startBleScan,
+                enabled = bleConnectionState != BleConnectionState.CONNECTING,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(if (bleConnectionState == BleConnectionState.SCANNING) "Scanning..." else "Scan devices")
+            }
+            Button(
+                onClick = viewModel::connectSelectedBleDevice,
+                enabled = selectedBleDeviceAddress != null &&
+                    bleConnectionState != BleConnectionState.CONNECTED &&
+                    bleConnectionState != BleConnectionState.CONNECTING,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Connect")
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Record button (phone mic; disabled when BLE recording is active)
-        val buttonLabel = when {
-            state == VoiceState.RECORDING && bleMode -> "■  Stop BLE Recording"
-            state == VoiceState.RECORDING -> "■  Stop"
-            state == VoiceState.SPEAKING -> "■  Stop Speaking"
-            state == VoiceState.TRANSCRIBING || state == VoiceState.RESPONDING -> "..."
-            else -> "●  Record (Mic)"
-        }
-        val buttonEnabled = state == VoiceState.READY ||
-            state == VoiceState.RECORDING ||
-            state == VoiceState.SPEAKING ||
-            state == VoiceState.ERROR
-        val buttonColor = if (state == VoiceState.RECORDING) Color(0xFFE53935)
-        else MaterialTheme.colorScheme.primary
-
-        Button(
-            onClick = onRecordClick,
-            enabled = buttonEnabled,
-            colors = ButtonDefaults.buttonColors(containerColor = buttonColor),
-            modifier = Modifier.fillMaxWidth().height(56.dp)
+        OutlinedButton(
+            onClick = viewModel::disconnectBleDevice,
+            enabled = bleConnectionState == BleConnectionState.CONNECTED ||
+                bleConnectionState == BleConnectionState.CONNECTING,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Text(buttonLabel, fontSize = 16.sp)
+            Text("Disconnect")
         }
 
-        if (bleConnectionState == BleConnectionState.CONNECTED) {
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Discovered devices",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+        )
+
+        if (availableBleDevices.isEmpty()) {
             Text(
-                text = "ジェスチャーでも録音開始できます",
-                fontSize = 11.sp,
-                color = Color(0xFF9E9E9E),
-                modifier = Modifier.padding(top = 4.dp)
+                text = if (bleConnectionState == BleConnectionState.SCANNING) {
+                    "Searching for BLE devices..."
+                } else {
+                    "No BLE devices found yet"
+                },
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
             )
+        } else {
+            availableBleDevices.forEach { device ->
+                val isSelected = device.address == selectedBleDeviceAddress
+                val interactionSource = remember(device.address) { MutableInteractionSource() }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = null
+                        ) {
+                            viewModel.selectBleDevice(device.address)
+                        }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = isSelected,
+                        onClick = { viewModel.selectBleDevice(device.address) }
+                    )
+                    Column(
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(text = device.name, fontSize = 14.sp)
+                        Text(
+                            text = device.address,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
         }
-
-        Spacer(modifier = Modifier.height(12.dp))
 
         OutlinedButton(
             onClick = {
