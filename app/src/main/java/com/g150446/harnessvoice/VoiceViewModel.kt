@@ -17,10 +17,16 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
 
 private const val TAG = "VoiceViewModel"
+private const val PCM_SAMPLE_RATE = 16000
+private const val PCM_CHANNELS = 1
+private const val PCM_BITS_PER_SAMPLE = 16
 
 enum class VoiceState {
     READY,
@@ -45,15 +51,53 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private val _errorMessage = MutableStateFlow("")
     val errorMessage: StateFlow<String> = _errorMessage
 
+    // BLE state mirrored from BleConnectionService
+    private val _bleConnectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
+    val bleConnectionState: StateFlow<BleConnectionState> = _bleConnectionState
+
+    // true when recording is driven by BLE (nRF52840), false when using phone mic
+    private val _bleMode = MutableStateFlow(false)
+    val bleMode: StateFlow<Boolean> = _bleMode
+
+    // Phone mic recording
     private var mediaRecorder: MediaRecorder? = null
     private var audioFile: File? = null
-    private val httpClient = OkHttpClient()
 
+    // BLE PCM accumulation
+    private val pcmBuffer = ByteArrayOutputStream()
+    private var isCollectingPcm = false
+
+    private val httpClient = OkHttpClient()
     private var tts: TextToSpeech? = null
     private var ttsReady = false
 
     init {
         tts = TextToSpeech(application, this)
+
+        // Mirror BLE connection state
+        viewModelScope.launch {
+            BleConnectionService.connectionState?.collect { state ->
+                _bleConnectionState.value = state
+            }
+        }
+
+        // React to BLE gesture events (motion settled = gesture trigger)
+        viewModelScope.launch {
+            BleConnectionService.bleEvents?.collect { event ->
+                if (event is BleEvent.GestureDetected) {
+                    handleGestureEvent()
+                }
+            }
+        }
+
+        // Accumulate incoming PCM packets during BLE recording
+        viewModelScope.launch {
+            BleConnectionService.audioPackets?.collect { packet ->
+                if (isCollectingPcm) {
+                    pcmBuffer.write(packet.pcmData)
+                }
+            }
+        }
     }
 
     override fun onInit(status: Int) {
@@ -65,6 +109,58 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             Log.e(TAG, "TTS initialization failed: $status")
         }
     }
+
+    // --- Gesture-triggered BLE recording ---
+
+    private fun handleGestureEvent() {
+        when (_state.value) {
+            VoiceState.READY, VoiceState.ERROR -> startBleRecording()
+            VoiceState.RECORDING -> if (_bleMode.value) stopBleRecordingAndProcess()
+            else -> { /* ignore gesture while transcribing/responding/speaking */ }
+        }
+    }
+
+    private fun startBleRecording() {
+        if (_state.value != VoiceState.READY && _state.value != VoiceState.ERROR) return
+        pcmBuffer.reset()
+        isCollectingPcm = true
+        _bleMode.value = true
+        _transcription.value = ""
+        _response.value = ""
+        _errorMessage.value = ""
+        BleConnectionService.sendCommand(0x01)
+        _state.value = VoiceState.RECORDING
+        Log.d(TAG, "BLE recording started")
+    }
+
+    private fun stopBleRecordingAndProcess() {
+        if (_state.value != VoiceState.RECORDING || !_bleMode.value) return
+        isCollectingPcm = false
+        BleConnectionService.sendCommand(0x00)
+        val pcmData = pcmBuffer.toByteArray()
+        pcmBuffer.reset()
+        _bleMode.value = false
+        Log.d(TAG, "BLE recording stopped, ${pcmData.size} bytes of PCM collected")
+
+        val apiKey = getApiKey()
+        if (apiKey.isBlank()) {
+            _errorMessage.value = "Groq API キーが未設定です。設定画面で入力してください。"
+            _state.value = VoiceState.ERROR
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val wavFile = buildWavFile(pcmData)
+            if (wavFile == null) {
+                _errorMessage.value = "WAV ファイルの作成に失敗しました"
+                _state.value = VoiceState.ERROR
+                return@launch
+            }
+            transcribeAndRespondFromFile(wavFile, apiKey, "audio/wav")
+        }
+    }
+
+    // --- Phone mic recording ---
 
     fun startRecording() {
         if (_state.value != VoiceState.READY && _state.value != VoiceState.ERROR) return
@@ -84,10 +180,11 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
                 start()
             }
             _state.value = VoiceState.RECORDING
+            _bleMode.value = false
             _transcription.value = ""
             _response.value = ""
             _errorMessage.value = ""
-            Log.d(TAG, "Recording started: ${file.absolutePath}")
+            Log.d(TAG, "Phone mic recording started: ${file.absolutePath}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
             releaseRecorder()
@@ -98,20 +195,22 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
 
     fun stopRecordingAndProcess() {
         if (_state.value != VoiceState.RECORDING) return
-        val file = audioFile ?: return
+        // Delegate to BLE stop if recording via BLE
+        if (_bleMode.value) {
+            stopBleRecordingAndProcess()
+            return
+        }
 
+        val file = audioFile ?: return
         try {
             mediaRecorder?.apply { stop(); reset(); release() }
             mediaRecorder = null
-            Log.d(TAG, "Recording stopped")
+            Log.d(TAG, "Phone mic recording stopped")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop recording", e)
         }
 
-        val apiKey = getApplication<Application>()
-            .getSharedPreferences("groq_prefs", android.content.Context.MODE_PRIVATE)
-            .getString("groq_api_key", "") ?: ""
-
+        val apiKey = getApiKey()
         if (apiKey.isBlank()) {
             _errorMessage.value = "Groq API キーが未設定です。設定画面で入力してください。"
             _state.value = VoiceState.ERROR
@@ -120,21 +219,23 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            transcribeAndRespond(file, apiKey)
+            transcribeAndRespondFromFile(file, apiKey, "audio/mp4")
         }
     }
 
-    private suspend fun transcribeAndRespond(file: File, apiKey: String) {
+    // --- Shared transcription + chat logic ---
+
+    private suspend fun transcribeAndRespondFromFile(file: File, apiKey: String, mimeType: String) {
         _state.value = VoiceState.TRANSCRIBING
         _errorMessage.value = ""
 
         try {
-            // --- Step 1: Whisper transcription ---
+            // Step 1: Whisper transcription
             val transcriptionBody = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart(
                     "file",
                     file.name,
-                    file.asRequestBody("audio/mp4".toMediaType())
+                    file.asRequestBody(mimeType.toMediaType())
                 )
                 .addFormDataPart("model", "whisper-large-v3-turbo")
                 .addFormDataPart("response_format", "text")
@@ -152,7 +253,6 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             if (!transcriptionResponse.isSuccessful) {
                 _errorMessage.value = "Whisper error ${transcriptionResponse.code}: ${transcriptionBodyText.take(200)}"
                 _state.value = VoiceState.ERROR
-                file.delete()
                 return
             }
 
@@ -160,7 +260,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             _transcription.value = transcribed
             Log.d(TAG, "Transcription: $transcribed")
 
-            // --- Step 2: Chat completion ---
+            // Step 2: Chat completion
             _state.value = VoiceState.RESPONDING
 
             val chatJson = JSONObject().apply {
@@ -186,7 +286,6 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             if (!chatResponse.isSuccessful) {
                 _errorMessage.value = "Chat error ${chatResponse.code}: ${chatBodyText.take(200)}"
                 _state.value = VoiceState.ERROR
-                file.delete()
                 return
             }
 
@@ -201,7 +300,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             _response.value = responseText.ifBlank { "(返答なし)" }
             Log.d(TAG, "Response: $responseText")
 
-            // --- Step 3: TTS playback ---
+            // Step 3: TTS playback
             speakResponse(responseText)
 
         } catch (e: Exception) {
@@ -213,9 +312,50 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
         }
     }
 
+    // --- WAV file builder (for BLE PCM data) ---
+
+    private fun buildWavFile(pcmData: ByteArray): File? {
+        return try {
+            val ctx = getApplication<Application>()
+            val file = File(ctx.cacheDir, "ble_audio_${System.currentTimeMillis()}.wav")
+            val byteRate = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_BITS_PER_SAMPLE / 8
+            val blockAlign = (PCM_CHANNELS * PCM_BITS_PER_SAMPLE / 8).toShort()
+            val dataSize = pcmData.size
+            val fileSize = 36 + dataSize
+
+            val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+                put("RIFF".toByteArray())
+                putInt(fileSize)
+                put("WAVE".toByteArray())
+                put("fmt ".toByteArray())
+                putInt(16)                              // PCM chunk size
+                putShort(1)                             // PCM format
+                putShort(PCM_CHANNELS.toShort())
+                putInt(PCM_SAMPLE_RATE)
+                putInt(byteRate)
+                putShort(blockAlign)
+                putShort(PCM_BITS_PER_SAMPLE.toShort())
+                put("data".toByteArray())
+                putInt(dataSize)
+            }.array()
+
+            file.outputStream().use { out ->
+                out.write(header)
+                out.write(pcmData)
+            }
+            Log.d(TAG, "WAV file created: ${file.absolutePath} (${file.length()} bytes)")
+            file
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to build WAV file", e)
+            null
+        }
+    }
+
+    // --- TTS ---
+
     private fun speakResponse(text: String) {
         _state.value = VoiceState.SPEAKING
-        if (ttsReady && !text.isBlank()) {
+        if (ttsReady && text.isNotBlank()) {
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "response_${System.currentTimeMillis()}")
         }
         _state.value = VoiceState.READY
@@ -227,6 +367,13 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
             _state.value = VoiceState.READY
         }
     }
+
+    // --- Helpers ---
+
+    private fun getApiKey(): String =
+        getApplication<Application>()
+            .getSharedPreferences("groq_prefs", android.content.Context.MODE_PRIVATE)
+            .getString("groq_api_key", "") ?: ""
 
     private fun releaseRecorder() {
         try { mediaRecorder?.apply { reset(); release() } } catch (_: Exception) {}
