@@ -35,6 +35,10 @@ private const val PCM_BITS_PER_SAMPLE = 16
 private const val VAD_AMPLITUDE_THRESHOLD = 500    // MediaRecorder.getMaxAmplitude() range 0-32767
 private const val SILERO_SPEECH_THRESHOLD = 0.5f   // Silero per-frame probability threshold
 private const val SILERO_FRAME_MIN_RATIO  = 0.05   // fraction of frames that must be speech
+private const val SILERO_STUCK_MAX_PROB   = 0.01f  // suspiciously low for every frame => fallback
+private const val BLE_RESCUE_PEAK_THRESHOLD = 0.08f
+private const val BLE_RESCUE_RMS_THRESHOLD = 0.015f
+private const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.48
 
 enum class VoiceState {
     READY,
@@ -342,57 +346,100 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
      * between frames so the model captures speech continuity across the recording.
      * Returns true if ≥5% of frames have speech probability > 0.5.
      *
-     * Falls back to true (always send) if the ONNX session failed to load.
+     * Falls back to FFT-based spectrum VAD if Silero is unavailable or appears stuck.
      */
     private fun hasSpeechInPcm(pcmData: ByteArray): Boolean {
+        val analysis = BleSpeechDetector.analyzeBlePcm(pcmData)
         val vad = sileroVad ?: run {
-            Log.w(TAG, "Silero VAD unavailable — skipping VAD check")
-            return true
+            Log.w(TAG, "Silero VAD unavailable — falling back to spectrum VAD")
+            return hasSpeechBySpectrum(analysis.samples, "Silero unavailable")
         }
         val frameSize = SileroVad.FRAME_SIZE
-        val nSamples  = pcmData.size / 2
+        val nSamples = analysis.samples.size
         if (nSamples < frameSize) {
-            Log.d(TAG, "Silero VAD: audio too short ($nSamples samples) — skipping")
-            return false
+            Log.d(TAG, "Silero VAD: audio too short ($nSamples samples) — falling back to spectrum VAD")
+            return hasSpeechBySpectrum(analysis.samples, "Audio too short for Silero")
         }
 
-        // Decode all samples to float
-        val allSamples = FloatArray(nSamples) { i ->
-            val lo = pcmData[i * 2].toInt() and 0xFF
-            val hi = pcmData[i * 2 + 1].toInt()
-            ((hi shl 8) or lo).toShort() / 32768f
-        }
-
-        // Remove DC offset: nRF52840 PDM mic output often has a large DC bias
-        // (e.g. peak=0.093 but nearly all of it is a constant offset, leaving
-        // speech AC components at only ~0.003). Without DC removal, normalization
-        // amplifies the bias rather than the speech signal.
-        val mean = allSamples.average().toFloat()
-        for (i in allSamples.indices) allSamples[i] -= mean
-
-        // Normalize peak to 0.5 so Silero sees speech at a normal level
-        val peakAmp = allSamples.maxOfOrNull { if (it < 0) -it else it } ?: 0f
-        val gain = if (peakAmp > 0.001f) 0.5f / peakAmp else 1f
-        Log.d(TAG, "Silero VAD: dcOffset=${"%.4f".format(mean)}, peakAfterDC=${"%.4f".format(peakAmp)}, gain=${"%.1f".format(gain)}")
+        Log.d(
+            TAG,
+            "Silero VAD: dcOffset=${"%.4f".format(Locale.US, analysis.dcOffset)}, peakBeforeDC=${"%.4f".format(Locale.US, analysis.peakBeforeDc)}, peakAfterDC=${"%.4f".format(Locale.US, analysis.peakAfterDc)}, rmsAfterDC=${"%.4f".format(Locale.US, analysis.rmsAfterDc)}, gain=${"%.1f".format(Locale.US, analysis.gain)}"
+        )
 
         vad.reset()
         var speechFrames = 0
-        var totalFrames  = 0
+        var totalFrames = 0
         var maxProb = 0f
+        val firstFrameProbs = ArrayList<String>(5)
         var offset = 0
 
-        while (offset + frameSize <= nSamples) {
-            val frame = FloatArray(frameSize) { i -> allSamples[offset + i] * gain }
-            val prob = vad.predict(frame)
-            if (prob > maxProb) maxProb = prob
-            if (prob > SILERO_SPEECH_THRESHOLD) speechFrames++
-            totalFrames++
-            offset += frameSize
+        try {
+            while (offset + frameSize <= nSamples) {
+                val frame = FloatArray(frameSize) { i -> analysis.samples[offset + i] * analysis.gain }
+                val prob = vad.predict(frame)
+                if (firstFrameProbs.size < 5) {
+                    firstFrameProbs += "%.3f".format(Locale.US, prob)
+                }
+                if (prob > maxProb) maxProb = prob
+                if (prob > SILERO_SPEECH_THRESHOLD) speechFrames++
+                totalFrames++
+                offset += frameSize
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Silero VAD inference failed — falling back to spectrum VAD", e)
+            return hasSpeechBySpectrum(analysis.samples, "Silero inference error")
         }
 
         val ratio = if (totalFrames > 0) speechFrames.toDouble() / totalFrames else 0.0
-        Log.d(TAG, "Silero VAD: $speechFrames/$totalFrames speech frames (${"%.1f".format(ratio * 100)}%), maxProb=${"%.3f".format(maxProb)}")
-        return ratio >= SILERO_FRAME_MIN_RATIO
+        Log.d(
+            TAG,
+            "Silero VAD: $speechFrames/$totalFrames speech frames (${"%.1f".format(Locale.US, ratio * 100)}%), maxProb=${"%.3f".format(Locale.US, maxProb)}, firstProbs=${firstFrameProbs.joinToString(prefix = "[", postfix = "]")}"
+        )
+
+        if (ratio >= SILERO_FRAME_MIN_RATIO) {
+            return true
+        }
+
+        if (maxProb <= SILERO_STUCK_MAX_PROB) {
+            Log.w(TAG, "Silero VAD probabilities look stuck (maxProb=${"%.3f".format(Locale.US, maxProb)}) — falling back to spectrum VAD")
+            return hasSpeechBySpectrum(
+                samples = analysis.samples,
+                reason = "Silero output stuck near zero",
+                peakAfterDc = analysis.peakAfterDc,
+                rmsAfterDc = analysis.rmsAfterDc
+            )
+        }
+
+        return false
+    }
+
+    private fun hasSpeechBySpectrum(
+        samples: FloatArray,
+        reason: String,
+        peakAfterDc: Float? = null,
+        rmsAfterDc: Float? = null
+    ): Boolean {
+        val result = BleSpeechDetector.detectSpeechBySpectrum(samples, PCM_SAMPLE_RATE)
+        val rescued = peakAfterDc != null &&
+            rmsAfterDc != null &&
+            result.maxBandRatio >= BLE_RESCUE_BAND_RATIO_THRESHOLD &&
+            peakAfterDc >= BLE_RESCUE_PEAK_THRESHOLD &&
+            rmsAfterDc >= BLE_RESCUE_RMS_THRESHOLD
+        Log.d(
+            TAG,
+            "Spectrum VAD fallback: reason=$reason, speechFrames=${result.speechFrames}/${result.activeFrames} active (${result.totalFrames} total, ${"%.1f".format(Locale.US, result.ratio * 100)}%), maxBandRatio=${"%.3f".format(Locale.US, result.maxBandRatio)}, rescued=$rescued, topBandRatios=${result.topBandRatios.joinToString(prefix = "[", postfix = "]") { "%.3f".format(Locale.US, it) }}"
+        )
+        if (result.hasSpeech(BleSpeechDetector.SPEECH_FRAME_MIN_RATIO)) {
+            return true
+        }
+        if (rescued) {
+            Log.w(
+                TAG,
+                "Spectrum VAD rescue accepted BLE audio: peakAfterDC=${"%.4f".format(Locale.US, peakAfterDc)}, rmsAfterDC=${"%.4f".format(Locale.US, rmsAfterDc)}, maxBandRatio=${"%.3f".format(Locale.US, result.maxBandRatio)}"
+            )
+            return true
+        }
+        return false
     }
 
     // --- WAV file builder ---

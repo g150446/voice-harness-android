@@ -30,6 +30,7 @@ class SileroVad(context: Context) : Closeable {
         const val FRAME_SIZE = 512
         private const val SAMPLE_RATE = 16_000L
         private val STATE_SHAPE = longArrayOf(2, 1, 128)
+        private val SAMPLE_RATE_SHAPE = longArrayOf()
         private const val STATE_SIZE = 2 * 1 * 128
     }
 
@@ -41,7 +42,10 @@ class SileroVad(context: Context) : Closeable {
     init {
         val bytes = context.assets.open("silero_vad.onnx").readBytes()
         session = env.createSession(bytes, OrtSession.SessionOptions())
-        Log.d(TAG, "Silero VAD v5 session created")
+        Log.d(
+            TAG,
+            "Silero VAD v5 session created: inputs=${session.inputInfo.keys}, outputs=${session.outputInfo.keys}, srShape=${SAMPLE_RATE_SHAPE.contentToString()}"
+        )
     }
 
     /** Reset RNN state. Call once before processing each new recording. */
@@ -59,44 +63,59 @@ class SileroVad(context: Context) : Closeable {
             "Expected $FRAME_SIZE samples, got ${samples.size}"
         }
 
-        val inputTensor = OnnxTensor.createTensor(
+        OnnxTensor.createTensor(
             env, FloatBuffer.wrap(samples), longArrayOf(1, FRAME_SIZE.toLong())
-        )
-        val stateTensor = OnnxTensor.createTensor(
-            env, FloatBuffer.wrap(state), STATE_SHAPE
-        )
-        // sr is a scalar in v5 — shape is empty longArrayOf()
-        val srTensor = OnnxTensor.createTensor(
-            env, LongBuffer.wrap(longArrayOf(SAMPLE_RATE)), longArrayOf()
-        )
+        ).use { inputTensor ->
+            OnnxTensor.createTensor(
+                env, FloatBuffer.wrap(state), STATE_SHAPE
+            ).use { stateTensor ->
+                OnnxTensor.createTensor(
+                    env, LongBuffer.wrap(longArrayOf(SAMPLE_RATE)), SAMPLE_RATE_SHAPE
+                ).use { srTensor ->
+                    val inputs = mapOf(
+                        "input" to inputTensor,
+                        "state" to stateTensor,
+                        "sr" to srTensor
+                    )
 
-        val inputs = mapOf(
-            "input" to inputTensor,
-            "state" to stateTensor,
-            "sr"    to srTensor
-        )
+                    return session.run(inputs).use { result ->
+                        val outputValue = result["output"].orElseGet { result[0] }
+                        val prob = flattenFloats(outputValue.value, "output").first()
 
-        return session.run(inputs).use { result ->
-            val prob = (result[0].value as Array<*>).let {
-                (it[0] as FloatArray)[0]
+                        val stateValue = result["stateN"].orElseThrow {
+                            IllegalStateException("Silero result did not contain stateN")
+                        }
+                        state = flattenState(stateValue.value)
+                        prob
+                    }
+                }
             }
-
-            // Carry updated state to next frame
-            state = flattenState(result["stateN"].get().value)
-
-            inputTensor.close(); stateTensor.close(); srTensor.close()
-            prob
         }
     }
 
-    /** Flatten float[][][] → FloatArray */
-    @Suppress("UNCHECKED_CAST")
     private fun flattenState(value: Any?): FloatArray {
-        val arr = value as Array<Array<FloatArray>>
-        val out = FloatArray(STATE_SIZE)
-        var idx = 0
-        for (i in arr) for (j in i) for (v in j) out[idx++] = v
-        return out
+        val flattened = flattenFloats(value, "stateN")
+        check(flattened.size == STATE_SIZE) {
+            "Expected stateN to contain $STATE_SIZE floats, got ${flattened.size}"
+        }
+        return flattened
+    }
+
+    private fun flattenFloats(value: Any?, label: String): FloatArray {
+        val out = ArrayList<Float>()
+        appendFloats(value, out, label)
+        check(out.isNotEmpty()) { "$label did not contain any floats" }
+        return out.toFloatArray()
+    }
+
+    private fun appendFloats(value: Any?, out: MutableList<Float>, label: String) {
+        when (value) {
+            null -> error("$label was null")
+            is Float -> out += value
+            is FloatArray -> value.forEach { out += it }
+            is Array<*> -> value.forEach { appendFloats(it, out, label) }
+            else -> error("Unexpected $label type: ${value.javaClass.name}")
+        }
     }
 
     override fun close() {

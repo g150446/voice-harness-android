@@ -12,7 +12,7 @@
 │              VoiceViewModel                  │
 │  ・録音状態管理 (VoiceState)                  │
 │  ・BLE イベント → 録音制御                    │
-│  ・スペクトル VAD                            │
+│  ・Silero VAD / FFT fallback / rescue 判定    │
 │  ・Groq API 呼び出し (OkHttp)               │
 │  ・Android TTS                              │
 └──────────┬──────────────────────────────────┘
@@ -29,6 +29,14 @@
 │  ・BLE スキャン・接続・GATT                  │
 │  ・パケット解析 (音声 / イベント)             │
 │  ・指数バックオフ再接続                       │
+└─────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────┐
+│            BleSpeechDetector                │
+│  ・PCM → Float 変換                         │
+│  ・DC オフセット除去                         │
+│  ・FFT ベースの帯域比解析                    │
+│  ・Silero 異常時の fallback 判定             │
 └─────────────────────────────────────────────┘
 ```
 
@@ -85,7 +93,8 @@ nRF52840                        Android
     │                               │   pcmBuffer.write(packet.pcmData)
     │── 0x02 (RecordingStopped) ───▶│
     │                               │ handleBleRecordingStopped()
-    │                               │   VAD チェック
+    │                               │   Silero VAD
+    │                               │   FFT fallback / rescue
     │                               │   buildWavFile()
     │                               │   Groq Whisper API
     │                               │   Groq Chat API
@@ -93,6 +102,16 @@ nRF52840                        Android
 ```
 
 Android 側からコマンド (`sendCommand`) を送る必要はない。ファームウェアがジェスチャー検知と録音タイミングを自律制御する。
+
+## BLE 音声判定
+
+BLE 音声は `VoiceViewModel.hasSpeechInPcm()` が担当し、次の順で判定する。
+
+1. `SileroVad.kt` で 512 サンプルごとの推論を行う
+2. `maxProb <= 0.01` など Silero が異常に低い確率へ張り付く場合は `BleSpeechDetector.kt` の FFT 判定へ切り替える
+3. FFT 判定でも境界値だった場合は、`peakAfterDC` / `rmsAfterDC` / `maxBandRatio` を使った rescue 条件で BLE 音声を救済する
+
+これにより、Silero モデルの不調や BLE マイク特有の低振幅音声があっても Groq 送信を止めにくくしている。
 
 ## API 通信
 
