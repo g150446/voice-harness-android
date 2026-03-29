@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -26,12 +27,12 @@ import kotlinx.coroutines.launch
 private const val TAG = "BleConnectionService"
 private const val NOTIFICATION_ID = 1001
 private const val CHANNEL_ID = "ble_connection"
+private const val WAKE_LOCK_TAG = "HarnessVoice:BleConnectionWakeLock"
 
 class BleConnectionService : Service() {
 
     companion object {
-        // Flows live in the companion object — independent of Service lifecycle.
-        // ViewModel can safely collect from these before the Service starts.
+        // BLE state flows — independent of Service lifecycle.
         private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
         val connectionState: StateFlow<BleConnectionState> = _connectionState.asStateFlow()
 
@@ -49,6 +50,29 @@ class BleConnectionService : Service() {
 
         private val _batteryLevel = MutableStateFlow<Int?>(null)
         val batteryLevel: StateFlow<Int?> = _batteryLevel.asStateFlow()
+
+        // Voice processing state flows — written by VoiceProcessor, read by ViewModel for UI.
+        private val _voiceState = MutableStateFlow(VoiceState.READY)
+        val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
+
+        private val _transcription = MutableStateFlow("")
+        val transcription: StateFlow<String> = _transcription.asStateFlow()
+
+        private val _response = MutableStateFlow("")
+        val response: StateFlow<String> = _response.asStateFlow()
+
+        private val _errorMessage = MutableStateFlow("")
+        val errorMessage: StateFlow<String> = _errorMessage.asStateFlow()
+
+        private val _bleMode = MutableStateFlow(false)
+        val bleMode: StateFlow<Boolean> = _bleMode.asStateFlow()
+
+        // Internal setters used by VoiceProcessor (same module/package).
+        internal fun setVoiceState(state: VoiceState) { _voiceState.value = state }
+        internal fun setTranscription(text: String) { _transcription.value = text }
+        internal fun setResponse(text: String) { _response.value = text }
+        internal fun setErrorMessage(text: String) { _errorMessage.value = text }
+        internal fun setBleMode(mode: Boolean) { _bleMode.value = mode }
 
         private var instance: BleConnectionService? = null
 
@@ -68,6 +92,14 @@ class BleConnectionService : Service() {
             instance?.bleManager?.disconnectManually()
         }
 
+        fun stopSpeaking() {
+            instance?.voiceProcessor?.stopSpeaking()
+        }
+
+        fun disconnectProcessor() {
+            instance?.voiceProcessor?.disconnect()
+        }
+
         fun start(context: Context) {
             val intent = Intent(context, BleConnectionService::class.java)
             if (Build.VERSION.SDK_INT >= 26) {
@@ -84,6 +116,8 @@ class BleConnectionService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var bleManager: BleManager? = null
+    private var voiceProcessor: VoiceProcessor? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -97,11 +131,15 @@ class BleConnectionService : Service() {
         bleManager = BleManager(applicationContext, serviceScope).also { mgr ->
             mgr.start(bluetoothManager)
 
-            // Relay BleManager flows → companion object flows (observable by ViewModel)
             serviceScope.launch {
                 mgr.connectionState.collect { state ->
                     _connectionState.value = state
                     updateNotification(state, _batteryLevel.value)
+                    when (state) {
+                        BleConnectionState.CONNECTED -> acquireWakeLock()
+                        BleConnectionState.DISCONNECTED -> releaseWakeLock()
+                        else -> {}
+                    }
                 }
             }
             serviceScope.launch {
@@ -123,6 +161,8 @@ class BleConnectionService : Service() {
                 }
             }
         }
+
+        voiceProcessor = VoiceProcessor(applicationContext, serviceScope)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -133,15 +173,38 @@ class BleConnectionService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Service destroyed")
+        voiceProcessor?.shutdown()
         bleManager?.shutdown()
         serviceScope.cancel()
+        releaseWakeLock()
         _connectionState.value = BleConnectionState.DISCONNECTED
         _scannedDevices.value = emptyList()
         _batteryLevel.value = null
+        _voiceState.value = VoiceState.READY
+        _bleMode.value = false
         instance = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    // --- Wake lock ---
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
+            acquire()
+        }
+        Log.d(TAG, "WakeLock acquired")
+    }
+
+    private fun releaseWakeLock() {
+        if (wakeLock?.isHeld == true) {
+            wakeLock?.release()
+            Log.d(TAG, "WakeLock released")
+        }
+        wakeLock = null
+    }
 
     // --- Notification ---
 

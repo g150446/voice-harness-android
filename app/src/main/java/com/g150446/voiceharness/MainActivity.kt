@@ -3,8 +3,12 @@ package com.g150446.voiceharness
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -45,6 +49,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.g150446.voiceharness.ui.theme.HarnessVoiceTheme
 
+private const val TAG = "MainActivity"
+
 class MainActivity : ComponentActivity() {
 
     private val voiceViewModel: VoiceViewModel by viewModels()
@@ -67,6 +73,8 @@ class MainActivity : ComponentActivity() {
             requestAllPermissions()
         }
 
+        requestBatteryOptimizationExemption()
+
         setContent {
             HarnessVoiceTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -88,6 +96,23 @@ class MainActivity : ComponentActivity() {
         } else {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        val prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        if (prefs.getBoolean("battery_opt_requested", false)) return
+        prefs.edit().putBoolean("battery_opt_requested", true).apply()
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(Uri.parse("package:$packageName"))
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not request battery optimization exemption", e)
         }
     }
 

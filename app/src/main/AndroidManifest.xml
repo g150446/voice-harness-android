@@ -27,6 +27,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
         tools:targetApi="34" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
@@ -66,8 +68,6 @@
             <intent-filter android:priority="1000">
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="android.intent.action.PACKAGE_REPLACED" />
-                <data android:scheme="package" />
             </intent-filter>
         </receiver>
 
@@ -87,6 +87,7 @@
         <service
             android:name=".BleConnectionService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="connectedDevice" />
 
         <receiver

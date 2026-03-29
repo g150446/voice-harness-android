@@ -12,10 +12,9 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_MY_PACKAGE_REPLACED,
-            Intent.ACTION_PACKAGE_REPLACED -> {
-                Log.d(TAG, "Boot completed - no services to start")
-                // MusicPlayer services removed - no longer needed
+            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                Log.d(TAG, "Boot/update received — starting BleConnectionService")
+                BleConnectionService.start(context)
             }
         }
     }
