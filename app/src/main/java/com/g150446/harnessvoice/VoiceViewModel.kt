@@ -75,6 +75,12 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
 
+    // Gesture debounce: ignore repeated GestureDetected events within this window
+    private var lastGestureMs = 0L
+    private companion object {
+        const val GESTURE_COOLDOWN_MS = 2000L
+    }
+
     private val httpClient = OkHttpClient()
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -118,6 +124,13 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     // --- Gesture-triggered BLE recording ---
 
     private fun handleGestureEvent() {
+        val now = System.currentTimeMillis()
+        if (now - lastGestureMs < GESTURE_COOLDOWN_MS) {
+            Log.d(TAG, "Gesture ignored (cooldown)")
+            return
+        }
+        lastGestureMs = now
+
         when (_state.value) {
             VoiceState.SPEAKING -> {
                 // Interrupt TTS and start a new dialogue immediately
