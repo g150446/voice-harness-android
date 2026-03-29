@@ -124,8 +124,10 @@ Content-Type: multipart/form-data
 
 file: audio.wav  (BLE) or audio.m4a  (電話マイク)
 model: whisper-large-v3-turbo
-response_format: text
+response_format: json
 ```
+
+Whisper の JSON レスポンスから `text` に加えて `language` を受け取り、入力音声の言語推定に利用する。
 
 ### Groq Chat（AI 応答）
 
@@ -136,9 +138,39 @@ Content-Type: application/json
 
 {
   "model": "openai/gpt-oss-120b",
-  "messages": [{"role": "user", "content": "{transcribed_text}"}]
+  "messages": [
+    {
+      "role": "system",
+      "content": "Respond in the same language as the user's transcribed request. The detected input language is English (en). Do not translate unless the user explicitly asks for translation."
+    },
+    {
+      "role": "user",
+      "content": "{transcribed_text}"
+    }
+  ]
 }
 ```
+
+入力言語が判定できた場合のみ system prompt を追加し、Groq が音声入力と同じ言語で返答するよう制御する。  
+入力言語が不明な場合は system prompt を付けず、従来に近い挙動を維持する。
+
+## 応答言語と TTS
+
+- `SpeechLanguageResolver.kt`
+  - Whisper の `language` を優先し、必要なら転写テキストの文字種から言語コードを推定する
+  - TTS 用の候補ロケール列を組み立てる
+
+- `GroqChatRequestBuilder.kt`
+  - 検出した言語コードをもとに Groq Chat 用の system prompt を生成する
+  - 「同じ言語で返答し、明示的に要求されない限り翻訳しない」方針を Chat API に渡す
+
+- `TtsTextFormatter.kt`
+  - Markdown 記法や表の区切りを読み上げ向けテキストへ整形する
+  - 長い返答を `TextToSpeech.getMaxSpeechInputLength()` 以下のチャンクへ分割する
+
+- `VoiceViewModel.kt`
+  - 候補ロケールを順番に試しながら TTS を実行する
+  - 長文応答は複数 utterance に分けてキューイングし、最後のチャンク完了で `READY` に戻す
 
 ## WAV ファイル生成
 

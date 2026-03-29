@@ -40,6 +40,11 @@ private const val BLE_RESCUE_PEAK_THRESHOLD = 0.08f
 private const val BLE_RESCUE_RMS_THRESHOLD = 0.015f
 private const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.48
 
+private data class TranscriptionPayload(
+    val text: String,
+    val languageCode: String?
+)
+
 enum class VoiceState {
     READY,
     RECORDING,
@@ -89,6 +94,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private val httpClient = OkHttpClient()
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var responseLanguageCode: String? = null
 
     init {
         tts = TextToSpeech(application, this)
@@ -120,9 +126,9 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            tts?.language = Locale.getDefault()
+            val locale = applyTtsLanguage(null)
             ttsReady = true
-            Log.d(TAG, "TTS initialized, locale=${Locale.getDefault()}")
+            Log.d(TAG, "TTS initialized, locale=${locale?.toLanguageTag() ?: "unavailable"}")
         } else {
             Log.e(TAG, "TTS initialization failed: $status")
         }
@@ -263,12 +269,13 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private suspend fun transcribeAndRespondFromFile(file: File, apiKey: String, mimeType: String) {
         _state.value = VoiceState.TRANSCRIBING
         _errorMessage.value = ""
+        responseLanguageCode = null
 
         try {
             val transcriptionBody = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))
                 .addFormDataPart("model", "whisper-large-v3-turbo")
-                .addFormDataPart("response_format", "text")
+                .addFormDataPart("response_format", "json")
                 .build()
 
             val transcriptionResponse = httpClient.newCall(
@@ -286,21 +293,21 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
                 return
             }
 
-            val transcribed = transcriptionBodyText.trim().ifBlank { "(音声なし)" }
+            val transcriptionPayload = parseTranscriptionPayload(transcriptionBodyText)
+            val transcribed = transcriptionPayload.text.ifBlank { "(音声なし)" }
+            responseLanguageCode = SpeechLanguageResolver.resolvePreferredLanguageCode(
+                whisperLanguageCode = transcriptionPayload.languageCode,
+                transcribedText = transcribed
+            )
             _transcription.value = transcribed
-            Log.d(TAG, "Transcription: $transcribed")
+            Log.d(TAG, "Transcription: $transcribed, language=${responseLanguageCode ?: "default"}")
 
             _state.value = VoiceState.RESPONDING
 
-            val chatJson = JSONObject().apply {
-                put("model", "openai/gpt-oss-120b")
-                put("messages", org.json.JSONArray().apply {
-                    put(JSONObject().apply {
-                        put("role", "user")
-                        put("content", transcribed)
-                    })
-                })
-            }.toString()
+            val chatJson = GroqChatRequestBuilder.buildRequestBody(
+                userText = transcribed,
+                languageCode = responseLanguageCode
+            )
 
             val chatResponse = httpClient.newCall(
                 Request.Builder()
@@ -485,12 +492,23 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     private fun speakResponse(text: String) {
         _state.value = VoiceState.SPEAKING
         if (ttsReady && text.isNotBlank()) {
-            val uid = "response_${System.currentTimeMillis()}"
+            val utterancePrefix = "response_${System.currentTimeMillis()}"
+            val chunks = TtsTextFormatter.toSpeakableChunks(
+                text = text,
+                maxLength = TextToSpeech.getMaxSpeechInputLength()
+            )
+            if (chunks.isEmpty()) {
+                _state.value = VoiceState.READY
+                return
+            }
+            val finalUtteranceId = "${utterancePrefix}_${chunks.lastIndex}"
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
                 override fun onDone(utteranceId: String?) {
                     viewModelScope.launch(Dispatchers.Main) {
-                        if (_state.value == VoiceState.SPEAKING) _state.value = VoiceState.READY
+                        if (utteranceId == finalUtteranceId && _state.value == VoiceState.SPEAKING) {
+                            _state.value = VoiceState.READY
+                        }
                     }
                 }
                 @Deprecated("Deprecated in Java")
@@ -500,7 +518,11 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
                     }
                 }
             })
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, uid)
+            if (!speakWithFallbacks(chunks, utterancePrefix, responseLanguageCode)) {
+                Log.e(TAG, "Unable to speak response for language=${responseLanguageCode ?: "default"}")
+                _errorMessage.value = "音声の読み上げに失敗しました"
+                _state.value = VoiceState.READY
+            }
         } else {
             _state.value = VoiceState.READY
         }
@@ -512,6 +534,83 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application), 
     }
 
     // --- Helpers ---
+
+    private fun parseTranscriptionPayload(responseBody: String): TranscriptionPayload {
+        val trimmedBody = responseBody.trim()
+        if (trimmedBody.startsWith("{")) {
+            val json = JSONObject(trimmedBody)
+            return TranscriptionPayload(
+                text = json.optString("text").trim(),
+                languageCode = json.optString("language")
+            )
+        }
+        return TranscriptionPayload(
+            text = trimmedBody,
+            languageCode = null
+        )
+    }
+
+    private fun applyTtsLanguage(languageCode: String?): Locale? {
+        val candidateLocales = SpeechLanguageResolver.candidateLocales(languageCode, Locale.getDefault())
+        for (locale in candidateLocales) {
+            if (trySetTtsLocale(locale)) {
+                return locale
+            }
+        }
+        Log.w(TAG, "No supported TTS locale found for language=${languageCode ?: "default"}")
+        return null
+    }
+
+    private fun trySetTtsLocale(locale: Locale): Boolean {
+        val textToSpeech = tts ?: return false
+        val result = textToSpeech.setLanguage(locale)
+        if (result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED) {
+            return true
+        }
+        Log.w(TAG, "TTS locale unavailable: ${locale.toLanguageTag()} result=$result")
+        return false
+    }
+
+    private fun speakWithFallbacks(chunks: List<String>, utterancePrefix: String, languageCode: String?): Boolean {
+        val textToSpeech = tts ?: return false
+        val candidateLocales = SpeechLanguageResolver.candidateLocales(languageCode, Locale.getDefault())
+
+        for (locale in candidateLocales) {
+            if (!trySetTtsLocale(locale)) {
+                continue
+            }
+            if (queueSpeechChunks(textToSpeech, chunks, utterancePrefix, locale.toLanguageTag())) {
+                return true
+            }
+        }
+
+        return queueSpeechChunks(textToSpeech, chunks, utterancePrefix, "current")
+    }
+
+    private fun queueSpeechChunks(
+        textToSpeech: TextToSpeech,
+        chunks: List<String>,
+        utterancePrefix: String,
+        localeLabel: String
+    ): Boolean {
+        textToSpeech.stop()
+
+        for ((index, chunk) in chunks.withIndex()) {
+            val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val utteranceId = "${utterancePrefix}_$index"
+            val result = textToSpeech.speak(chunk, queueMode, null, utteranceId)
+            Log.d(
+                TAG,
+                "TTS speak attempt locale=$localeLabel chunk=${index + 1}/${chunks.size} length=${chunk.length} result=$result"
+            )
+            if (result != TextToSpeech.SUCCESS) {
+                textToSpeech.stop()
+                return false
+            }
+        }
+
+        return true
+    }
 
     private fun getApiKey(): String =
         getApplication<Application>()
