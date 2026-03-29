@@ -12,16 +12,14 @@ import java.nio.LongBuffer
 private const val TAG = "SileroVad"
 
 /**
- * Silero VAD v4 wrapper using ONNX Runtime.
+ * Silero VAD v5 wrapper using ONNX Runtime.
  *
  * Model I/O (16 kHz):
  *   input  : Float32 [1, 512]     — normalized PCM samples (-1..1)
- *   h      : Float32 [2, 1, 64]   — RNN hidden state (zeros on reset)
- *   c      : Float32 [2, 1, 64]   — RNN cell state   (zeros on reset)
- *   sr     : Int64   [1]          — sample rate (16000)
+ *   state  : Float32 [2, 1, 128]  — RNN state (h and c merged; zeros on reset)
+ *   sr     : Int64   []           — sample rate scalar (16000)
  *   output : Float32 [1, 1]       — speech probability 0..1
- *   hn     : Float32 [2, 1, 64]   — updated hidden state
- *   cn     : Float32 [2, 1, 64]   — updated cell state
+ *   stateN : Float32 [2, 1, 128]  — updated RNN state
  *
  * The RNN state must be carried across frames within one recording session.
  * Call reset() at the start of each new recording.
@@ -31,26 +29,24 @@ class SileroVad(context: Context) : Closeable {
     companion object {
         const val FRAME_SIZE = 512
         private const val SAMPLE_RATE = 16_000L
-        private val STATE_SHAPE = longArrayOf(2, 1, 64)
-        private val STATE_SIZE  = (2 * 1 * 64)
+        private val STATE_SHAPE = longArrayOf(2, 1, 128)
+        private const val STATE_SIZE = 2 * 1 * 128
     }
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
 
-    private var h = FloatArray(STATE_SIZE)
-    private var c = FloatArray(STATE_SIZE)
+    private var state = FloatArray(STATE_SIZE)
 
     init {
         val bytes = context.assets.open("silero_vad.onnx").readBytes()
         session = env.createSession(bytes, OrtSession.SessionOptions())
-        Log.d(TAG, "Silero VAD session created")
+        Log.d(TAG, "Silero VAD v5 session created")
     }
 
     /** Reset RNN state. Call once before processing each new recording. */
     fun reset() {
-        h = FloatArray(STATE_SIZE)
-        c = FloatArray(STATE_SIZE)
+        state = FloatArray(STATE_SIZE)
     }
 
     /**
@@ -66,16 +62,17 @@ class SileroVad(context: Context) : Closeable {
         val inputTensor = OnnxTensor.createTensor(
             env, FloatBuffer.wrap(samples), longArrayOf(1, FRAME_SIZE.toLong())
         )
-        val hTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(h), STATE_SHAPE)
-        val cTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(c), STATE_SHAPE)
+        val stateTensor = OnnxTensor.createTensor(
+            env, FloatBuffer.wrap(state), STATE_SHAPE
+        )
+        // sr is a scalar in v5 — shape is empty longArrayOf()
         val srTensor = OnnxTensor.createTensor(
-            env, LongBuffer.wrap(longArrayOf(SAMPLE_RATE)), longArrayOf(1)
+            env, LongBuffer.wrap(longArrayOf(SAMPLE_RATE)), longArrayOf()
         )
 
         val inputs = mapOf(
             "input" to inputTensor,
-            "h"     to hTensor,
-            "c"     to cTensor,
+            "state" to stateTensor,
             "sr"    to srTensor
         )
 
@@ -84,16 +81,15 @@ class SileroVad(context: Context) : Closeable {
                 (it[0] as FloatArray)[0]
             }
 
-            // Update RNN state for next frame
-            h = flattenState(result["hn"].get().value)
-            c = flattenState(result["cn"].get().value)
+            // Carry updated state to next frame
+            state = flattenState(result["stateN"].get().value)
 
-            inputTensor.close(); hTensor.close(); cTensor.close(); srTensor.close()
+            inputTensor.close(); stateTensor.close(); srTensor.close()
             prob
         }
     }
 
-    /** Flatten [2][1][64] float[][][] → FloatArray(128) */
+    /** Flatten float[][][] → FloatArray */
     @Suppress("UNCHECKED_CAST")
     private fun flattenState(value: Any?): FloatArray {
         val arr = value as Array<Array<FloatArray>>
