@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.g150446.harnessvoice"
+    namespace = "com.g150446.voiceharness"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.g150446.harnessvoice"
+        applicationId = "com.g150446.voiceharness"
         minSdk = 24
         targetSdk = 36
         versionCode = 1

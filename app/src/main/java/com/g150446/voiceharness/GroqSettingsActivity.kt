@@ -1,4 +1,4 @@
-package com.g150446.harnessvoice
+package com.g150446.voiceharness
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -17,7 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
-import com.g150446.harnessvoice.ui.theme.HarnessVoiceTheme
+import com.g150446.voiceharness.ui.theme.HarnessVoiceTheme
 
 class GroqSettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

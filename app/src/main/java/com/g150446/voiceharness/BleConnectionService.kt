@@ -1,4 +1,4 @@
-package com.g150446.harnessvoice
+package com.g150446.voiceharness
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

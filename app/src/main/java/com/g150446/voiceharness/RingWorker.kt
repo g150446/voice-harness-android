@@ -1,4 +1,4 @@
-package com.g150446.harnessvoice
+package com.g150446.voiceharness
 
 import android.content.Context
 import android.os.PowerManager

@@ -1,4 +1,4 @@
-package com.g150446.harnessvoice
+package com.g150446.voiceharness
 
 import android.Manifest
 import android.content.Intent
@@ -40,7 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.g150446.harnessvoice.ui.theme.HarnessVoiceTheme
+import com.g150446.voiceharness.ui.theme.HarnessVoiceTheme
 
 class MainActivity : ComponentActivity() {
 

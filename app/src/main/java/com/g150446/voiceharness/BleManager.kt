@@ -1,4 +1,4 @@
-package com.g150446.harnessvoice
+package com.g150446.voiceharness
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
