@@ -155,7 +155,7 @@ fun VoiceScreen(
         verticalArrangement = Arrangement.Top
     ) {
         Text(
-            text = "Harness Voice",
+            text = "Voice Harness",
             fontSize = 22.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(top = 8.dp, bottom = 8.dp)
