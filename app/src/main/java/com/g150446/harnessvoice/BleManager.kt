@@ -9,7 +9,6 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -54,6 +53,7 @@ class BleManager(
         val TX_CHAR_UUID: UUID = UUID.fromString("00000002-0000-1000-8000-00805f9b34fb")
         val RX_CHAR_UUID: UUID = UUID.fromString("00000003-0000-1000-8000-00805f9b34fb")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        const val SCAN_TIMEOUT_MS = 30_000L
     }
 
     private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
@@ -71,6 +71,7 @@ class BleManager(
     private var lastSeqNum = -1
 
     private var reconnectJob: Job? = null
+    private var scanTimeoutJob: Job? = null
     private var reconnectDelayMs = 2000L
 
     // --- Scan ---
@@ -92,15 +93,26 @@ class BleManager(
             return
         }
 
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
-        scanner.startScan(listOf(filter), settings, scanCallback)
-        Log.d(TAG, "BLE scan started")
+        // No ScanFilter: some firmware puts service UUID only in scan response,
+        // which Android's ScanFilter ignores. We match manually in onScanResult
+        // using scanRecord.serviceUuids which covers both AD and scan response.
+        scanner.startScan(emptyList(), settings, scanCallback)
+        Log.d(TAG, "BLE scan started (no filter)")
+
+        // Stop scan after timeout to avoid draining battery indefinitely
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = scope.launch {
+            delay(SCAN_TIMEOUT_MS)
+            if (isScanning) {
+                Log.d(TAG, "Scan timeout — scheduling retry")
+                stopScan(bluetoothManager)
+                scheduleReconnect()
+            }
+        }
     }
 
     private fun stopScan(bluetoothManager: BluetoothManager) {
@@ -122,7 +134,11 @@ class BleManager(
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            Log.d(TAG, "Found device: ${result.device.address}")
+            // Match by service UUID in scanRecord (covers both AD and scan response)
+            val uuids = result.scanRecord?.serviceUuids
+            if (uuids == null || !uuids.contains(ParcelUuid(SERVICE_UUID))) return
+            Log.d(TAG, "Found target device: ${result.device.address}")
+            scanTimeoutJob?.cancel()
             bluetoothManager?.let { stopScan(it) }
             connectToDevice(result.device)
         }
@@ -145,6 +161,7 @@ class BleManager(
 
     fun disconnect() {
         reconnectJob?.cancel()
+        scanTimeoutJob?.cancel()
         gatt?.disconnect()
         gatt?.close()
         gatt = null
