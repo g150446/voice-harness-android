@@ -17,6 +17,8 @@ class GroqChatRequestBuilderTest {
         assertEquals(2, messages.size)
         assertEquals("system", messages[0].role)
         assertTrue(messages[0].content.contains("English (en)"))
+        assertTrue(messages[0].content.contains("Do not translate unless the user explicitly asks for translation."))
+        assertTrue(messages[0].content.contains("Keep responses brief unless the user explicitly asks for a detailed explanation."))
         assertEquals("user", messages[1].role)
         assertEquals("Hello there", messages[1].content)
     }

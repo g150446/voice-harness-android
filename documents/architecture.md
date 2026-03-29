@@ -147,7 +147,7 @@ Content-Type: application/json
   "messages": [
     {
       "role": "system",
-      "content": "Respond in the same language as the user's transcribed request. The detected input language is English (en). Do not translate unless the user explicitly asks for translation."
+      "content": "Respond in the same language as the user's transcribed request. The detected input language is English (en). Do not translate unless the user explicitly asks for translation. Keep responses brief unless the user explicitly asks for a detailed explanation."
     },
     {
       "role": "user",
@@ -157,7 +157,7 @@ Content-Type: application/json
 }
 ```
 
-入力言語が判定できた場合のみ system prompt を追加し、Groq が音声入力と同じ言語で返答するよう制御する。  
+入力言語が判定できた場合のみ system prompt を追加し、Groq が音声入力と同じ言語で返答し、明示的に詳説を求められない限り短めに返答するよう制御する。  
 入力言語が不明な場合は system prompt を付けず、従来に近い挙動を維持する。
 
 ## 応答言語と TTS
@@ -168,7 +168,7 @@ Content-Type: application/json
 
 - `GroqChatRequestBuilder.kt`
   - 検出した言語コードをもとに Groq Chat 用の system prompt を生成する
-  - 「同じ言語で返答し、明示的に要求されない限り翻訳しない」方針を Chat API に渡す
+  - 「同じ言語で返答し、明示的に要求されない限り翻訳しない。明示的に詳説を求められない限り短く答える」方針を Chat API に渡す
 
 - `TtsTextFormatter.kt`
   - Markdown 記法や表の区切りを読み上げ向けテキストへ整形する
