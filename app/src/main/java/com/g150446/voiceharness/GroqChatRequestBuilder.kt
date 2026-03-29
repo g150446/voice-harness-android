@@ -47,6 +47,9 @@ object GroqChatRequestBuilder {
         return "Respond in the same language as the user's transcribed request. " +
             "The detected input language is $languageName ($languageTag). " +
             "Do not translate unless the user explicitly asks for translation. " +
+            "This response will be read aloud as speech, so write in natural spoken language. " +
+            "Do not use markdown, bullet points, numbered lists, headers, or special characters. " +
+            "Use short, clear sentences. Avoid parenthetical asides. " +
             "Keep responses brief unless the user explicitly asks for a detailed explanation."
     }
 }
