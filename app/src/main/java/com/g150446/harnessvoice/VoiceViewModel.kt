@@ -34,7 +34,7 @@ private const val PCM_BITS_PER_SAMPLE = 16
 
 // VAD thresholds
 private const val VAD_AMPLITUDE_THRESHOLD = 500   // MediaRecorder.getMaxAmplitude() range 0-32767
-private const val VAD_PCM_RMS_THRESHOLD = 300.0   // 16-bit signed PCM RMS
+private const val VAD_PCM_RMS_THRESHOLD = 1500.0  // 16-bit signed PCM RMS (nRF52840 noise floor ~730)
 
 enum class VoiceState {
     READY,
