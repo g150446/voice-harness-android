@@ -163,6 +163,8 @@ class BleConnectionService : Service() {
         }
 
         voiceProcessor = VoiceProcessor(applicationContext, serviceScope)
+
+        ServiceWatchdog.schedule(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

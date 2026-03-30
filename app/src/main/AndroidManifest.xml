@@ -91,6 +91,10 @@
             android:foregroundServiceType="connectedDevice" />
 
         <receiver
+            android:name=".WatchdogReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".RingDeviceAdminReceiver"
             android:enabled="true"
             android:exported="true"

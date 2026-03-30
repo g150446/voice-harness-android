@@ -15,6 +15,7 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 Log.d(TAG, "Boot/update received — starting BleConnectionService")
                 BleConnectionService.start(context)
+                ServiceWatchdog.schedule(context)
             }
         }
     }
