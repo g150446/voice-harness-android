@@ -19,6 +19,7 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.UUID
 
 private const val TAG = "VoiceProcessor"
 private const val PCM_SAMPLE_RATE = 16000
@@ -45,6 +46,8 @@ class VoiceProcessor(
     private val appContext: Context,
     private val scope: CoroutineScope
 ) : TextToSpeech.OnInitListener {
+
+    private val historyRepository = HistoryRepository(appContext)
 
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
@@ -122,6 +125,14 @@ class VoiceProcessor(
 
         if (!hasSpeechInPcm(pcmData)) {
             Log.d(TAG, "VAD: no speech in BLE audio — skipping Groq")
+            historyRepository.addEntry(HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = System.currentTimeMillis(),
+                transcription = "",
+                response = "",
+                isSilent = true,
+                errorMessage = ""
+            ))
             BleConnectionService.setVoiceState(VoiceState.READY)
             return
         }
@@ -167,10 +178,17 @@ class VoiceProcessor(
             val transcriptionBodyText = transcriptionResponse.body?.string() ?: ""
 
             if (!transcriptionResponse.isSuccessful) {
-                BleConnectionService.setErrorMessage(
-                    "Whisper error ${transcriptionResponse.code}: ${transcriptionBodyText.take(200)}"
-                )
+                val errMsg = "Whisper error ${transcriptionResponse.code}: ${transcriptionBodyText.take(200)}"
+                BleConnectionService.setErrorMessage(errMsg)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
+                historyRepository.addEntry(HistoryEntry(
+                    id = UUID.randomUUID().toString(),
+                    timestamp = System.currentTimeMillis(),
+                    transcription = "",
+                    response = "",
+                    isSilent = false,
+                    errorMessage = errMsg
+                ))
                 return
             }
 
@@ -201,10 +219,17 @@ class VoiceProcessor(
             val chatBodyText = chatResponse.body?.string().orEmpty()
 
             if (!chatResponse.isSuccessful) {
-                BleConnectionService.setErrorMessage(
-                    "Chat error ${chatResponse.code}: ${chatBodyText.take(200)}"
-                )
+                val errMsg = "Chat error ${chatResponse.code}: ${chatBodyText.take(200)}"
+                BleConnectionService.setErrorMessage(errMsg)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
+                historyRepository.addEntry(HistoryEntry(
+                    id = UUID.randomUUID().toString(),
+                    timestamp = System.currentTimeMillis(),
+                    transcription = BleConnectionService.transcription.value,
+                    response = "",
+                    isSilent = false,
+                    errorMessage = errMsg
+                ))
                 return
             }
 
@@ -213,15 +238,33 @@ class VoiceProcessor(
                 choices.getJSONObject(0).optJSONObject("message")?.optString("content").orEmpty()
             } else "(返答なし)"
 
-            BleConnectionService.setResponse(responseText.ifBlank { "(返答なし)" })
+            val finalResponse = responseText.ifBlank { "(返答なし)" }
+            BleConnectionService.setResponse(finalResponse)
             Log.d(TAG, "Response: $responseText")
+            historyRepository.addEntry(HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = System.currentTimeMillis(),
+                transcription = BleConnectionService.transcription.value,
+                response = finalResponse,
+                isSilent = false,
+                errorMessage = ""
+            ))
 
             speakResponse(responseText)
 
         } catch (e: Exception) {
             Log.e(TAG, "Error during transcribe/respond", e)
-            BleConnectionService.setErrorMessage("エラー: ${e.message}")
+            val errMsg = "エラー: ${e.message}"
+            BleConnectionService.setErrorMessage(errMsg)
             BleConnectionService.setVoiceState(VoiceState.ERROR)
+            historyRepository.addEntry(HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = System.currentTimeMillis(),
+                transcription = BleConnectionService.transcription.value,
+                response = "",
+                isSilent = false,
+                errorMessage = errMsg
+            ))
         } finally {
             try { file.delete() } catch (_: Exception) {}
         }

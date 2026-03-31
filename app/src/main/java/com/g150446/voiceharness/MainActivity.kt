@@ -14,6 +14,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -29,14 +30,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +49,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.g150446.voiceharness.ui.theme.HarnessVoiceTheme
@@ -133,6 +140,22 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun VoiceScreen(
+    modifier: Modifier = Modifier,
+    viewModel: VoiceViewModel = viewModel()
+) {
+    val currentScreen by viewModel.currentScreen.collectAsState()
+
+    key(currentScreen) {
+        when (currentScreen) {
+            AppScreen.HOME -> HomeScreen(modifier = modifier, viewModel = viewModel)
+            AppScreen.HISTORY_LIST -> HistoryListScreen(modifier = modifier, viewModel = viewModel)
+            AppScreen.HISTORY_DETAIL -> HistoryDetailScreen(modifier = modifier, viewModel = viewModel)
+        }
+    }
+}
+
+@Composable
+fun HomeScreen(
     modifier: Modifier = Modifier,
     viewModel: VoiceViewModel = viewModel()
 ) {
@@ -376,6 +399,191 @@ fun VoiceScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Settings")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = { viewModel.openHistory() },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("履歴")
+        }
+    }
+}
+
+@Composable
+fun HistoryListScreen(
+    modifier: Modifier = Modifier,
+    viewModel: VoiceViewModel
+) {
+    BackHandler { viewModel.navigateBack() }
+
+    val entries by viewModel.historyEntries.collectAsState()
+    val dateFmt = remember { SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()) }
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(scrollState),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Top
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = { viewModel.navigateBack() }) {
+                Text("← 戻る")
+            }
+            Text(
+                text = "履歴",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 8.dp)
+            )
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(bottom = 8.dp))
+
+        if (entries.isEmpty()) {
+            Text(
+                text = "履歴はまだありません",
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 32.dp)
+            )
+        } else {
+            entries.forEach { entry ->
+                val previewText = when {
+                    entry.isSilent -> "（無音）"
+                    entry.errorMessage.isNotEmpty() -> "[エラー] ${entry.errorMessage.take(40)}"
+                    entry.transcription.length > 60 -> entry.transcription.take(60) + "…"
+                    else -> entry.transcription
+                }
+                val interactionSource = remember(entry.id) { MutableInteractionSource() }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = null
+                        ) { viewModel.openHistoryDetail(entry) }
+                        .padding(vertical = 12.dp)
+                ) {
+                    Text(
+                        text = dateFmt.format(Date(entry.timestamp)),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = previewText,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+fun HistoryDetailScreen(
+    modifier: Modifier = Modifier,
+    viewModel: VoiceViewModel
+) {
+    BackHandler { viewModel.navigateBack() }
+
+    val entry = viewModel.selectedHistoryEntry.collectAsState().value ?: return
+    val dateFmt = remember { SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.getDefault()) }
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(scrollState),
+        horizontalAlignment = Alignment.Start,
+        verticalArrangement = Arrangement.Top
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = { viewModel.navigateBack() }) {
+                Text("← 戻る")
+            }
+            Text(
+                text = dateFmt.format(Date(entry.timestamp)),
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp)
+            )
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(bottom = 16.dp))
+
+        if (entry.isSilent) {
+            Text(
+                text = "（音声なし）",
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+        }
+
+        if (entry.transcription.isNotEmpty()) {
+            Text(
+                text = "あなた",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            Text(
+                text = entry.transcription,
+                fontSize = 15.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            )
+        }
+
+        if (entry.response.isNotEmpty()) {
+            Text(
+                text = "AI",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            Text(
+                text = entry.response,
+                fontSize = 15.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            )
+        }
+
+        if (entry.errorMessage.isNotEmpty()) {
+            Text(
+                text = "エラー",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            Text(
+                text = entry.errorMessage,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }

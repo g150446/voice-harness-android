@@ -7,7 +7,20 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
+enum class AppScreen { HOME, HISTORY_LIST, HISTORY_DETAIL }
+
 class VoiceViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val historyRepository = HistoryRepository(application)
+
+    private val _currentScreen = MutableStateFlow(AppScreen.HOME)
+    val currentScreen: StateFlow<AppScreen> = _currentScreen
+
+    private val _historyEntries = MutableStateFlow<List<HistoryEntry>>(emptyList())
+    val historyEntries: StateFlow<List<HistoryEntry>> = _historyEntries
+
+    private val _selectedHistoryEntry = MutableStateFlow<HistoryEntry?>(null)
+    val selectedHistoryEntry: StateFlow<HistoryEntry?> = _selectedHistoryEntry
 
     private val _bleConnectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
     val bleConnectionState: StateFlow<BleConnectionState> = _bleConnectionState
@@ -86,5 +99,23 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnectBleDevice() {
         BleConnectionService.disconnectProcessor()
         BleConnectionService.disconnectFromDevice()
+    }
+
+    fun openHistory() {
+        _historyEntries.value = historyRepository.getAll()
+        _currentScreen.value = AppScreen.HISTORY_LIST
+    }
+
+    fun openHistoryDetail(entry: HistoryEntry) {
+        _selectedHistoryEntry.value = entry
+        _currentScreen.value = AppScreen.HISTORY_DETAIL
+    }
+
+    fun navigateBack() {
+        when (_currentScreen.value) {
+            AppScreen.HISTORY_DETAIL -> _currentScreen.value = AppScreen.HISTORY_LIST
+            AppScreen.HISTORY_LIST -> _currentScreen.value = AppScreen.HOME
+            AppScreen.HOME -> {}
+        }
     }
 }
