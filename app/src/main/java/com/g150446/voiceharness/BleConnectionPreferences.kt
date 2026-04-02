@@ -8,6 +8,8 @@ data class BleDeviceInfo(
     val rssi: Int? = null
 )
 
+enum class ConnectionPriority { ANDROID, MAC_HANDY }
+
 class BleConnectionPreferences(context: Context) {
     private val preferences =
         context.getSharedPreferences("ble_connection_prefs", Context.MODE_PRIVATE)
@@ -38,9 +40,19 @@ class BleConnectionPreferences(context: Context) {
             .apply()
     }
 
+    fun connectionPriority(): ConnectionPriority =
+        ConnectionPriority.valueOf(
+            preferences.getString(KEY_CONNECTION_PRIORITY, ConnectionPriority.ANDROID.name)!!
+        )
+
+    fun setConnectionPriority(priority: ConnectionPriority) {
+        preferences.edit().putString(KEY_CONNECTION_PRIORITY, priority.name).apply()
+    }
+
     companion object {
         private const val KEY_PREFERRED_DEVICE_ADDRESS = "preferred_device_address"
         private const val KEY_PREFERRED_DEVICE_NAME = "preferred_device_name"
         private const val KEY_AUTO_RECONNECT_ENABLED = "auto_reconnect_enabled"
+        const val KEY_CONNECTION_PRIORITY = "connection_priority"
     }
 }

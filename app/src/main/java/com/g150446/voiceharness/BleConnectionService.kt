@@ -51,6 +51,9 @@ class BleConnectionService : Service() {
         private val _batteryLevel = MutableStateFlow<Int?>(null)
         val batteryLevel: StateFlow<Int?> = _batteryLevel.asStateFlow()
 
+        private val _isPrimary = MutableStateFlow(true)
+        val isPrimary: StateFlow<Boolean> = _isPrimary.asStateFlow()
+
         // Voice processing state flows — written by VoiceProcessor, read by ViewModel for UI.
         private val _voiceState = MutableStateFlow(VoiceState.READY)
         val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
@@ -78,6 +81,12 @@ class BleConnectionService : Service() {
 
         fun sendCommand(byte: Byte) {
             instance?.bleManager?.sendToRx(byte)
+        }
+
+        fun setRole(claimPrimary: Boolean) {
+            val cmd = if (claimPrimary) 0x02.toByte() else 0x03.toByte()
+            instance?.bleManager?.sendToRxWithRetry(cmd)
+            instance?.bleManager?.setIsPrimary(claimPrimary)
         }
 
         fun startScan() {
@@ -137,6 +146,7 @@ class BleConnectionService : Service() {
                     updateNotification(state, _batteryLevel.value)
                     when (state) {
                         BleConnectionState.CONNECTED -> acquireWakeLock()
+                        BleConnectionState.SCANNING, BleConnectionState.CONNECTING -> acquireWakeLock()
                         BleConnectionState.DISCONNECTED -> releaseWakeLock()
                         else -> {}
                     }
@@ -159,6 +169,9 @@ class BleConnectionService : Service() {
                     _batteryLevel.value = level
                     updateNotification(_connectionState.value, level)
                 }
+            }
+            serviceScope.launch {
+                mgr.isPrimary.collect { _isPrimary.value = it }
             }
         }
 

@@ -34,6 +34,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -169,6 +170,8 @@ fun HomeScreen(
     val selectedBleDeviceAddress by viewModel.selectedBleDeviceAddress.collectAsState()
     val preferredBleDevice by viewModel.preferredBleDevice.collectAsState()
     val batteryLevel by viewModel.batteryLevel.collectAsState()
+    val isPrimary by viewModel.isPrimary.collectAsState()
+    val connectionPriority by viewModel.connectionPriority.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
@@ -390,6 +393,35 @@ fun HomeScreen(
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "優先接続: ",
+                modifier = Modifier.weight(1f)
+            )
+            Text(text = "Mac Handy", fontSize = 12.sp)
+            Switch(
+                checked = connectionPriority == ConnectionPriority.ANDROID,
+                onCheckedChange = { isAndroid ->
+                    viewModel.setConnectionPriority(
+                        if (isAndroid) ConnectionPriority.ANDROID else ConnectionPriority.MAC_HANDY
+                    )
+                },
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+            Text(text = "Android", fontSize = 12.sp)
+        }
+        if (bleConnectionState == BleConnectionState.CONNECTED) {
+            Text(
+                text = if (isPrimary) "Audio: このデバイスが受信中" else "Audio: Mac Handyが受信中",
+                fontSize = 11.sp,
+                color = if (isPrimary) Color(0xFF43A047) else Color(0xFFFFA726),
+                modifier = Modifier.fillMaxWidth()
+            )
         }
 
         OutlinedButton(

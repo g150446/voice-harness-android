@@ -40,6 +40,8 @@ sealed class BleEvent {
     data object GestureDetected : BleEvent()
     data object LightSleepEnter : BleEvent()
     data object LightSleepWake : BleEvent()
+    data object PeerConnected : BleEvent()
+    data object PeerDisconnected : BleEvent()
 }
 
 private enum class ScanPurpose {
@@ -62,6 +64,7 @@ class BleManager(
         val BATTERY_SERVICE_UUID: UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
         val BATTERY_LEVEL_CHAR_UUID: UUID = UUID.fromString("00002A19-0000-1000-8000-00805f9b34fb")
         const val SCAN_TIMEOUT_MS = 30_000L
+        const val DEVICE_NAME = "HarnessNode"
     }
 
     private val preferences = BleConnectionPreferences(context)
@@ -83,6 +86,13 @@ class BleManager(
 
     private val _batteryLevel = MutableStateFlow<Int?>(null)
     val batteryLevel: StateFlow<Int?> = _batteryLevel
+
+    private val _isPrimary = MutableStateFlow(true)
+    val isPrimary: StateFlow<Boolean> = _isPrimary
+
+    fun setIsPrimary(value: Boolean) {
+        _isPrimary.value = value
+    }
 
     private var bluetoothManager: BluetoothManager? = null
     private var gatt: BluetoothGatt? = null
@@ -261,14 +271,25 @@ class BleManager(
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val uuids = result.scanRecord?.serviceUuids
-            if (uuids == null || !uuids.contains(ParcelUuid(SERVICE_UUID))) return
+            val deviceName = result.device.name ?: result.scanRecord?.deviceName ?: ""
+            val hasServiceUuid = uuids != null && uuids.contains(ParcelUuid(SERVICE_UUID))
+            val hasDeviceName = deviceName == DEVICE_NAME
 
+            Log.v(TAG, "Scan result: addr=${result.device.address} name=$deviceName uuid=$hasServiceUuid")
+
+            // Accept if service UUID matches, or if device name matches (fallback for
+            // background scans where scan responses may not be received).
+            if (!hasServiceUuid && !hasDeviceName) return
+
+            Log.d(TAG, "HarnessNode found: addr=${result.device.address} name=$deviceName uuid=$hasServiceUuid")
             updateScannedDevice(result)
             val targetAddress = pendingTargetAddress
             if (targetAddress != null && result.device.address == targetAddress) {
                 scanTimeoutJob?.cancel()
                 bluetoothManager?.let { stopScan(it) }
                 connectGatt(result.device, scanPurpose ?: ScanPurpose.MANUAL_CONNECT)
+            } else if (targetAddress != null) {
+                Log.w(TAG, "Address mismatch: expected=$targetAddress found=${result.device.address}")
             }
         }
 
@@ -431,6 +452,8 @@ class BleManager(
                 BATTERY_LEVEL_CHAR_UUID -> {
                     Log.d(TAG, "Battery notifications enabled — reading initial level")
                     batteryLevelCharacteristic?.let { gatt.readCharacteristic(it) }
+                    // Role claim (0x02) is sent in onCharacteristicRead after the read completes,
+                    // to avoid a GATT race between readCharacteristic and writeCharacteristic.
                 }
             }
         }
@@ -463,6 +486,18 @@ class BleManager(
                     Log.d(TAG, "Battery level: $level%")
                     _batteryLevel.value = level
                 }
+                // Only claim primary when the preference is ANDROID.
+                // In MAC_HANDY mode we must NOT send 0x02 here, because the retry
+                // sends (300 ms / 600 ms) would race against and override the 0x03
+                // yield that the 0x31 handler issues when Handy connects.
+                val priority = preferences.connectionPriority()
+                if (priority != ConnectionPriority.MAC_HANDY) {
+                    sendToRxWithRetry(0x02.toByte())
+                    _isPrimary.value = true
+                    Log.d(TAG, "Role declared: primary (preference=$priority)")
+                } else {
+                    Log.d(TAG, "Role: not claiming primary (preference=MAC_HANDY)")
+                }
             }
         }
 
@@ -478,6 +513,15 @@ class BleManager(
                     val level = (value[0].toInt() and 0xFF).coerceIn(0, 100)
                     Log.d(TAG, "Battery level: $level%")
                     _batteryLevel.value = level
+                }
+                // Only claim primary when the preference is ANDROID (see sibling override above).
+                val priority = preferences.connectionPriority()
+                if (priority != ConnectionPriority.MAC_HANDY) {
+                    sendToRxWithRetry(0x02.toByte())
+                    _isPrimary.value = true
+                    Log.d(TAG, "Role declared: primary (preference=$priority)")
+                } else {
+                    Log.d(TAG, "Role: not claiming primary (preference=MAC_HANDY)")
                 }
             }
         }
@@ -522,6 +566,19 @@ class BleManager(
 
                     0x20 -> BleEvent.LightSleepEnter
                     0x21 -> BleEvent.LightSleepWake
+                    0x31 -> {
+                        // peer connected: negotiate role based on preference
+                        val priority = preferences.connectionPriority()
+                        if (priority == ConnectionPriority.MAC_HANDY) {
+                            sendToRxWithRetry(0x03.toByte()) // yield to Mac Handy
+                            _isPrimary.value = false
+                        }
+                        BleEvent.PeerConnected
+                    }
+                    0x32 -> {
+                        _isPrimary.value = true
+                        BleEvent.PeerDisconnected
+                    }
                     else -> null
                 } ?: return
                 _bleEvents.tryEmit(event)
@@ -560,6 +617,14 @@ class BleManager(
                 gatt?.writeCharacteristic(characteristic)
             }
             Log.d(TAG, "Sent to RX: 0x${byte.toInt().and(0xFF).toString(16)}")
+        }
+    }
+
+    fun sendToRxWithRetry(byte: Byte, retries: Int = 2, delayMs: Long = 300) {
+        sendToRx(byte)
+        val handler = Handler(Looper.getMainLooper())
+        for (i in 1..retries) {
+            handler.postDelayed({ sendToRx(byte) }, delayMs * i)
         }
     }
 
