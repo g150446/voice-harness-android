@@ -3,13 +3,14 @@ package com.g150446.voiceharness
 internal const val SILERO_SPEECH_THRESHOLD = 0.5f
 internal const val SILERO_FRAME_MIN_RATIO = 0.05
 internal const val SILERO_STUCK_MAX_PROB = 0.01f
-internal const val BLE_RESCUE_PEAK_THRESHOLD = 0.08f
-internal const val BLE_RESCUE_RMS_THRESHOLD = 0.015f
+internal const val BLE_RESCUE_PEAK_THRESHOLD = 0.15f
+internal const val BLE_RESCUE_RMS_THRESHOLD = 0.04f
 internal const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.48
 
 internal data class BleSileroDecision(
     val accepted: Boolean,
-    val spectrumReason: String? = null
+    val spectrumReason: String? = null,
+    val skipSpectrum: Boolean = false
 )
 
 internal fun decideBleSileroOutcome(
@@ -22,14 +23,16 @@ internal fun decideBleSileroOutcome(
         return BleSileroDecision(accepted = true)
     }
 
-    val reason = if (maxProb <= SILERO_STUCK_MAX_PROB) {
-        "Silero output stuck near zero"
-    } else {
-        "Silero below speech ratio threshold"
+    if (maxProb <= SILERO_STUCK_MAX_PROB) {
+        return BleSileroDecision(
+            accepted = false,
+            spectrumReason = "Silero output stuck near zero",
+            skipSpectrum = true
+        )
     }
     return BleSileroDecision(
         accepted = false,
-        spectrumReason = reason
+        spectrumReason = "Silero below speech ratio threshold"
     )
 }
 

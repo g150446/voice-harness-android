@@ -41,22 +41,46 @@ class BleSpeechPolicyTest {
 
         assertFalse(decision.accepted)
         assertEquals("Silero output stuck near zero", decision.spectrumReason)
+        assertTrue(decision.skipSpectrum)
+    }
+
+    @Test
+    fun decideBleSileroOutcome_doesNotSkipSpectrumForLowRatioSpeech() {
+        val decision = decideBleSileroOutcome(
+            speechFrames = 1,
+            totalFrames = 40,
+            maxProb = 0.18f
+        )
+
+        assertFalse(decision.accepted)
+        assertFalse(decision.skipSpectrum)
     }
 
     @Test
     fun shouldRescueBleSpectrum_requiresAllRescueSignals() {
+        // Meets new thresholds: peak >= 0.15, rms >= 0.04
         assertTrue(
             shouldRescueBleSpectrum(
-                peakAfterDc = 0.09f,
-                rmsAfterDc = 0.02f,
+                peakAfterDc = 0.16f,
+                rmsAfterDc = 0.05f,
                 maxBandRatio = 0.50
             )
         )
 
+        // peak below new threshold (0.14 < 0.15) → rejected
         assertFalse(
             shouldRescueBleSpectrum(
-                peakAfterDc = 0.07f,
-                rmsAfterDc = 0.02f,
+                peakAfterDc = 0.14f,
+                rmsAfterDc = 0.05f,
+                maxBandRatio = 0.50
+            )
+        )
+
+        // rms below new threshold (0.03 < 0.04) → rejected
+        assertFalse(
+            shouldRescueBleSpectrum(
+                peakAfterDc = 0.16f,
+                rmsAfterDc = 0.03f,
                 maxBandRatio = 0.50
             )
         )
