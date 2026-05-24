@@ -35,7 +35,6 @@ enum class VoiceState {
 
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
-private const val PCM_RAW_RMS_FLOOR = 0.003
 
 /**
  * Owns the audio processing pipeline: PCM buffering → VAD → Groq Whisper → Groq Chat → TTS.
@@ -289,22 +288,7 @@ class VoiceProcessor(
 
     // --- VAD helpers ---
 
-    private fun computePcmRms(pcmData: ByteArray): Double {
-        if (pcmData.size < 2) return 0.0
-        var sumSq = 0.0
-        val buf = ByteBuffer.wrap(pcmData).order(ByteOrder.LITTLE_ENDIAN)
-        val nSamples = pcmData.size / 2
-        repeat(nSamples) { val s = buf.short / 32768.0; sumSq += s * s }
-        return Math.sqrt(sumSq / nSamples)
-    }
-
     private fun hasSpeechInPcm(pcmData: ByteArray): Boolean {
-        val rawRms = computePcmRms(pcmData)
-        if (rawRms < PCM_RAW_RMS_FLOOR) {
-            Log.d(TAG, "Pre-VAD: raw RMS=${"%.5f".format(Locale.US, rawRms)} below floor — silent")
-            return false
-        }
-
         val analysis = BleSpeechDetector.analyzeBlePcm(pcmData)
         val vad = sileroVad ?: run {
             Log.w(TAG, "Silero VAD unavailable — falling back to spectrum VAD")
@@ -365,10 +349,6 @@ class VoiceProcessor(
             TAG,
             "Silero VAD did not accept BLE audio (reason=${sileroDecision.spectrumReason}, maxProb=${"%.3f".format(Locale.US, maxProb)}) — checking spectrum VAD"
         )
-        if (sileroDecision.skipSpectrum) {
-            Log.w(TAG, "Silero VAD stuck — rejecting without spectrum fallback")
-            return false
-        }
         return hasSpeechBySpectrum(
             samples = analysis.samples,
             reason = sileroDecision.spectrumReason ?: "Silero rejected audio",
