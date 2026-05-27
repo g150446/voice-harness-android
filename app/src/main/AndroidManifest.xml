@@ -29,6 +29,7 @@
         tools:targetApi="34" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
@@ -92,6 +93,14 @@
 
         <receiver
             android:name=".WatchdogReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".ReminderAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".ReminderCompleteReceiver"
             android:exported="false" />
 
         <receiver

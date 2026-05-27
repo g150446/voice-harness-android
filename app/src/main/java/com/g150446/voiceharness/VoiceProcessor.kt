@@ -18,7 +18,10 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 
 private const val TAG = "VoiceProcessor"
@@ -48,6 +51,8 @@ class VoiceProcessor(
 ) : TextToSpeech.OnInitListener {
 
     private val historyRepository = HistoryRepository(appContext)
+    private val reminderRepository = ReminderRepository(appContext)
+    private val conversationSession = ConversationSession()
 
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
@@ -125,6 +130,7 @@ class VoiceProcessor(
 
         if (!hasSpeechInPcm(pcmData)) {
             Log.d(TAG, "VAD: no speech in BLE audio — skipping Groq")
+            conversationSession.reset()
             historyRepository.addEntry(HistoryEntry(
                 id = UUID.randomUUID().toString(),
                 timestamp = System.currentTimeMillis(),
@@ -219,8 +225,13 @@ class VoiceProcessor(
 
             BleConnectionService.setVoiceState(VoiceState.RESPONDING)
 
-            val chatJson = GroqChatRequestBuilder.buildRequestBody(
-                userText = transcribed,
+            if (conversationSession.isExpired()) {
+                conversationSession.reset()
+            }
+            conversationSession.addTurn("user", transcribed)
+
+            val chatJson = GroqChatRequestBuilder.buildRequestBodyWithFunctionCalling(
+                conversationHistory = conversationSession.turns,
                 languageCode = responseLanguageCode
             )
 
@@ -250,23 +261,28 @@ class VoiceProcessor(
             }
 
             val choices = JSONObject(chatBodyText).optJSONArray("choices")
-            val responseText = if (choices != null && choices.length() > 0) {
-                choices.getJSONObject(0).optJSONObject("message")?.optString("content").orEmpty()
-            } else "(返答なし)"
+            val messageObj = if (choices != null && choices.length() > 0) {
+                choices.getJSONObject(0).optJSONObject("message")
+            } else null
 
-            val finalResponse = responseText.ifBlank { "(返答なし)" }
-            BleConnectionService.setResponse(finalResponse)
-            Log.d(TAG, "Response: $responseText")
-            historyRepository.addEntry(HistoryEntry(
-                id = UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
-                transcription = BleConnectionService.transcription.value,
-                response = finalResponse,
-                isSilent = false,
-                errorMessage = ""
-            ))
-
-            speakResponse(responseText)
+            if (messageObj != null && messageObj.has("tool_calls")) {
+                handleToolCalls(messageObj, apiKey)
+            } else {
+                val responseText = messageObj?.optString("content").orEmpty()
+                val finalResponse = responseText.ifBlank { "(返答なし)" }
+                BleConnectionService.setResponse(finalResponse)
+                Log.d(TAG, "Response: $responseText")
+                conversationSession.addTurn("assistant", finalResponse)
+                historyRepository.addEntry(HistoryEntry(
+                    id = UUID.randomUUID().toString(),
+                    timestamp = System.currentTimeMillis(),
+                    transcription = BleConnectionService.transcription.value,
+                    response = finalResponse,
+                    isSilent = false,
+                    errorMessage = ""
+                ))
+                speakResponse(responseText)
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "Error during transcribe/respond", e)
@@ -384,6 +400,121 @@ class VoiceProcessor(
             return true
         }
         return false
+    }
+
+    // --- Reminder helpers ---
+
+    private suspend fun handleToolCalls(messageObj: JSONObject, apiKey: String) {
+        val toolCalls = messageObj.optJSONArray("tool_calls") ?: return
+        val firstToolCall = toolCalls.optJSONObject(0) ?: return
+        val functionObj = firstToolCall.optJSONObject("function") ?: return
+        val functionName = functionObj.optString("name", "")
+        if (functionName != "set_reminder") {
+            Log.w(TAG, "Unexpected tool call: $functionName")
+            return
+        }
+
+        val argumentsStr = functionObj.optString("arguments", "{}")
+        val args = try {
+            JSONObject(argumentsStr)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse tool call arguments", e)
+            return
+        }
+        val title = args.optString("title", "").trim()
+        val datetimeStr = args.optString("datetime", "").trim()
+        val ttsEnabled = args.optBoolean("tts_enabled", false)
+
+        if (title.isBlank() || datetimeStr.isBlank()) {
+            val errorMsg = "リマインダーの設定に必要な情報が足りませんでした。"
+            BleConnectionService.setResponse(errorMsg)
+            conversationSession.addTurn("assistant", errorMsg)
+            historyRepository.addEntry(HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = System.currentTimeMillis(),
+                transcription = BleConnectionService.transcription.value,
+                response = errorMsg,
+                isSilent = false,
+                errorMessage = ""
+            ))
+            speakResponse(errorMsg)
+            return
+        }
+
+        val scheduledAtMillis = parseIso8601ToMillis(datetimeStr)
+        if (scheduledAtMillis == null) {
+            val errorMsg = "日時の解析に失敗しました: $datetimeStr"
+            BleConnectionService.setResponse(errorMsg)
+            conversationSession.addTurn("assistant", errorMsg)
+            historyRepository.addEntry(HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = System.currentTimeMillis(),
+                transcription = BleConnectionService.transcription.value,
+                response = errorMsg,
+                isSilent = false,
+                errorMessage = ""
+            ))
+            speakResponse(errorMsg)
+            return
+        }
+
+        val entry = ReminderEntry(
+            title = title,
+            scheduledAtMillis = scheduledAtMillis,
+            isTtsEnabled = ttsEnabled
+        )
+        reminderRepository.addEntry(entry)
+        ReminderAlarmScheduler.schedule(appContext, entry)
+
+        val confirmation = buildReminderConfirmationText(title, datetimeStr, ttsEnabled)
+        BleConnectionService.setResponse(confirmation)
+        conversationSession.addTurn("assistant", confirmation)
+        historyRepository.addEntry(HistoryEntry(
+            id = UUID.randomUUID().toString(),
+            timestamp = System.currentTimeMillis(),
+            transcription = BleConnectionService.transcription.value,
+            response = confirmation,
+            isSilent = false,
+            errorMessage = ""
+        ))
+        conversationSession.reset()
+        speakResponse(confirmation)
+    }
+
+    private fun parseIso8601ToMillis(datetimeStr: String): Long? {
+        return try {
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US)
+            sdf.parse(datetimeStr)?.time
+        } catch (e: Exception) {
+            try {
+                // Handle Z suffix (UTC) format, e.g., 2025-05-24T14:30:00Z
+                val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                sdf.timeZone = TimeZone.getTimeZone("UTC")
+                sdf.parse(datetimeStr)?.time
+            } catch (e2: Exception) {
+                try {
+                    // Fallback: no timezone offset, assume Asia/Tokyo
+                    val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                    sdf.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+                    sdf.parse(datetimeStr)?.time
+                } catch (e3: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    private fun buildReminderConfirmationText(title: String, datetimeStr: String, ttsEnabled: Boolean): String {
+        val scheduledAtMillis = parseIso8601ToMillis(datetimeStr)
+        val scheduledText = if (scheduledAtMillis != null) {
+            val displaySdf = SimpleDateFormat("M月d日 H:mm", Locale.JAPAN)
+            displaySdf.timeZone = TimeZone.getTimeZone("Asia/Tokyo")
+            displaySdf.format(Date(scheduledAtMillis))
+        } else {
+            datetimeStr
+        }
+        val ttsText = if (ttsEnabled) "読み上げありで" else ""
+        return "${title}のリマインダーを${ttsText}${scheduledText}に設定しました。"
     }
 
     // --- WAV file builder ---

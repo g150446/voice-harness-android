@@ -151,6 +151,7 @@ fun VoiceScreen(
             AppScreen.HOME -> HomeScreen(modifier = modifier, viewModel = viewModel)
             AppScreen.HISTORY_LIST -> HistoryListScreen(modifier = modifier, viewModel = viewModel)
             AppScreen.HISTORY_DETAIL -> HistoryDetailScreen(modifier = modifier, viewModel = viewModel)
+            AppScreen.REMINDER_LIST -> ReminderListScreen(modifier = modifier, viewModel = viewModel)
         }
     }
 }
@@ -431,6 +432,15 @@ fun HomeScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Settings")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = { viewModel.openReminders() },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("リマインダー")
         }
 
         Spacer(modifier = Modifier.height(8.dp))

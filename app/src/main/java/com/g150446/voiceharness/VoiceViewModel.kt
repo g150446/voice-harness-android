@@ -7,11 +7,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
-enum class AppScreen { HOME, HISTORY_LIST, HISTORY_DETAIL }
+enum class AppScreen { HOME, HISTORY_LIST, HISTORY_DETAIL, REMINDER_LIST }
 
 class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     private val historyRepository = HistoryRepository(application)
+    private val reminderRepository = ReminderRepository(application)
 
     private val _currentScreen = MutableStateFlow(AppScreen.HOME)
     val currentScreen: StateFlow<AppScreen> = _currentScreen
@@ -21,6 +22,9 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedHistoryEntry = MutableStateFlow<HistoryEntry?>(null)
     val selectedHistoryEntry: StateFlow<HistoryEntry?> = _selectedHistoryEntry
+
+    private val _reminderEntries = MutableStateFlow<List<ReminderEntry>>(emptyList())
+    val reminderEntries: StateFlow<List<ReminderEntry>> = _reminderEntries
 
     private val _bleConnectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
     val bleConnectionState: StateFlow<BleConnectionState> = _bleConnectionState
@@ -124,10 +128,22 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
         _currentScreen.value = AppScreen.HISTORY_DETAIL
     }
 
+    fun openReminders() {
+        _reminderEntries.value = reminderRepository.getPending()
+        _currentScreen.value = AppScreen.REMINDER_LIST
+    }
+
+    fun deleteReminder(id: String) {
+        reminderRepository.deleteEntry(id)
+        ReminderAlarmScheduler.cancel(getApplication(), id)
+        _reminderEntries.value = reminderRepository.getPending()
+    }
+
     fun navigateBack() {
         when (_currentScreen.value) {
             AppScreen.HISTORY_DETAIL -> _currentScreen.value = AppScreen.HISTORY_LIST
             AppScreen.HISTORY_LIST -> _currentScreen.value = AppScreen.HOME
+            AppScreen.REMINDER_LIST -> _currentScreen.value = AppScreen.HOME
             AppScreen.HOME -> {}
         }
     }
