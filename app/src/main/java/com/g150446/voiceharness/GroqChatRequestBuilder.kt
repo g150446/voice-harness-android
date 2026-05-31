@@ -116,7 +116,8 @@ object GroqChatRequestBuilder {
         val reminderInstructions = "You can set reminders for the user by calling the set_reminder function. " +
             "When the user asks to set a reminder, always call the function rather than just saying you will remember. " +
             "The current date and time is $currentTimeStr (Asia/Tokyo, UTC+09:00). Use this as the reference for all relative time calculations. " +
-            "If the user asks for the current time or date, tell them the exact current time accurately based on the information above. " +
+            "If the user asks for the current time, respond with only the hours and minutes (e.g., '午後3時15分' or '15時15分'), without the date or seconds. " +
+            "If the user asks for today's date, respond with only the year, month, and day (e.g., '2026年5月31日'), without the time. " +
             "If the user mentions a time without a date, assume today based on the current time. " +
             "If the user says something like '3時に会議', set the reminder for 3 PM today. " +
             "If the time is ambiguous (e.g., just '3時' without AM/PM context), use your best judgment based on common usage. " +
