@@ -48,7 +48,7 @@ class BleSpeechPolicyTest {
         assertTrue(
             shouldRescueBleSpectrum(
                 peakAfterDc = 0.09f,
-                rmsAfterDc = 0.02f,
+                rmsAfterDc = 0.009f,
                 maxBandRatio = 0.50
             )
         )
@@ -56,8 +56,43 @@ class BleSpeechPolicyTest {
         assertFalse(
             shouldRescueBleSpectrum(
                 peakAfterDc = 0.07f,
-                rmsAfterDc = 0.02f,
+                rmsAfterDc = 0.009f,
                 maxBandRatio = 0.50
+            )
+        )
+
+        assertFalse(
+            shouldRescueBleSpectrum(
+                peakAfterDc = 0.09f,
+                rmsAfterDc = 0.007f,
+                maxBandRatio = 0.50
+            )
+        )
+    }
+
+    @Test
+    fun shouldRescueBleSpectrum_acceptsObservedBleSpeechLevels() {
+        // Logged failure cases that previously skipped Groq despite real speech.
+        assertTrue(
+            shouldRescueBleSpectrum(
+                peakAfterDc = 0.0950f,
+                rmsAfterDc = 0.0091f,
+                maxBandRatio = 0.766
+            )
+        )
+        assertTrue(
+            shouldRescueBleSpectrum(
+                peakAfterDc = 0.0940f,
+                rmsAfterDc = 0.0107f,
+                maxBandRatio = 0.650
+            )
+        )
+        // Genuine near-silence should still be rejected.
+        assertFalse(
+            shouldRescueBleSpectrum(
+                peakAfterDc = 0.0118f,
+                rmsAfterDc = 0.0020f,
+                maxBandRatio = 0.427
             )
         )
     }

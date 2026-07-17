@@ -556,7 +556,11 @@ class BleManager(
             0x55 -> {
                 if (data.size < 3) return
                 val event = when (data[2].toInt() and 0xFF) {
-                    0x01 -> BleEvent.RecordingStarted
+                    0x01 -> {
+                        // Avoid false PCM gap warnings across recording sessions.
+                        lastSeqNum = -1
+                        BleEvent.RecordingStarted
+                    }
                     0x02 -> BleEvent.RecordingStopped
                     0x10 -> parseMotionActive(data)
                     0x11 -> {

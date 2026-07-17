@@ -4,7 +4,7 @@ internal const val SILERO_SPEECH_THRESHOLD = 0.5f
 internal const val SILERO_FRAME_MIN_RATIO = 0.05
 internal const val SILERO_STUCK_MAX_PROB = 0.01f
 internal const val BLE_RESCUE_PEAK_THRESHOLD = 0.08f
-internal const val BLE_RESCUE_RMS_THRESHOLD = 0.015f
+internal const val BLE_RESCUE_RMS_THRESHOLD = 0.008f
 internal const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.48
 
 internal data class BleSileroDecision(
