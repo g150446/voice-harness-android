@@ -1,6 +1,6 @@
 # Voice Harness
 
-Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして使い、Groq API で音声認識・AI 応答・TTS 読み上げを行う。
+Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして使い、端末内モデルで音声認識・AI応答を行い、Android TTSで読み上げる。
 
 ## 概要
 
@@ -14,10 +14,10 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 [Silero VAD + FFT fallback]
         │ 音声あり
         ▼
-[Groq Whisper API] → 文字起こし
+[Qwen3-ASR / Gemma] → 文字起こし
         │
         ▼
-[Groq Chat API]    → AI 応答
+[Qwen 3.5 / Gemma] → AI 応答
         │
         ▼
 [Android TTS]      → 読み上げ
@@ -33,21 +33,22 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 
 - Android 7.0 以上 (API 24+)
 - XIAO nRF52840 Sense（`harness-node/nordic-main` ファームウェア書き込み済み）
-- [Groq API キー](https://console.groq.com/)
+- QwenまたはGemmaのオンデバイスモデル（詳細は下記ドキュメント参照）
 
 ### アプリのインストール
 
 ```bash
 git clone https://github.com/g150446/voice-harness-android.git
 cd voice-harness-android
+./scripts/prepare-qwen-asr-native.sh
 ./gradlew :app:installDebug
 ```
 
 ### 初期設定
 
 1. アプリを起動し、要求された権限（Bluetooth・マイク・通知）を許可する
-2. 画面下部の **Settings** をタップ
-3. Groq API キーを入力して保存
+2. `models/`へモデルを配置し、`./scripts/push-all-models.sh`で端末へ転送する
+3. 画面下部の **モデル設定** でQwenまたはGemmaを選択し、モデルを読み込む
 
 ### nRF52840 との接続
 
@@ -84,6 +85,12 @@ AI が読み上げ中に再度ジェスチャーを行うと、読み上げを�
 ## ビルド・開発
 
 ```bash
+# Qwen3-ASR用runtimeを準備（初回のみ）
+./scripts/prepare-qwen-asr-native.sh
+
+# テストとデバッグビルド
+./gradlew testDebugUnitTest :app:assembleDebug
+
 # デバッグビルド
 ./gradlew :app:assembleDebug
 
@@ -106,10 +113,13 @@ adb logcat -s VoiceViewModel SileroVad BleManager BleConnectionService
 |---|---|
 | `BleManager.kt` | BLE スキャン・接続・パケット解析 |
 | `BleConnectionService.kt` | BLE をフォアグラウンドサービスとして管理 |
-| `VoiceViewModel.kt` | 録音制御・VAD・Groq API・TTS |
+| `VoiceProcessor.kt` | 録音制御・VAD・オンデバイスAI・TTS |
+| `ModelManager.kt` | モデル探索、取り込み、状態管理 |
+| `QwenOnDeviceBackend.kt` | Qwen3-ASRとQwen 3.5の実行 |
+| `GemmaOnDeviceBackend.kt` | Gemma 4の実行 |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
 | `MainActivity.kt` | UI（Jetpack Compose） |
-| `GroqSettingsActivity.kt` | API キー設定画面 |
+| `GroqSettingsActivity.kt` | オンデバイスモデル設定画面 |
 
 ---
 
@@ -118,3 +128,5 @@ adb logcat -s VoiceViewModel SileroVad BleManager BleConnectionService
 - [`documents/ble_protocol.md`](documents/ble_protocol.md) — BLE パケット仕様
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
 - [`documents/architecture.md`](documents/architecture.md) — アーキテクチャ詳細
+- [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — オンデバイスモデルの準備・運用
+- [`documents/qwen_asr_encoder_issue.md`](documents/qwen_asr_encoder_issue.md) — Qwen3-ASR方式の調査・端末検証結果

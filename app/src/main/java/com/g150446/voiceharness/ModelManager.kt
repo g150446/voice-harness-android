@@ -1,0 +1,508 @@
+package com.g150446.voiceharness
+
+import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import android.provider.OpenableColumns
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+
+enum class ModelReadiness {
+    MISSING,
+    FOUND,
+    LOADING,
+    READY,
+    ERROR
+}
+
+enum class ModelSlot {
+    GEMMA,
+    QWEN_LLM,
+    QWEN_ASR_DECODER,
+    QWEN_ASR_PROJECTOR
+}
+
+data class SlotStatus(
+    val readiness: ModelReadiness = ModelReadiness.MISSING,
+    val path: String? = null,
+    val fileName: String? = null,
+    val sizeBytes: Long = 0L,
+    val message: String = ""
+)
+
+data class ModelStatus(
+    val profile: OnDeviceProfile = OnDeviceProfile.QWEN,
+    val readiness: ModelReadiness = ModelReadiness.MISSING,
+    val modelPath: String? = null,
+    val modelFileName: String? = null,
+    val modelSizeBytes: Long = 0L,
+    val message: String = "",
+    val lastLoadMs: Long = 0L,
+    val lastAsrMs: Long = 0L,
+    val lastChatMs: Long = 0L,
+    val gemma: SlotStatus = SlotStatus(),
+    val qwenLlm: SlotStatus = SlotStatus(),
+    val qwenAsrDecoder: SlotStatus = SlotStatus(),
+    val qwenAsrProjector: SlotStatus = SlotStatus()
+)
+
+/**
+ * Multi-model manager for Qwen (default) and Gemma profiles.
+ */
+object ModelManager {
+    private const val TAG = "ModelManager"
+    private const val PREFS = "model_prefs"
+    private const val KEY_PROFILE = "on_device_profile"
+    private const val KEY_GEMMA_PATH = "gemma_path"
+    private const val KEY_QWEN_LLM_PATH = "qwen_llm_path"
+    private const val KEY_QWEN_ASR_DECODER_PATH = "qwen_asr_decoder_path"
+    private const val KEY_QWEN_ASR_PROJECTOR_PATH = "qwen_asr_projector_path"
+    private const val MIN_MODEL_BYTES = 50_000_000L
+
+    const val GEMMA_FILE = "gemma-4-E2B-it.litertlm"
+    const val QWEN_LLM_FILE = "qwen35_mm_q8_ekv2048.litertlm"
+    const val QWEN_ASR_DECODER_FILE = "Qwen3-ASR-0.6B-Q8_0.gguf"
+    const val QWEN_ASR_PROJECTOR_FILE = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
+
+    private val _status = MutableStateFlow(ModelStatus())
+    val status: StateFlow<ModelStatus> = _status.asStateFlow()
+
+    fun preferredModelsDir(context: Context): File =
+        File(context.filesDir, "models").also { it.mkdirs() }
+
+    fun currentProfile(context: Context): OnDeviceProfile {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return OnDeviceProfile.fromStorage(prefs.getString(KEY_PROFILE, OnDeviceProfile.QWEN.name))
+    }
+
+    fun setProfile(context: Context, profile: OnDeviceProfile) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PROFILE, profile.name)
+            .apply()
+        refresh(context)
+    }
+
+    fun resolveGemmaModel(context: Context): File? =
+        resolveNamed(
+            context = context,
+            prefKey = KEY_GEMMA_PATH,
+            preferredNames = listOf(GEMMA_FILE),
+            extensions = listOf(".litertlm"),
+            nameHints = listOf("gemma")
+        )
+
+    fun resolveQwenLlmModel(context: Context): File? =
+        resolveNamed(
+            context = context,
+            prefKey = KEY_QWEN_LLM_PATH,
+            preferredNames = listOf(QWEN_LLM_FILE, "Qwen3.5-0.8B.litertlm"),
+            extensions = listOf(".litertlm"),
+            nameHints = listOf("qwen35", "qwen3.5", "qwen_3_5", "0.8b", "qwen3_5")
+        )
+
+    fun resolveQwenAsrDecoder(context: Context): File? = resolveNamed(
+        context, KEY_QWEN_ASR_DECODER_PATH, listOf(QWEN_ASR_DECODER_FILE),
+        listOf(".gguf"), listOf("qwen3-asr", "qwen3_asr")
+    )
+
+    fun resolveQwenAsrProjector(context: Context): File? = resolveNamed(
+        context, KEY_QWEN_ASR_PROJECTOR_PATH, listOf(QWEN_ASR_PROJECTOR_FILE),
+        listOf(".gguf"), listOf("mmproj", "projector")
+    )
+
+    /** Backward-compatible single-file resolve for active profile primary model. */
+    fun resolveModelFile(context: Context): File? = when (currentProfile(context)) {
+        OnDeviceProfile.GEMMA -> resolveGemmaModel(context)
+        OnDeviceProfile.QWEN -> resolveQwenLlmModel(context)
+    }
+
+    private fun resolveNamed(
+        context: Context,
+        prefKey: String,
+        preferredNames: List<String>,
+        extensions: List<String>,
+        nameHints: List<String>
+    ): File? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val configured = prefs.getString(prefKey, null)
+        if (!configured.isNullOrBlank()) {
+            val file = File(configured)
+            if (isModelFile(file, extensions)) return file
+        }
+
+        val candidates = linkedSetOf<File>()
+        collectModels(preferredModelsDir(context), candidates, extensions)
+        context.getExternalFilesDir(null)?.let { root ->
+            collectModels(File(root, "models").also { it.mkdirs() }, candidates, extensions)
+            collectModels(root, candidates, extensions)
+        }
+        listOf(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            File("/sdcard/Download"),
+            File("/storage/emulated/0/Download")
+        ).forEach { collectModels(it, candidates, extensions) }
+
+        preferredNames.forEach { name ->
+            candidates.firstOrNull { it.name.equals(name, ignoreCase = true) }?.let { return remember(context, prefKey, it) }
+        }
+        val hinted = candidates.filter { file ->
+            val lower = file.name.lowercase()
+            nameHints.any { hint -> lower.contains(hint.lowercase()) }
+        }
+        val chosen = hinted.maxByOrNull { it.lastModified() }
+            ?: candidates.maxByOrNull { it.lastModified() }
+        return chosen?.let { remember(context, prefKey, it) }
+    }
+
+    private fun remember(context: Context, prefKey: String, file: File): File {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(prefKey, file.absolutePath)
+            .apply()
+        return file
+    }
+
+    private fun collectModels(dir: File?, out: MutableSet<File>, extensions: List<String>) {
+        if (dir == null || !dir.isDirectory || !dir.canRead()) return
+        dir.listFiles()?.forEach { file ->
+            if (isModelFile(file, extensions)) out += file
+        }
+    }
+
+    private fun isModelFile(file: File, extensions: List<String>): Boolean {
+        if (!file.isFile || !file.canRead() || file.length() < MIN_MODEL_BYTES) return false
+        val name = file.name.lowercase()
+        return extensions.any { name.endsWith(it.lowercase()) }
+    }
+
+    fun refresh(context: Context): ModelStatus {
+        val profile = currentProfile(context)
+        val gemmaFile = resolveGemmaModel(context)
+        val qwenLlmFile = resolveQwenLlmModel(context)
+        val qwenAsrDecoderFile = resolveQwenAsrDecoder(context)
+        val qwenAsrProjectorFile = resolveQwenAsrProjector(context)
+
+        val gemma = toSlot(gemmaFile, "Gemma")
+        val qwenLlm = toSlot(qwenLlmFile, "Qwen LLM")
+        val qwenAsrDecoder = toSlot(qwenAsrDecoderFile, "Qwen ASR decoder")
+        val qwenAsrProjector = toSlot(qwenAsrProjectorFile, "Qwen ASR projector")
+
+        val (readiness, path, fileName, size, message) = when (profile) {
+            OnDeviceProfile.GEMMA -> {
+                if (gemma.readiness == ModelReadiness.MISSING) {
+                    StatusTuple(ModelReadiness.MISSING, null, null, 0L, "Gemma 未検出。「ファイルから取り込む」で配置してください。")
+                } else {
+                    StatusTuple(ModelReadiness.FOUND, gemma.path, gemma.fileName, gemma.sizeBytes, "Gemma 検出済み")
+                }
+            }
+            OnDeviceProfile.QWEN -> {
+                val missing = listOf(qwenLlm, qwenAsrDecoder, qwenAsrProjector).count {
+                    it.readiness == ModelReadiness.MISSING
+                }
+                if (missing > 0) {
+                    StatusTuple(ModelReadiness.MISSING, null, null, 0L, "Qwen 必須モデルが $missing 件未検出。")
+                } else {
+                    StatusTuple(
+                        ModelReadiness.FOUND,
+                        qwenLlm.path,
+                        qwenLlm.fileName,
+                        qwenLlm.sizeBytes + qwenAsrDecoder.sizeBytes + qwenAsrProjector.sizeBytes,
+                        "Qwen LLM + Qwen3-ASR 検出済み"
+                    )
+                }
+            }
+        }
+
+        val current = _status.value
+        // Preserve READY/LOADING if same active path still valid.
+        val next = if (
+            (current.readiness == ModelReadiness.READY || current.readiness == ModelReadiness.LOADING) &&
+            current.profile == profile &&
+            current.modelPath != null &&
+            current.modelPath == path
+        ) {
+            current.copy(
+                gemma = gemma,
+                qwenLlm = qwenLlm,
+                qwenAsrDecoder = qwenAsrDecoder,
+                qwenAsrProjector = qwenAsrProjector,
+                modelSizeBytes = size,
+                modelFileName = fileName ?: current.modelFileName,
+                message = if (current.readiness == ModelReadiness.READY) current.message else message
+            )
+        } else {
+            ModelStatus(
+                profile = profile,
+                readiness = if (current.readiness == ModelReadiness.ERROR && current.profile == profile && current.modelPath == path) {
+                    ModelReadiness.ERROR
+                } else {
+                    readiness
+                },
+                modelPath = path,
+                modelFileName = fileName,
+                modelSizeBytes = size,
+                message = if (current.readiness == ModelReadiness.ERROR && current.profile == profile && current.modelPath == path) {
+                    current.message
+                } else {
+                    message
+                },
+                lastLoadMs = current.lastLoadMs,
+                lastAsrMs = current.lastAsrMs,
+                lastChatMs = current.lastChatMs,
+                gemma = gemma,
+                qwenLlm = qwenLlm,
+                qwenAsrDecoder = qwenAsrDecoder,
+                qwenAsrProjector = qwenAsrProjector
+            )
+        }
+        _status.value = next
+        Log.d(TAG, "refresh -> $next")
+        return next
+    }
+
+    private data class StatusTuple(
+        val readiness: ModelReadiness,
+        val path: String?,
+        val fileName: String?,
+        val size: Long,
+        val message: String
+    )
+
+    private fun toSlot(file: File?, label: String): SlotStatus {
+        return if (file == null) {
+            SlotStatus(readiness = ModelReadiness.MISSING, message = "$label 未検出")
+        } else {
+            SlotStatus(
+                readiness = ModelReadiness.FOUND,
+                path = file.absolutePath,
+                fileName = file.name,
+                sizeBytes = file.length(),
+                message = "$label 検出"
+            )
+        }
+    }
+
+    fun markSlotLoading(slot: ModelSlot, path: String) {
+        updateSlot(slot, ModelReadiness.LOADING, path, "読み込み中...")
+        if (isActiveSlot(slot)) {
+            _status.value = _status.value.copy(
+                readiness = ModelReadiness.LOADING,
+                modelPath = path,
+                message = "モデル読み込み中..."
+            )
+        }
+    }
+
+    fun markSlotReady(slot: ModelSlot, path: String, loadMs: Long) {
+        val file = File(path)
+        updateSlot(slot, ModelReadiness.READY, path, "準備完了")
+        if (isActiveSlot(slot) || slot == ModelSlot.QWEN_LLM || slot == ModelSlot.GEMMA) {
+            val profile = _status.value.profile
+            val activeReady = when (profile) {
+                OnDeviceProfile.GEMMA -> slot == ModelSlot.GEMMA
+                OnDeviceProfile.QWEN -> slot == ModelSlot.QWEN_LLM
+            }
+            if (activeReady) {
+                _status.value = _status.value.copy(
+                    readiness = ModelReadiness.READY,
+                    modelPath = path,
+                    modelFileName = file.name,
+                    modelSizeBytes = if (profile == OnDeviceProfile.QWEN) {
+                        _status.value.qwenLlm.sizeBytes +
+                            _status.value.qwenAsrDecoder.sizeBytes +
+                            _status.value.qwenAsrProjector.sizeBytes
+                    } else {
+                        file.length()
+                    },
+                    message = "準備完了（${loadMs} ms）",
+                    lastLoadMs = if (loadMs > 0) loadMs else _status.value.lastLoadMs
+                )
+            }
+        }
+    }
+
+    fun markSlotError(slot: ModelSlot, message: String) {
+        updateSlot(slot, ModelReadiness.ERROR, _status.value.let {
+            when (slot) {
+                ModelSlot.GEMMA -> it.gemma.path
+                ModelSlot.QWEN_LLM -> it.qwenLlm.path
+                ModelSlot.QWEN_ASR_DECODER -> it.qwenAsrDecoder.path
+                ModelSlot.QWEN_ASR_PROJECTOR -> it.qwenAsrProjector.path
+            }
+        }, message)
+        if (isActiveSlot(slot) || slot == ModelSlot.QWEN_LLM || slot == ModelSlot.GEMMA) {
+            _status.value = _status.value.copy(
+                readiness = ModelReadiness.ERROR,
+                message = message
+            )
+        }
+    }
+
+    fun markSlotMissing(slot: ModelSlot) {
+        updateSlot(slot, ModelReadiness.MISSING, null, "未検出")
+    }
+
+    private fun isActiveSlot(slot: ModelSlot): Boolean = when (_status.value.profile) {
+        OnDeviceProfile.GEMMA -> slot == ModelSlot.GEMMA
+        OnDeviceProfile.QWEN -> slot != ModelSlot.GEMMA
+    }
+
+    private fun updateSlot(slot: ModelSlot, readiness: ModelReadiness, path: String?, message: String) {
+        val file = path?.let { File(it) }
+        val slotStatus = SlotStatus(
+            readiness = readiness,
+            path = path,
+            fileName = file?.name,
+            sizeBytes = file?.length() ?: 0L,
+            message = message
+        )
+        _status.value = when (slot) {
+            ModelSlot.GEMMA -> _status.value.copy(gemma = slotStatus)
+            ModelSlot.QWEN_LLM -> _status.value.copy(qwenLlm = slotStatus)
+            ModelSlot.QWEN_ASR_DECODER -> _status.value.copy(qwenAsrDecoder = slotStatus)
+            ModelSlot.QWEN_ASR_PROJECTOR -> _status.value.copy(qwenAsrProjector = slotStatus)
+        }
+    }
+
+    fun markLoading(path: String) {
+        // compatibility
+        val slot = when (currentProfileFromStatus()) {
+            OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
+            OnDeviceProfile.QWEN -> ModelSlot.QWEN_LLM
+        }
+        markSlotLoading(slot, path)
+    }
+
+    fun markReady(path: String, loadMs: Long) {
+        val slot = when (currentProfileFromStatus()) {
+            OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
+            OnDeviceProfile.QWEN -> ModelSlot.QWEN_LLM
+        }
+        markSlotReady(slot, path, loadMs)
+    }
+
+    fun markError(message: String, path: String? = _status.value.modelPath) {
+        val slot = when (currentProfileFromStatus()) {
+            OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
+            OnDeviceProfile.QWEN -> ModelSlot.QWEN_LLM
+        }
+        markSlotError(slot, message)
+        if (path != null) {
+            _status.value = _status.value.copy(modelPath = path)
+        }
+    }
+
+    fun markReleased(context: Context) {
+        refresh(context)
+    }
+
+    private fun currentProfileFromStatus(): OnDeviceProfile = _status.value.profile
+
+    fun recordAsrMs(ms: Long) {
+        _status.value = _status.value.copy(lastAsrMs = ms)
+    }
+
+    fun recordChatMs(ms: Long) {
+        _status.value = _status.value.copy(lastChatMs = ms)
+    }
+
+    fun readinessLabel(readiness: ModelReadiness): String = when (readiness) {
+        ModelReadiness.MISSING -> "未検出"
+        ModelReadiness.FOUND -> "検出済み"
+        ModelReadiness.LOADING -> "読み込み中"
+        ModelReadiness.READY -> "準備完了"
+        ModelReadiness.ERROR -> "エラー"
+    }
+
+    fun formatSize(bytes: Long): String {
+        if (bytes <= 0L) return "-"
+        val mb = bytes / (1024.0 * 1024.0)
+        return if (mb >= 1024.0) String.format("%.2f GB", mb / 1024.0) else String.format("%.0f MB", mb)
+    }
+
+    suspend fun importFromUri(context: Context, uri: Uri, slotHint: ModelSlot? = null): Result<File> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val resolver = context.contentResolver
+                val displayName = queryDisplayName(context, uri) ?: "model.bin"
+                val lower = displayName.lowercase()
+                val slot = slotHint ?: when {
+                    lower.contains("gemma") -> ModelSlot.GEMMA
+                    lower.contains("mmproj") || lower.contains("projector") -> ModelSlot.QWEN_ASR_PROJECTOR
+                    lower.endsWith(".gguf") -> ModelSlot.QWEN_ASR_DECODER
+                    lower.contains("qwen") -> ModelSlot.QWEN_LLM
+                    lower.endsWith(".litertlm") && currentProfile(context) == OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
+                    lower.endsWith(".litertlm") -> ModelSlot.QWEN_LLM
+                    else -> ModelSlot.QWEN_LLM
+                }
+                val expectedExtension = if (slot == ModelSlot.QWEN_ASR_DECODER || slot == ModelSlot.QWEN_ASR_PROJECTOR) ".gguf" else ".litertlm"
+                require(lower.endsWith(expectedExtension)) {
+                    "$expectedExtension モデルを選択してください。"
+                }
+                val destName = when (slot) {
+                    ModelSlot.GEMMA -> if (lower.endsWith(".litertlm")) displayName.substringAfterLast('/') else GEMMA_FILE
+                    ModelSlot.QWEN_LLM -> if (lower.endsWith(".litertlm")) displayName.substringAfterLast('/') else QWEN_LLM_FILE
+                    ModelSlot.QWEN_ASR_DECODER -> QWEN_ASR_DECODER_FILE
+                    ModelSlot.QWEN_ASR_PROJECTOR -> QWEN_ASR_PROJECTOR_FILE
+                }
+                val dest = File(preferredModelsDir(context), destName)
+                val tmp = File(preferredModelsDir(context), "$destName.partial")
+                Log.d(TAG, "import slot=$slot uri=$uri dest=${dest.absolutePath}")
+                resolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(tmp).use { output ->
+                        val buffer = ByteArray(1024 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            output.write(buffer, 0, read)
+                            total += read
+                        }
+                        output.fd.sync()
+                        if (total < MIN_MODEL_BYTES) {
+                            error("ファイルが小さすぎます (${formatSize(total)})")
+                        }
+                    }
+                } ?: error("ファイルを開けませんでした")
+                if (dest.exists()) dest.delete()
+                if (!tmp.renameTo(dest)) {
+                    FileInputStream(tmp).use { input ->
+                        FileOutputStream(dest).use { output -> input.copyTo(output) }
+                    }
+                    tmp.delete()
+                }
+                val prefKey = when (slot) {
+                    ModelSlot.GEMMA -> KEY_GEMMA_PATH
+                    ModelSlot.QWEN_LLM -> KEY_QWEN_LLM_PATH
+                    ModelSlot.QWEN_ASR_DECODER -> KEY_QWEN_ASR_DECODER_PATH
+                    ModelSlot.QWEN_ASR_PROJECTOR -> KEY_QWEN_ASR_PROJECTOR_PATH
+                }
+                remember(context, prefKey, dest)
+                refresh(context)
+                dest
+            }.onFailure { e ->
+                Log.e(TAG, "importFromUri failed", e)
+                markError("取り込み失敗: ${e.message}")
+            }
+        }
+
+    private fun queryDisplayName(context: Context, uri: Uri): String? {
+        return try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+                }
+        } catch (e: Exception) {
+            null
+        }
+    }
+}

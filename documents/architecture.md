@@ -29,7 +29,7 @@
 │ ・BLE スキャン・接続 │  │ ・BLE イベント収集  │
 │ ・GATT / パケット解析│  │ ・PCM バッファ管理  │
 │ ・自動再接続        │  │ ・Silero VAD / FFT  │
-│ ・優先デバイス保存   │  │ ・Groq API (OkHttp) │
+│ ・優先デバイス保存   │  │ ・On-device AI      │
 └─────────────────────┘  │ ・Android TTS      │
                          └────────────────────┘
 
@@ -59,8 +59,8 @@ READY ──── 録音開始 ──▶ RECORDING ──── 停止 ──�
 |---|---|
 | `READY` | 待機中 |
 | `RECORDING` | 録音中（BLE デバイス） |
-| `TRANSCRIBING` | Groq Whisper API 呼び出し中 |
-| `RESPONDING` | Groq Chat API 呼び出し中 |
+| `TRANSCRIBING` | 選択中モデルで文字起こし中 |
+| `RESPONDING` | 選択中モデルで応答生成中 |
 | `SPEAKING` | TTS 読み上げ中 |
 | `ERROR` | エラー発生 |
 
@@ -95,7 +95,7 @@ val bleMode: StateFlow<Boolean>
 ```
 
 Service が起動したら BleManager の Flow を collect して companion object に中継する。
-`VoiceProcessor` は `BleConnectionService` の `serviceScope` 内で動作し、BLE イベント / 音声パケットを収集して音声処理パイプライン（VAD → Groq → TTS）を実行する。処理結果は同じ companion object の状態 Flow に書き込まれ、ViewModel / UI がそれを観察する。
+`VoiceProcessor` は `BleConnectionService` の `serviceScope` 内で動作し、BLE イベント / 音声パケットを収集して音声処理パイプライン（VAD → オンデバイスAI → TTS）を実行する。処理結果は同じ companion object の状態 Flow に書き込まれ、ViewModel / UI がそれを観察する。
 
 ### バックグラウンド動作の仕組み
 
@@ -126,8 +126,8 @@ nRF52840                        Android
     │                               │   Silero VAD
     │                               │   FFT fallback / rescue
     │                               │   buildWavFile()
-    │                               │   Groq Whisper API
-    │                               │   Groq Chat API
+    │                               │   Qwen3-ASR / Gemma ASR
+    │                               │   Qwen 3.5 / Gemma Chat
     │                               │   TTS 読み上げ
 ```
 
@@ -143,58 +143,25 @@ BLE 音声は `VoiceProcessor.hasSpeechInPcm()` が担当し、次の順で判�
 2. Silero が異常に低い確率へ張り付く場合だけでなく、通常推論でも音声比率が閾値未満だった場合は `BleSpeechDetector.kt` の FFT 判定で再評価する
 3. FFT 判定でも境界値だった場合は、`peakAfterDC` / `rmsAfterDC` / `maxBandRatio` を使った rescue 条件で BLE 音声を救済する
 
-これにより、Silero モデルの不調だけでなく、BLE マイク特有の低振幅な囁き声があっても Groq 送信を止めにくくしている。
+これにより、Sileroモデルの不調だけでなく、BLEマイク特有の低振幅な囁き声があっても文字起こしを止めにくくしている。
 
-## API 通信
+## オンデバイスAI
 
-### Groq Whisper（文字起こし）
+`OnDeviceAiFacade`が選択中の`VoiceAiBackend`へ処理を委譲する。デフォルトのQwenは
+Qwen3-ASR GGUFで文字起こしし、Qwen 3.5 LiteRT-LMで応答を生成する。Gemmaプロファイルは
+Gemma 4 LiteRT-LMで両方を処理する。モデル探索と状態管理は`ModelManager`が担当する。
 
-```
-POST https://api.groq.com/openai/v1/audio/transcriptions
-Authorization: Bearer {groq_api_key}
-Content-Type: multipart/form-data
-
-file: audio.wav
-model: whisper-large-v3-turbo
-response_format: json
-```
-
-Whisper の JSON レスポンスから `text` に加えて `language` を受け取り、入力音声の言語推定に利用する。
-
-### Groq Chat（AI 応答）
-
-```
-POST https://api.groq.com/openai/v1/chat/completions
-Authorization: Bearer {groq_api_key}
-Content-Type: application/json
-
-{
-  "model": "openai/gpt-oss-120b",
-  "messages": [
-    {
-      "role": "system",
-      "content": "Respond in the same language as the user's transcribed request. The detected input language is English (en). Do not translate unless the user explicitly asks for translation. Keep responses brief unless the user explicitly asks for a detailed explanation."
-    },
-    {
-      "role": "user",
-      "content": "{transcribed_text}"
-    }
-  ]
-}
-```
-
-入力言語が判定できた場合のみ system prompt を追加し、Groq が音声入力と同じ言語で返答し、明示的に詳説を求められない限り短めに返答するよう制御する。  
-入力言語が不明な場合は system prompt を付けず、従来に近い挙動を維持する。
+詳細は[`ondevice_ai.md`](ondevice_ai.md)を参照。
 
 ## 応答言語と TTS
 
 - `SpeechLanguageResolver.kt`
-  - Whisper の `language` を優先し、必要なら転写テキストの文字種から言語コードを推定する
+  - ASRの言語コードを優先し、必要なら転写テキストの文字種から言語コードを推定する
   - TTS 用の候補ロケール列を組み立てる
 
-- `GroqChatRequestBuilder.kt`
-  - 検出した言語コードをもとに Groq Chat 用の system prompt を生成する
-  - 「同じ言語で返答し、明示的に要求されない限り翻訳しない。明示的に詳説を求められない限り短く答える」方針を Chat API に渡す
+- `LitertLlmSupport.kt`
+  - 検出した言語コードをもとにオンデバイスChat用のsystem promptを生成する
+  - 同じ言語で簡潔に返答する方針とreminder toolをモデルへ渡す
 
 - `TtsTextFormatter.kt`
   - Markdown 記法や表の区切りを読み上げ向けテキストへ整形する
@@ -225,7 +192,7 @@ BLE から受け取った生 PCM データに 44 バイトの WAV ヘッダを�
 | `BLUETOOTH_SCAN` | 31+ | BLE スキャン |
 | `BLUETOOTH_CONNECT` | 31+ | BLE 接続 |
 | `ACCESS_FINE_LOCATION` | ≤30 | BLE スキャン（旧 API） |
-| `INTERNET` | all | Groq API 通信 |
+| `INTERNET` | all | モデル準備等の既存ネットワーク機能 |
 | `FOREGROUND_SERVICE` | all | BleConnectionService |
 | `FOREGROUND_SERVICE_CONNECTED_DEVICE` | 34+ | ForegroundService タイプ指定 |
 | `POST_NOTIFICATIONS` | 33+ | フォアグラウンドサービス通知 |
@@ -234,7 +201,5 @@ BLE から受け取った生 PCM データに 44 バイトの WAV ヘッダを�
 
 ## GroqSettingsActivity
 
-Groq API キーを `SharedPreferences("groq_prefs")` に保存する。  
-キー名: `groq_api_key`
-
-VoiceProcessor は毎回 API 呼び出し時に SharedPreferences から読み出す（キャッシュなし）。
+既存Activity名は維持しているが、画面の役割はオンデバイスモデル設定である。Qwen/Gemmaの
+プロファイル選択、モデルファイル取り込み、検出状態と推論時間の表示を行う。

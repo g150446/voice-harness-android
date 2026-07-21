@@ -173,6 +173,7 @@ fun HomeScreen(
     val batteryLevel by viewModel.batteryLevel.collectAsState()
     val isPrimary by viewModel.isPrimary.collectAsState()
     val connectionPriority by viewModel.connectionPriority.collectAsState()
+    val modelStatus by viewModel.modelStatus.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
@@ -224,12 +225,19 @@ fun HomeScreen(
             )
         }
 
+        val profileLabel = modelStatus.profile.displayName
         val statusText = when (state) {
-            VoiceState.READY -> "Ready for BLE audio"
+            VoiceState.READY -> when (modelStatus.readiness) {
+                ModelReadiness.READY -> "準備完了（$profileLabel）"
+                ModelReadiness.LOADING -> "モデル読み込み中（$profileLabel）..."
+                ModelReadiness.FOUND -> "検出済み（$profileLabel・初回ロード）"
+                ModelReadiness.MISSING -> "モデル未検出 — 設定を開く"
+                ModelReadiness.ERROR -> "モデルエラー — 設定を開く"
+            }
             VoiceState.RECORDING -> "Recording (BLE)..."
-            VoiceState.TRANSCRIBING -> "Transcribing..."
-            VoiceState.RESPONDING -> "Generating response..."
-            VoiceState.SPEAKING -> "Speaking..."
+            VoiceState.TRANSCRIBING -> "文字起こし中（$profileLabel）..."
+            VoiceState.RESPONDING -> "応答生成中（$profileLabel）..."
+            VoiceState.SPEAKING -> "読み上げ中..."
             VoiceState.ERROR -> "Error"
         }
         val statusColor = when (state) {
@@ -425,13 +433,28 @@ fun HomeScreen(
             )
         }
 
+        Text(
+            text = "モデル: ${modelStatus.profile.displayName} / ${ModelManager.readinessLabel(modelStatus.readiness)}" +
+                (modelStatus.modelFileName?.let { " ($it)" } ?: "") +
+                if (modelStatus.lastAsrMs > 0 || modelStatus.lastChatMs > 0) {
+                    "  ASR ${modelStatus.lastAsrMs}ms / Chat ${modelStatus.lastChatMs}ms"
+                } else {
+                    ""
+                },
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+        )
+
         OutlinedButton(
             onClick = {
                 context.startActivity(Intent(context, GroqSettingsActivity::class.java))
             },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Settings")
+            Text("モデル設定")
         }
 
         Spacer(modifier = Modifier.height(8.dp))

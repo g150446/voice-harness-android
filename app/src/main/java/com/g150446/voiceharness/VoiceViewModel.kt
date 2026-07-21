@@ -48,6 +48,11 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     val errorMessage: StateFlow<String> = BleConnectionService.errorMessage
     val bleMode: StateFlow<Boolean> = BleConnectionService.bleMode
     val isPrimary: StateFlow<Boolean> = BleConnectionService.isPrimary
+    val modelStatus: StateFlow<ModelStatus> = ModelManager.status
+
+    fun setOnDeviceProfile(profile: OnDeviceProfile) {
+        BleConnectionService.switchOnDeviceProfile(getApplication(), profile)
+    }
 
     private val blePreferences = BleConnectionPreferences(application)
     private val _connectionPriority = MutableStateFlow(blePreferences.connectionPriority())
@@ -62,6 +67,8 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        ModelManager.refresh(application)
+
         viewModelScope.launch {
             BleConnectionService.connectionState.collect { state ->
                 _bleConnectionState.value = state

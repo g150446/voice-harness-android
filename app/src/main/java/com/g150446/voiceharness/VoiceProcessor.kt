@@ -7,12 +7,6 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -35,15 +29,12 @@ enum class VoiceState {
     SPEAKING,
     ERROR
 }
-
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
 
 /**
- * Owns the audio processing pipeline: PCM buffering → VAD → Groq Whisper → Groq Chat → TTS.
- *
- * Runs entirely within the provided [scope] (the service's serviceScope), so it survives
- * Activity destruction and processes audio even when the phone screen is off.
+ * Owns the audio processing pipeline: PCM buffering → VAD → on-device STT/LLM → TTS.
+ * Profile (Qwen default / Gemma) is selected via Model Settings.
  */
 class VoiceProcessor(
     private val appContext: Context,
@@ -53,6 +44,8 @@ class VoiceProcessor(
     private val historyRepository = HistoryRepository(appContext)
     private val reminderRepository = ReminderRepository(appContext)
     private val conversationSession = ConversationSession()
+    private val aiFacade = OnDeviceAiFacade(appContext)
+    private val aiBackend: VoiceAiBackend get() = aiFacade
 
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
@@ -64,7 +57,6 @@ class VoiceProcessor(
         null
     }
 
-    private val httpClient = OkHttpClient()
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var responseLanguageCode: String? = null
@@ -129,7 +121,7 @@ class VoiceProcessor(
         tts?.stop()
 
         if (!hasSpeechInPcm(pcmData)) {
-            Log.d(TAG, "VAD: no speech in BLE audio — skipping Groq")
+            Log.d(TAG, "VAD: no speech in BLE audio — skipping transcription")
             conversationSession.reset()
             historyRepository.addEntry(HistoryEntry(
                 id = UUID.randomUUID().toString(),
@@ -143,48 +135,27 @@ class VoiceProcessor(
             return
         }
 
-        val apiKey = getApiKey()
-        if (apiKey.isBlank()) {
-            BleConnectionService.setErrorMessage("Groq API キーが未設定です。設定画面で入力してください。")
-            BleConnectionService.setVoiceState(VoiceState.ERROR)
-            return
-        }
-
         scope.launch(Dispatchers.IO) {
             val wavFile = buildWavFile(pcmData) ?: run {
                 BleConnectionService.setErrorMessage("WAV ファイルの作成に失敗しました")
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 return@launch
             }
-            transcribeAndRespondFromFile(wavFile, apiKey, "audio/wav")
+            transcribeAndRespondOnDevice(wavFile)
         }
     }
 
     // --- Shared transcription + chat logic ---
 
-    private suspend fun transcribeAndRespondFromFile(file: File, apiKey: String, mimeType: String) {
+    private suspend fun transcribeAndRespondOnDevice(file: File) {
         BleConnectionService.setVoiceState(VoiceState.TRANSCRIBING)
         BleConnectionService.setErrorMessage("")
         responseLanguageCode = null
 
         try {
-            val transcriptionBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))
-                .addFormDataPart("model", "whisper-large-v3-turbo")
-                .addFormDataPart("response_format", "json")
-                .build()
-
-            val transcriptionResponse = httpClient.newCall(
-                Request.Builder()
-                    .url("https://api.groq.com/openai/v1/audio/transcriptions")
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .post(transcriptionBody)
-                    .build()
-            ).execute()
-            val transcriptionBodyText = transcriptionResponse.body?.string() ?: ""
-
-            if (!transcriptionResponse.isSuccessful) {
-                val errMsg = "Whisper error ${transcriptionResponse.code}: ${transcriptionBodyText.take(200)}"
+            val ready = aiBackend.ensureReady()
+            if (ready.isFailure) {
+                val errMsg = ready.exceptionOrNull()?.message ?: "モデル準備に失敗しました"
                 BleConnectionService.setErrorMessage(errMsg)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 historyRepository.addEntry(HistoryEntry(
@@ -198,11 +169,31 @@ class VoiceProcessor(
                 return
             }
 
-            val transcriptionPayload = parseTranscriptionPayload(transcriptionBodyText)
-            val rawText = transcriptionPayload.text
+            val asr = aiBackend.transcribe(file)
+            if (asr.isFailure) {
+                val errMsg = "ASR error: ${asr.exceptionOrNull()?.message}"
+                BleConnectionService.setErrorMessage(errMsg)
+                BleConnectionService.setVoiceState(VoiceState.ERROR)
+                historyRepository.addEntry(HistoryEntry(
+                    id = UUID.randomUUID().toString(),
+                    timestamp = System.currentTimeMillis(),
+                    transcription = "",
+                    response = "",
+                    isSilent = false,
+                    errorMessage = errMsg
+                ))
+                return
+            }
+
+            val transcriptionResult = asr.getOrThrow()
+            val rawText = transcriptionResult.text.trim()
+            Log.d(
+                TAG,
+                "profile=${aiBackend.profile} backend=${aiBackend.name} ASR latency=${transcriptionResult.latencyMs} ms"
+            )
 
             if (rawText.isBlank() || isWhisperHallucination(rawText)) {
-                Log.w(TAG, "Whisper hallucination detected: '$rawText' — treating as silent")
+                Log.w(TAG, "ASR hallucination/empty detected: '$rawText' — treating as silent")
                 historyRepository.addEntry(HistoryEntry(
                     id = UUID.randomUUID().toString(),
                     timestamp = System.currentTimeMillis(),
@@ -217,7 +208,7 @@ class VoiceProcessor(
 
             val transcribed = rawText.ifBlank { "(音声なし)" }
             responseLanguageCode = SpeechLanguageResolver.resolvePreferredLanguageCode(
-                whisperLanguageCode = transcriptionPayload.languageCode,
+                whisperLanguageCode = transcriptionResult.languageCode,
                 transcribedText = transcribed
             )
             BleConnectionService.setTranscription(transcribed)
@@ -230,23 +221,12 @@ class VoiceProcessor(
             }
             conversationSession.addTurn("user", transcribed)
 
-            val chatJson = GroqChatRequestBuilder.buildRequestBodyWithFunctionCalling(
+            val chat = aiBackend.chat(
                 conversationHistory = conversationSession.turns,
                 languageCode = responseLanguageCode
             )
-
-            val chatResponse = httpClient.newCall(
-                Request.Builder()
-                    .url("https://api.groq.com/openai/v1/chat/completions")
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .addHeader("Content-Type", "application/json")
-                    .post(chatJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
-            ).execute()
-            val chatBodyText = chatResponse.body?.string().orEmpty()
-
-            if (!chatResponse.isSuccessful) {
-                val errMsg = "Chat error ${chatResponse.code}: ${chatBodyText.take(200)}"
+            if (chat.isFailure) {
+                val errMsg = "Chat error: ${chat.exceptionOrNull()?.message}"
                 BleConnectionService.setErrorMessage(errMsg)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 historyRepository.addEntry(HistoryEntry(
@@ -260,15 +240,17 @@ class VoiceProcessor(
                 return
             }
 
-            val choices = JSONObject(chatBodyText).optJSONArray("choices")
-            val messageObj = if (choices != null && choices.length() > 0) {
-                choices.getJSONObject(0).optJSONObject("message")
-            } else null
+            val chatResult = chat.getOrThrow()
+            Log.d(
+                TAG,
+                "profile=${aiBackend.profile} Chat latency=${chatResult.latencyMs} ms tools=${chatResult.toolCalls.size}"
+            )
 
-            if (messageObj != null && messageObj.has("tool_calls")) {
-                handleToolCalls(messageObj, apiKey)
+            val reminderCall = chatResult.toolCalls.firstOrNull { it.name == "set_reminder" }
+            if (reminderCall != null) {
+                handleReminderToolCall(reminderCall.argumentsJson)
             } else {
-                val responseText = messageObj?.optString("content").orEmpty()
+                val responseText = chatResult.text
                 val finalResponse = responseText.ifBlank { "(返答なし)" }
                 BleConnectionService.setResponse(finalResponse)
                 Log.d(TAG, "Response: $responseText")
@@ -283,9 +265,8 @@ class VoiceProcessor(
                 ))
                 speakResponse(responseText)
             }
-
         } catch (e: Exception) {
-            Log.e(TAG, "Error during transcribe/respond", e)
+            Log.e(TAG, "Error during on-device transcribe/respond", e)
             val errMsg = "エラー: ${e.message}"
             BleConnectionService.setErrorMessage(errMsg)
             BleConnectionService.setVoiceState(VoiceState.ERROR)
@@ -404,17 +385,7 @@ class VoiceProcessor(
 
     // --- Reminder helpers ---
 
-    private suspend fun handleToolCalls(messageObj: JSONObject, apiKey: String) {
-        val toolCalls = messageObj.optJSONArray("tool_calls") ?: return
-        val firstToolCall = toolCalls.optJSONObject(0) ?: return
-        val functionObj = firstToolCall.optJSONObject("function") ?: return
-        val functionName = functionObj.optString("name", "")
-        if (functionName != "set_reminder") {
-            Log.w(TAG, "Unexpected tool call: $functionName")
-            return
-        }
-
-        val argumentsStr = functionObj.optString("arguments", "{}")
+    private suspend fun handleReminderToolCall(argumentsStr: String) {
         val args = try {
             JSONObject(argumentsStr)
         } catch (e: Exception) {
@@ -600,6 +571,15 @@ class VoiceProcessor(
         BleConnectionService.setVoiceState(VoiceState.READY)
     }
 
+    fun switchProfile(profile: OnDeviceProfile) {
+        aiFacade.switchProfile(profile)
+        tts?.stop()
+        if (BleConnectionService.voiceState.value != VoiceState.RECORDING) {
+            BleConnectionService.setVoiceState(VoiceState.READY)
+        }
+        Log.d(TAG, "Switched on-device profile to $profile")
+    }
+
     fun disconnect() {
         tts?.stop()
         isCollectingPcm = false
@@ -615,6 +595,7 @@ class VoiceProcessor(
         tts?.stop()
         tts?.shutdown()
         sileroVad?.close()
+        aiFacade.release()
     }
 
     // --- Helpers ---
@@ -628,20 +609,6 @@ class VoiceProcessor(
     private fun isWhisperHallucination(text: String): Boolean =
         text.trim().lowercase() in whisperHallucinationPatterns
 
-    private fun parseTranscriptionPayload(responseBody: String): TranscriptionPayload {
-        val trimmedBody = responseBody.trim()
-        if (trimmedBody.startsWith("{")) {
-            val json = JSONObject(trimmedBody)
-            return TranscriptionPayload(
-                text = json.optString("text").trim(),
-                languageCode = json.optString("language")
-            )
-        }
-        return TranscriptionPayload(
-            text = trimmedBody,
-            languageCode = null
-        )
-    }
 
     private fun applyTtsLanguage(languageCode: String?): Locale? {
         val candidateLocales = SpeechLanguageResolver.candidateLocales(languageCode, Locale.getDefault())
@@ -703,12 +670,4 @@ class VoiceProcessor(
         return true
     }
 
-    private fun getApiKey(): String =
-        appContext.getSharedPreferences("groq_prefs", Context.MODE_PRIVATE)
-            .getString("groq_api_key", "") ?: ""
 }
-
-private data class TranscriptionPayload(
-    val text: String,
-    val languageCode: String?
-)

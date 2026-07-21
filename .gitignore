@@ -86,3 +86,7 @@ dist/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
+
+# On-device LLM weights (large)
+models/
+.qwen-asr-native/

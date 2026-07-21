@@ -109,6 +109,15 @@ class BleConnectionService : Service() {
             instance?.voiceProcessor?.disconnect()
         }
 
+        fun switchOnDeviceProfile(context: Context, profile: OnDeviceProfile) {
+            val svc = instance
+            if (svc?.voiceProcessor != null) {
+                svc.voiceProcessor?.switchProfile(profile)
+            } else {
+                ModelManager.setProfile(context.applicationContext, profile)
+            }
+        }
+
         fun start(context: Context) {
             val intent = Intent(context, BleConnectionService::class.java)
             if (Build.VERSION.SDK_INT >= 26) {
@@ -176,6 +185,7 @@ class BleConnectionService : Service() {
         }
 
         voiceProcessor = VoiceProcessor(applicationContext, serviceScope)
+        ModelManager.refresh(applicationContext)
 
         ServiceWatchdog.schedule(this)
     }
