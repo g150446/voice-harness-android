@@ -79,12 +79,14 @@ class GemmaOnDeviceBackend(
                         samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 0.0)
                     )
                 ).use { conversation ->
-                    val response = conversation.sendMessage(
-                        Contents.of(
-                            Content.Text(asrPrompt),
-                            Content.AudioFile(audioFile.absolutePath)
+                    val response = LitertLlmSupport.runGeneration(conversation, TAG) {
+                        conversation.sendMessage(
+                            Contents.of(
+                                Content.Text(asrPrompt),
+                                Content.AudioFile(audioFile.absolutePath)
+                            )
                         )
-                    )
+                    }
                     val text = response.toString().trim()
                     val latency = System.currentTimeMillis() - started
                     ModelManager.recordAsrMs(latency)

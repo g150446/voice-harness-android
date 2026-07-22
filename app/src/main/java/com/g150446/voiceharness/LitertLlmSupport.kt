@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
@@ -52,6 +53,48 @@ internal class ReminderToolSet(
 }
 
 internal object LitertLlmSupport {
+    private const val TAG = "LitertLlmSupport"
+    private const val GENERATION_TIMEOUT_MS = 45_000L
+    private const val CANCEL_GRACE_MS = 5_000L
+
+    /**
+     * Some on-device models don't reliably emit a stop token (seen in the field: llama.cpp
+     * logging "control-looking token ... was not control-type" for this same model family),
+     * which can make generation run away forever. Run the blocking call on a worker thread and
+     * force-cancel via [Conversation.cancelProcess] if it overruns, so a runaway generation fails
+     * loudly instead of hanging forever and starving every later request queued on the engine's
+     * mutex.
+     */
+    fun runGeneration(
+        conversation: Conversation,
+        tag: String,
+        timeoutMs: Long = GENERATION_TIMEOUT_MS,
+        block: () -> Message
+    ): Message {
+        val resultRef = AtomicReference<Message?>(null)
+        val errorRef = AtomicReference<Throwable?>(null)
+        val worker = Thread {
+            try {
+                resultRef.set(block())
+            } catch (e: Throwable) {
+                errorRef.set(e)
+            }
+        }.apply {
+            name = "litertlm-generation"
+            start()
+        }
+
+        worker.join(timeoutMs)
+        if (worker.isAlive) {
+            Log.w(tag, "Generation exceeded ${timeoutMs}ms — cancelling")
+            conversation.cancelProcess()
+            worker.join(CANCEL_GRACE_MS)
+            error("On-device generation timed out after ${timeoutMs}ms")
+        }
+        errorRef.get()?.let { throw it }
+        return resultRef.get() ?: error("On-device generation produced no response")
+    }
+
     fun buildSystemPrompt(languageCode: String?): String {
         val base = GroqChatRequestBuilder.buildMessageSpecs(
             userText = "",
@@ -143,7 +186,7 @@ internal object LitertLlmSupport {
                 extraContext = mapOf("enable_thinking" to false)
             )
         ).use { conversation ->
-            val response = conversation.sendMessage(last.content)
+            val response = runGeneration(conversation, tag) { conversation.sendMessage(last.content) }
             val latency = System.currentTimeMillis() - started
             ModelManager.recordChatMs(latency)
 

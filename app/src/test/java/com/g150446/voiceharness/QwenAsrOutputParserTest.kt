@@ -26,9 +26,32 @@ class QwenAsrOutputParserTest {
     }
 
     @Test
-    fun rejectsMissingTranscriptionMarker() {
+    fun parsesPlainTextOutputWithoutMarker() {
+        val result = QwenAsrOutputParser.parse("明日の朝七時に起こして。\n")
+
+        assertEquals("明日の朝七時に起こして。", result.text)
+        assertEquals(null, result.languageCode)
+    }
+
+    @Test
+    fun parsesPlainTextOutputForShortUtterance() {
+        val result = QwenAsrOutputParser.parse("聞こえますか。")
+
+        assertEquals("聞こえますか。", result.text)
+        assertEquals(null, result.languageCode)
+    }
+
+    @Test
+    fun stripsImEndSuffixFromPlainTextOutput() {
+        val result = QwenAsrOutputParser.parse("Can you hear me?<|im_end|>")
+
+        assertEquals("Can you hear me?", result.text)
+    }
+
+    @Test
+    fun rejectsBlankOutput() {
         try {
-            QwenAsrOutputParser.parse("model failed before decoding")
+            QwenAsrOutputParser.parse("   \n\n  ")
             fail("Expected IllegalArgumentException")
         } catch (_: IllegalArgumentException) {
             // expected

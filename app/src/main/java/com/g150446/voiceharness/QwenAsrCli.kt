@@ -15,13 +15,20 @@ internal object QwenAsrOutputParser {
     private val languagePattern = Regex("(?:^|\\n)language\\s+([^<\\r\\n]+)", RegexOption.IGNORE_CASE)
 
     fun parse(output: String): QwenAsrCliResult {
-        val transcription = transcriptionPattern.find(output)
+        val tagMatch = transcriptionPattern.find(output)
             ?.groupValues
             ?.get(1)
             ?.trim()
             ?.removeSuffix("<|im_end|>")
             ?.trim()
-            .orEmpty()
+
+        // The pinned llama-mtmd-cli runtime does not actually emit an <asr_text>
+        // marker in practice — fall back to the raw stdout as the transcript.
+        val transcription = if (!tagMatch.isNullOrBlank()) {
+            tagMatch
+        } else {
+            output.trim().removeSuffix("<|im_end|>").trim()
+        }
         require(transcription.isNotBlank()) {
             "Qwen3-ASR output did not contain a transcription"
         }
@@ -80,35 +87,43 @@ internal class QwenAsrCli(private val context: Context) {
         Log.d(TAG, "Starting Qwen3-ASR process")
         val process = ProcessBuilder(command)
             .directory(context.cacheDir)
-            .redirectErrorStream(true)
+            .redirectErrorStream(false)
             .apply {
                 environment()["LD_LIBRARY_PATH"] = nativeDir.absolutePath
             }
             .start()
 
-        val output = StringBuilder()
-        val reader = Thread {
-            process.inputStream.bufferedReader().useLines { lines ->
-                lines.forEach { line ->
-                    output.appendLine(line)
-                    Log.d(TAG, line.take(500))
+        val stdout = StringBuilder()
+        val stderr = StringBuilder()
+
+        fun startReader(name: String, stream: java.io.InputStream, sink: StringBuilder, logPrefix: String) =
+            Thread {
+                stream.bufferedReader().useLines { lines ->
+                    lines.forEach { line ->
+                        sink.appendLine(line)
+                        Log.d(TAG, "$logPrefix: ${line.take(500)}")
+                    }
                 }
+            }.apply {
+                this.name = name
+                start()
             }
-        }.apply {
-            name = "qwen-asr-output"
-            start()
-        }
+
+        val stdoutReader = startReader("qwen-asr-stdout", process.inputStream, stdout, "stdout")
+        val stderrReader = startReader("qwen-asr-stderr", process.errorStream, stderr, "stderr")
 
         if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
             process.destroyForcibly()
-            reader.join(1_000)
+            stdoutReader.join(1_000)
+            stderrReader.join(1_000)
             error("Qwen3-ASR timed out after $TIMEOUT_SECONDS seconds")
         }
-        reader.join(2_000)
+        stdoutReader.join(2_000)
+        stderrReader.join(2_000)
         check(process.exitValue() == 0) {
-            "Qwen3-ASR failed with exit ${process.exitValue()}: ${output.takeLast(1_000)}"
+            "Qwen3-ASR failed with exit ${process.exitValue()}: ${stderr.takeLast(1_000)}"
         }
-        return QwenAsrOutputParser.parse(output.toString())
+        return QwenAsrOutputParser.parse(stdout.toString())
     }
 
     private companion object {
