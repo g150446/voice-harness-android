@@ -1,96 +1,81 @@
 #!/bin/bash
 
 # ADB Wireless Connection Script
-# Automatically detects and connects to Android device via hotspot
+# USB で接続した端末の Wi-Fi/テザリング IP を取得し、tcpip 5555 で接続する。
 
-set -e
+set -euo pipefail
 
-echo "🔌 ADB Wireless Connection Setup"
-echo "================================"
+echo "ADB Wireless Connection Setup"
+echo "============================="
 
-# Check if adb is available
 if ! command -v adb &> /dev/null; then
-    echo "❌ Error: adb command not found. Please install Android SDK Platform Tools."
+    echo "Error: adb command not found."
     exit 1
 fi
 
-# Get Android hotspot gateway IP (Android becomes the default gateway when tethering)
 echo ""
-echo "📶 Detecting Android hotspot gateway..."
-gateway_ip=$(route -n get default 2>/dev/null | grep gateway | awk '{print $2}' | head -n 1 || true)
+echo "Checking USB-connected devices..."
+device_id=$(adb devices | awk '/\tdevice$/ && $1 !~ /:/{print $1; exit}')
+if [[ -z "$device_id" ]]; then
+    echo "Error: No USB device found. Connect via USB with USB debugging enabled."
+    exit 1
+fi
+echo "Selected device: $device_id"
 
-if [ -z "$gateway_ip" ]; then
-    # Fallback: try netstat
-    gateway_ip=$(netstat -rn | grep default | grep -v '::' | awk '{print $2}' | head -n 1 || true)
+echo ""
+echo "Reading device network addresses..."
+device_ip=""
+# Prefer hotspot (ap0) then Wi-Fi (wlan0), then any non-loopback IPv4.
+for iface in ap0 wlan0; do
+    candidate=$(adb -s "$device_id" shell "ip -f inet -o addr show $iface 2>/dev/null" \
+        | awk '{print $4}' | cut -d/ -f1 | head -n1 | tr -d '\r')
+    if [[ -n "${candidate:-}" ]]; then
+        device_ip="$candidate"
+        echo "Found $iface: $device_ip"
+        break
+    fi
+done
+
+if [[ -z "$device_ip" ]]; then
+    device_ip=$(adb -s "$device_id" shell "ip -f inet -o addr show" 2>/dev/null \
+        | awk '$2 != "lo" {print $4}' | cut -d/ -f1 | head -n1 | tr -d '\r')
 fi
 
-if [ -z "$gateway_ip" ]; then
-    echo "❌ Could not detect default gateway. Please ensure you're connected to the Android hotspot."
+if [[ -z "$device_ip" ]]; then
+    echo "Error: Could not find a device IPv4 address."
+    echo "Connect this Mac to the phone hotspot, or join the phone to the same Wi-Fi."
     exit 1
 fi
 
-echo "✅ Android Gateway IP: $gateway_ip"
+echo "Device IP: $device_ip"
 
-# Extract subnet (e.g., 192.168.43.x -> 192.168.43)
-subnet=$(echo "$gateway_ip" | cut -d. -f1-3)
-echo "🌐 Subnet: $subnet.0/24"
-
-# Get connected devices via USB
 echo ""
-echo "📱 Checking connected devices..."
-devices=$(adb devices | grep -v "List" | grep "device$" | grep -v "wireless" || true)
-
-if [ -z "$devices" ]; then
-    echo "❌ No USB connected devices found. Please connect a device via USB and enable USB debugging."
+echo "Checking reachability..."
+if ! ping -c 1 -W 1000 "$device_ip" >/dev/null 2>&1; then
+    echo "Error: $device_ip is not reachable from this Mac."
+    echo "Connect Mac to the phone hotspot (or same Wi-Fi), then rerun."
     exit 1
 fi
+echo "Reachable: $device_ip"
 
-# Use gateway IP as Android device IP (since Android is the gateway when tethering)
-device_ip="$gateway_ip"
-
-# Select the first USB connected device
-device_id=$(echo "$devices" | head -n 1 | awk '{print $1}')
-echo "✅ Selected device: $device_id"
-echo "✅ Device IP: $device_ip"
-
-# Enable TCP/IP mode on port 5555
 echo ""
-echo "🔄 Enabling TCP/IP mode on port 5555..."
+echo "Enabling TCP/IP mode on port 5555..."
 adb -s "$device_id" tcpip 5555
-
-# Wait a moment for the device to switch modes
 sleep 2
 
-# Connect wirelessly
 echo ""
-echo "📡 Connecting to $device_ip:5555..."
+echo "Connecting to $device_ip:5555..."
 adb connect "$device_ip:5555"
+sleep 1
 
-# Wait for connection to establish
-sleep 2
-
-# Verify wireless connection
-echo ""
-echo "🔍 Verifying connection..."
-connected_devices=$(adb devices | grep "$device_ip:5555" | grep "device$" || true)
-
-if [ -n "$connected_devices" ]; then
-    echo "✅ Successfully connected wirelessly to $device_ip:5555"
+if adb devices | grep -q "$device_ip:5555[[:space:]]*device"; then
     echo ""
-    echo "📋 Current ADB devices:"
-    adb devices
+    echo "Success: wireless ADB at $device_ip:5555"
+    adb devices -l
     echo ""
-    echo "💡 You can now disconnect the USB cable."
-    echo "   The device will remain connected via Wi-Fi."
-    echo ""
-    echo "🔧 To disconnect later, use:"
-    echo "   adb disconnect $device_ip:5555"
-    echo "   adb usb"
+    echo "You can unplug USB. Later:"
+    echo "  adb disconnect $device_ip:5555"
 else
-    echo "⚠️  Wireless connection may have failed."
-    echo "    Please check:"
-    echo "    1. Device and computer are on the same Wi-Fi network"
-    echo "    2. USB debugging is enabled"
-    echo "    3. Try running this script again with USB connected"
+    echo "Wireless connection failed."
     exit 1
 fi

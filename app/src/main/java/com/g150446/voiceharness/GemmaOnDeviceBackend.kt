@@ -68,18 +68,19 @@ class GemmaOnDeviceBackend(
                 val eng = engine ?: error("Gemma engine not ready")
                 if (!audioFile.isFile) error("Audio file missing: ${audioFile.absolutePath}")
                 val started = System.currentTimeMillis()
-                val asrPrompt =
-                    "Transcribe the following speech segment in its original language. " +
-                        "Follow these specific instructions for formatting the answer:\n" +
-                        "* Only output the transcription, with no newlines.\n" +
-                        "* When transcribing numbers, write the digits, i.e. write 1.7 and not one point seven, " +
-                        "and write 3 instead of three."
+                val baseLanguage = ModelManager.currentSpeechBaseLanguage(appContext)
+                val asrPrompt = AsrPromptBuilder.build(baseLanguage)
+                Log.d(TAG, "ASR baseLanguage=$baseLanguage")
                 eng.createConversation(
                     ConversationConfig(
                         samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 0.0)
                     )
                 ).use { conversation ->
-                    val response = LitertLlmSupport.runGeneration(conversation, TAG) {
+                    val response = LitertLlmSupport.runGeneration(
+                        conversation,
+                        TAG,
+                        LitertLlmSupport.ASR_TIMEOUT_MS
+                    ) {
                         conversation.sendMessage(
                             Contents.of(
                                 Content.Text(asrPrompt),
@@ -91,9 +92,16 @@ class GemmaOnDeviceBackend(
                     val latency = System.currentTimeMillis() - started
                     ModelManager.recordAsrMs(latency)
                     Log.d(TAG, "ASR done in ${latency} ms: '${text.take(120)}'")
-                    TranscriptionResult(text = text, languageCode = null, latencyMs = latency)
+                    TranscriptionResult(
+                        text = text,
+                        languageCode = baseLanguage.languageCodeHint,
+                        latencyMs = latency
+                    )
                 }
-            }.onFailure { e -> Log.e(TAG, "transcribe failed", e) }
+            }.onFailure { e ->
+                Log.e(TAG, "transcribe failed", e)
+                if (e is GenerationTimedOutException) releaseLocked()
+            }
         }
     }
 
@@ -112,7 +120,10 @@ class GemmaOnDeviceBackend(
                     temperature = 1.0,
                     tag = TAG
                 )
-            }.onFailure { e -> Log.e(TAG, "chat failed", e) }
+            }.onFailure { e ->
+                Log.e(TAG, "chat failed", e)
+                if (e is GenerationTimedOutException) releaseLocked()
+            }
         }
     }
 

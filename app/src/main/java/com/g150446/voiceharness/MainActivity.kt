@@ -226,17 +226,27 @@ fun HomeScreen(
         }
 
         val profileLabel = modelStatus.profile.displayName
+        val coldStart = modelStatus.readiness == ModelReadiness.LOADING ||
+            modelStatus.readiness == ModelReadiness.FOUND
         val statusText = when (state) {
             VoiceState.READY -> when (modelStatus.readiness) {
                 ModelReadiness.READY -> "準備完了（$profileLabel）"
-                ModelReadiness.LOADING -> "モデル読み込み中（$profileLabel）..."
-                ModelReadiness.FOUND -> "検出済み（$profileLabel・初回ロード）"
+                ModelReadiness.LOADING -> "モデル読み込み中（$profileLabel）…\n初回のため返事が遅くなります"
+                ModelReadiness.FOUND -> "検出済み（$profileLabel）\n初回の応答はモデル読み込みのため遅くなります"
                 ModelReadiness.MISSING -> "モデル未検出 — 設定を開く"
                 ModelReadiness.ERROR -> "モデルエラー — 設定を開く"
             }
             VoiceState.RECORDING -> "Recording (BLE)..."
-            VoiceState.TRANSCRIBING -> "文字起こし中（$profileLabel）..."
-            VoiceState.RESPONDING -> "応答生成中（$profileLabel）..."
+            VoiceState.TRANSCRIBING -> if (coldStart) {
+                "文字起こし中（$profileLabel）…\n初回はモデル読み込みのため時間がかかります"
+            } else {
+                "文字起こし中（$profileLabel）..."
+            }
+            VoiceState.RESPONDING -> if (coldStart || modelStatus.lastLoadMs > 30_000L && modelStatus.lastChatMs == 0L) {
+                "応答生成中（$profileLabel）…\n初回は遅くなることがあります"
+            } else {
+                "応答生成中（$profileLabel）..."
+            }
             VoiceState.SPEAKING -> "読み上げ中..."
             VoiceState.ERROR -> "Error"
         }
@@ -249,8 +259,18 @@ fun HomeScreen(
             text = statusText,
             color = statusColor,
             fontSize = 16.sp,
-            modifier = Modifier.padding(bottom = 16.dp)
+            modifier = Modifier.padding(bottom = if (coldStart && state == VoiceState.READY) 8.dp else 16.dp)
         )
+        if (coldStart && state == VoiceState.READY) {
+            Text(
+                text = "最初の発話後にモデルを読み込みます（目安 30〜60 秒）。2回目以降は速くなります。",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            )
+        }
 
         if (errorMessage.isNotEmpty()) {
             Text(

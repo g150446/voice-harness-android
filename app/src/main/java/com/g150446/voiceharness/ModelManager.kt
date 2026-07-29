@@ -38,7 +38,7 @@ data class SlotStatus(
 )
 
 data class ModelStatus(
-    val profile: OnDeviceProfile = OnDeviceProfile.QWEN,
+    val profile: OnDeviceProfile = OnDeviceProfile.GEMMA,
     val readiness: ModelReadiness = ModelReadiness.MISSING,
     val modelPath: String? = null,
     val modelFileName: String? = null,
@@ -60,6 +60,8 @@ object ModelManager {
     private const val TAG = "ModelManager"
     private const val PREFS = "model_prefs"
     private const val KEY_PROFILE = "on_device_profile"
+    private const val KEY_SPEECH_BASE_LANGUAGE = "speech_base_language"
+    private const val KEY_GEMMA_DEFAULT_MIGRATED = "gemma_default_migrated_v1"
     private const val KEY_GEMMA_PATH = "gemma_path"
     private const val KEY_QWEN_LLM_PATH = "qwen_llm_path"
     private const val KEY_QWEN_ASR_DECODER_PATH = "qwen_asr_decoder_path"
@@ -79,7 +81,16 @@ object ModelManager {
 
     fun currentProfile(context: Context): OnDeviceProfile {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return OnDeviceProfile.fromStorage(prefs.getString(KEY_PROFILE, OnDeviceProfile.QWEN.name))
+        // One-shot: restore Gemma as default after Qwen-first rollout so BLE voice works
+        // without requiring a reinstall when Qwen ASR assets are missing.
+        if (!prefs.getBoolean(KEY_GEMMA_DEFAULT_MIGRATED, false)) {
+            prefs.edit()
+                .putString(KEY_PROFILE, OnDeviceProfile.GEMMA.name)
+                .putBoolean(KEY_GEMMA_DEFAULT_MIGRATED, true)
+                .apply()
+            return OnDeviceProfile.GEMMA
+        }
+        return OnDeviceProfile.fromStorage(prefs.getString(KEY_PROFILE, OnDeviceProfile.GEMMA.name))
     }
 
     fun setProfile(context: Context, profile: OnDeviceProfile) {
@@ -90,13 +101,29 @@ object ModelManager {
         refresh(context)
     }
 
+    fun currentSpeechBaseLanguage(context: Context): SpeechBaseLanguage {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return SpeechBaseLanguage.fromStorage(
+            prefs.getString(KEY_SPEECH_BASE_LANGUAGE, SpeechBaseLanguage.JAPANESE.name)
+        )
+    }
+
+    fun setSpeechBaseLanguage(context: Context, language: SpeechBaseLanguage) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_SPEECH_BASE_LANGUAGE, language.name)
+            .apply()
+    }
+
     fun resolveGemmaModel(context: Context): File? =
         resolveNamed(
             context = context,
             prefKey = KEY_GEMMA_PATH,
             preferredNames = listOf(GEMMA_FILE),
             extensions = listOf(".litertlm"),
-            nameHints = listOf("gemma")
+            nameHints = listOf("gemma"),
+            allowUnhintedFallback = false,
+            configuredNameMustMatchHints = true
         )
 
     fun resolveQwenLlmModel(context: Context): File? =
@@ -105,17 +132,29 @@ object ModelManager {
             prefKey = KEY_QWEN_LLM_PATH,
             preferredNames = listOf(QWEN_LLM_FILE, "Qwen3.5-0.8B.litertlm"),
             extensions = listOf(".litertlm"),
-            nameHints = listOf("qwen35", "qwen3.5", "qwen_3_5", "0.8b", "qwen3_5")
+            nameHints = listOf("qwen35", "qwen3.5", "qwen_3_5", "0.8b", "qwen3_5"),
+            allowUnhintedFallback = false,
+            configuredNameMustMatchHints = true
         )
 
     fun resolveQwenAsrDecoder(context: Context): File? = resolveNamed(
-        context, KEY_QWEN_ASR_DECODER_PATH, listOf(QWEN_ASR_DECODER_FILE),
-        listOf(".gguf"), listOf("qwen3-asr", "qwen3_asr")
+        context = context,
+        prefKey = KEY_QWEN_ASR_DECODER_PATH,
+        preferredNames = listOf(QWEN_ASR_DECODER_FILE),
+        extensions = listOf(".gguf"),
+        nameHints = listOf("qwen3-asr", "qwen3_asr"),
+        allowUnhintedFallback = false,
+        configuredNameMustMatchHints = true
     )
 
     fun resolveQwenAsrProjector(context: Context): File? = resolveNamed(
-        context, KEY_QWEN_ASR_PROJECTOR_PATH, listOf(QWEN_ASR_PROJECTOR_FILE),
-        listOf(".gguf"), listOf("mmproj", "projector")
+        context = context,
+        prefKey = KEY_QWEN_ASR_PROJECTOR_PATH,
+        preferredNames = listOf(QWEN_ASR_PROJECTOR_FILE),
+        extensions = listOf(".gguf"),
+        nameHints = listOf("mmproj", "projector"),
+        allowUnhintedFallback = false,
+        configuredNameMustMatchHints = true
     )
 
     /** Backward-compatible single-file resolve for active profile primary model. */
@@ -129,13 +168,19 @@ object ModelManager {
         prefKey: String,
         preferredNames: List<String>,
         extensions: List<String>,
-        nameHints: List<String>
+        nameHints: List<String>,
+        allowUnhintedFallback: Boolean = true,
+        configuredNameMustMatchHints: Boolean = false
     ): File? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val configured = prefs.getString(prefKey, null)
         if (!configured.isNullOrBlank()) {
             val file = File(configured)
-            if (isModelFile(file, extensions)) return file
+            if (isModelFile(file, extensions) &&
+                (!configuredNameMustMatchHints || matchesNameHints(file.name, preferredNames, nameHints))
+            ) {
+                return file
+            }
         }
 
         val candidates = linkedSetOf<File>()
@@ -153,13 +198,20 @@ object ModelManager {
         preferredNames.forEach { name ->
             candidates.firstOrNull { it.name.equals(name, ignoreCase = true) }?.let { return remember(context, prefKey, it) }
         }
-        val hinted = candidates.filter { file ->
-            val lower = file.name.lowercase()
-            nameHints.any { hint -> lower.contains(hint.lowercase()) }
-        }
+        val hinted = candidates.filter { file -> matchesNameHints(file.name, emptyList(), nameHints) }
         val chosen = hinted.maxByOrNull { it.lastModified() }
-            ?: candidates.maxByOrNull { it.lastModified() }
+            ?: if (allowUnhintedFallback) candidates.maxByOrNull { it.lastModified() } else null
         return chosen?.let { remember(context, prefKey, it) }
+    }
+
+    private fun matchesNameHints(
+        fileName: String,
+        preferredNames: List<String>,
+        nameHints: List<String>
+    ): Boolean {
+        val lower = fileName.lowercase()
+        if (preferredNames.any { lower == it.lowercase() }) return true
+        return nameHints.any { hint -> lower.contains(hint.lowercase()) }
     }
 
     private fun remember(context: Context, prefKey: String, file: File): File {

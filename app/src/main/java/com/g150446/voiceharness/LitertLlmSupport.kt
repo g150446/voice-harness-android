@@ -52,9 +52,14 @@ internal class ReminderToolSet(
     }
 }
 
+class GenerationTimedOutException(
+    timeoutMs: Long
+) : RuntimeException("On-device generation timed out after ${timeoutMs}ms")
+
 internal object LitertLlmSupport {
     private const val TAG = "LitertLlmSupport"
-    private const val GENERATION_TIMEOUT_MS = 45_000L
+    const val CHAT_TIMEOUT_MS = 60_000L
+    const val ASR_TIMEOUT_MS = 120_000L
     private const val CANCEL_GRACE_MS = 5_000L
 
     /**
@@ -68,7 +73,7 @@ internal object LitertLlmSupport {
     fun runGeneration(
         conversation: Conversation,
         tag: String,
-        timeoutMs: Long = GENERATION_TIMEOUT_MS,
+        timeoutMs: Long = CHAT_TIMEOUT_MS,
         block: () -> Message
     ): Message {
         val resultRef = AtomicReference<Message?>(null)
@@ -87,9 +92,13 @@ internal object LitertLlmSupport {
         worker.join(timeoutMs)
         if (worker.isAlive) {
             Log.w(tag, "Generation exceeded ${timeoutMs}ms — cancelling")
-            conversation.cancelProcess()
+            try {
+                conversation.cancelProcess()
+            } catch (e: Exception) {
+                Log.w(tag, "cancelProcess failed: ${e.message}")
+            }
             worker.join(CANCEL_GRACE_MS)
-            error("On-device generation timed out after ${timeoutMs}ms")
+            throw GenerationTimedOutException(timeoutMs)
         }
         errorRef.get()?.let { throw it }
         return resultRef.get() ?: error("On-device generation produced no response")
@@ -115,9 +124,7 @@ internal object LitertLlmSupport {
                 "If the user asks for the current time, respond with only the hours and minutes, without the date or seconds. " +
                 "If the user asks for today's date, respond with only the year, month, and day, without the time. " +
                 "If the user mentions a time without a date, assume today based on the current time. " +
-                "If the user says something like '読み上げして', 'speak it aloud', or similar, set tts_enabled to true. " +
-                "Write in natural spoken language. Do not use markdown, bullet points, or special characters. " +
-                "Keep responses brief unless the user explicitly asks for a detailed explanation."
+                "If the user says something like '読み上げして', 'speak it aloud', or similar, set tts_enabled to true."
 
         return listOfNotNull(base, reminderInstructions).joinToString(" ")
     }
@@ -186,7 +193,9 @@ internal object LitertLlmSupport {
                 extraContext = mapOf("enable_thinking" to false)
             )
         ).use { conversation ->
-            val response = runGeneration(conversation, tag) { conversation.sendMessage(last.content) }
+            val response = runGeneration(conversation, tag, CHAT_TIMEOUT_MS) {
+                conversation.sendMessage(last.content)
+            }
             val latency = System.currentTimeMillis() - started
             ModelManager.recordChatMs(latency)
 

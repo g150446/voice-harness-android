@@ -35,6 +35,9 @@ adb push gemma-4-E2B-it.litertlm /data/data/com.g150446.voiceharness/files/model
 BLE PCM → VAD → Gemma ASR (audio) → Gemma Chat (text + set_reminder tool) → TTS
 ```
 
+デフォルトプロファイルは Gemma。設定画面で Qwen に切り替え可能。
+ASR タイムアウトは 120 秒、Chat は 60 秒。タイムアウト時は engine を破棄し次回ロードする。
+
 ## 計測ログ (logcat)
 
 ```bash

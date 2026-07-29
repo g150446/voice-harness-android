@@ -34,7 +34,7 @@ private const val PCM_BITS_PER_SAMPLE = 16
 
 /**
  * Owns the audio processing pipeline: PCM buffering → VAD → on-device STT/LLM → TTS.
- * Profile (Qwen default / Gemma) is selected via Model Settings.
+ * Profile (Gemma default / Qwen) is selected via Model Settings.
  */
 class VoiceProcessor(
     private val appContext: Context,
@@ -60,6 +60,7 @@ class VoiceProcessor(
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var responseLanguageCode: String? = null
+    private val recordingCuePlayer = RecordingCuePlayer()
 
     init {
         tts = TextToSpeech(appContext, this)
@@ -105,6 +106,7 @@ class VoiceProcessor(
         BleConnectionService.setErrorMessage("")
         if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) tts?.stop()
         BleConnectionService.setVoiceState(VoiceState.RECORDING)
+        recordingCuePlayer.playStarted()
         Log.d(TAG, "BLE recording started (firmware-initiated)")
     }
 
@@ -119,6 +121,7 @@ class VoiceProcessor(
         Log.d(TAG, "BLE recording stopped by firmware, ${pcmData.size} bytes of PCM")
 
         tts?.stop()
+        recordingCuePlayer.playStopped()
 
         if (!hasSpeechInPcm(pcmData)) {
             Log.d(TAG, "VAD: no speech in BLE audio — skipping transcription")
@@ -131,8 +134,22 @@ class VoiceProcessor(
                 isSilent = true,
                 errorMessage = ""
             ))
+            BleConnectionService.setTranscription("")
+            BleConnectionService.setResponse("")
+            BleConnectionService.setErrorMessage("無音のためスキップしました（もう一度話してください）")
             BleConnectionService.setVoiceState(VoiceState.READY)
             return
+        }
+
+        // Leave RECORDING immediately so UI does not appear stuck while VAD/WAV prep finishes.
+        BleConnectionService.setVoiceState(VoiceState.TRANSCRIBING)
+        val needsColdLoad = ModelManager.status.value.readiness != ModelReadiness.READY
+        if (needsColdLoad) {
+            BleConnectionService.setErrorMessage(
+                "初回はモデル読み込みのため30〜60秒かかることがあります"
+            )
+        } else {
+            BleConnectionService.setErrorMessage("")
         }
 
         scope.launch(Dispatchers.IO) {
@@ -153,6 +170,12 @@ class VoiceProcessor(
         responseLanguageCode = null
 
         try {
+            val coldStart = ModelManager.status.value.readiness != ModelReadiness.READY
+            if (coldStart) {
+                BleConnectionService.setErrorMessage(
+                    "初回はモデル読み込みのため30〜60秒かかることがあります"
+                )
+            }
             val ready = aiBackend.ensureReady()
             if (ready.isFailure) {
                 val errMsg = ready.exceptionOrNull()?.message ?: "モデル準備に失敗しました"
@@ -167,6 +190,9 @@ class VoiceProcessor(
                     errorMessage = errMsg
                 ))
                 return
+            }
+            if (coldStart) {
+                BleConnectionService.setErrorMessage("")
             }
 
             val asr = aiBackend.transcribe(file)
@@ -192,8 +218,8 @@ class VoiceProcessor(
                 "profile=${aiBackend.profile} backend=${aiBackend.name} ASR latency=${transcriptionResult.latencyMs} ms"
             )
 
-            if (rawText.isBlank() || isWhisperHallucination(rawText)) {
-                Log.w(TAG, "ASR hallucination/empty detected: '$rawText' — treating as silent")
+            if (AsrTextFilter.isGarbageOrEmpty(rawText)) {
+                Log.w(TAG, "ASR garbage/empty detected: '$rawText' — treating as silent")
                 historyRepository.addEntry(HistoryEntry(
                     id = UUID.randomUUID().toString(),
                     timestamp = System.currentTimeMillis(),
@@ -202,6 +228,9 @@ class VoiceProcessor(
                     isSilent = true,
                     errorMessage = ""
                 ))
+                BleConnectionService.setTranscription("")
+                BleConnectionService.setResponse("")
+                BleConnectionService.setErrorMessage("発話として認識できませんでした（背景音の可能性）")
                 BleConnectionService.setVoiceState(VoiceState.READY)
                 return
             }
@@ -286,6 +315,12 @@ class VoiceProcessor(
     // --- VAD helpers ---
 
     private fun hasSpeechInPcm(pcmData: ByteArray): Boolean {
+        // ~0.15s at 16kHz mono 16-bit — drop click/glitch clips, keep short quiet phrases.
+        val minPcmBytes = (PCM_SAMPLE_RATE * PCM_CHANNELS * (PCM_BITS_PER_SAMPLE / 8) * 0.15).toInt()
+        if (pcmData.size < minPcmBytes) {
+            Log.d(TAG, "VAD: PCM too short (${pcmData.size} < $minPcmBytes bytes) — skip")
+            return false
+        }
         val analysis = BleSpeechDetector.analyzeBlePcm(pcmData)
         val vad = sileroVad ?: run {
             Log.w(TAG, "Silero VAD unavailable — falling back to spectrum VAD")
@@ -344,13 +379,14 @@ class VoiceProcessor(
 
         Log.w(
             TAG,
-            "Silero VAD did not accept BLE audio (reason=${sileroDecision.spectrumReason}, maxProb=${"%.3f".format(Locale.US, maxProb)}) — checking spectrum VAD"
+            "Silero VAD did not accept BLE audio (reason=${sileroDecision.spectrumReason}, maxProb=${"%.3f".format(Locale.US, maxProb)}, stuck=${sileroDecision.sileroStuck}) — checking spectrum/energy VAD"
         )
         return hasSpeechBySpectrum(
             samples = analysis.samples,
             reason = sileroDecision.spectrumReason ?: "Silero rejected audio",
             peakAfterDc = analysis.peakAfterDc,
-            rmsAfterDc = analysis.rmsAfterDc
+            rmsAfterDc = analysis.rmsAfterDc,
+            sileroStuck = sileroDecision.sileroStuck
         )
     }
 
@@ -358,17 +394,19 @@ class VoiceProcessor(
         samples: FloatArray,
         reason: String,
         peakAfterDc: Float? = null,
-        rmsAfterDc: Float? = null
+        rmsAfterDc: Float? = null,
+        sileroStuck: Boolean = false
     ): Boolean {
         val result = BleSpeechDetector.detectSpeechBySpectrum(samples, PCM_SAMPLE_RATE)
         val rescued = shouldRescueBleSpectrum(
             peakAfterDc = peakAfterDc,
             rmsAfterDc = rmsAfterDc,
-            maxBandRatio = result.maxBandRatio
+            maxBandRatio = result.maxBandRatio,
+            sileroStuck = sileroStuck
         )
         Log.d(
             TAG,
-            "Spectrum VAD fallback: reason=$reason, speechFrames=${result.speechFrames}/${result.activeFrames} active (${result.totalFrames} total, ${"%.1f".format(Locale.US, result.ratio * 100)}%), maxBandRatio=${"%.3f".format(Locale.US, result.maxBandRatio)}, rescued=$rescued, topBandRatios=${result.topBandRatios.joinToString(prefix = "[", postfix = "]") { "%.3f".format(Locale.US, it) }}"
+            "Spectrum VAD fallback: reason=$reason, speechFrames=${result.speechFrames}/${result.activeFrames} active (${result.totalFrames} total, ${"%.1f".format(Locale.US, result.ratio * 100)}%), maxBandRatio=${"%.3f".format(Locale.US, result.maxBandRatio)}, sileroStuck=$sileroStuck, rescued=$rescued, topBandRatios=${result.topBandRatios.joinToString(prefix = "[", postfix = "]") { "%.3f".format(Locale.US, it) }}"
         )
         if (result.hasSpeech(BleSpeechDetector.SPEECH_FRAME_MIN_RATIO)) {
             return true
@@ -376,7 +414,7 @@ class VoiceProcessor(
         if (rescued) {
             Log.w(
                 TAG,
-                "Spectrum VAD rescue accepted BLE audio: peakAfterDC=${"%.4f".format(Locale.US, peakAfterDc)}, rmsAfterDC=${"%.4f".format(Locale.US, rmsAfterDc)}, maxBandRatio=${"%.3f".format(Locale.US, result.maxBandRatio)}"
+                "VAD rescue accepted BLE audio: peakAfterDC=${"%.4f".format(Locale.US, peakAfterDc)}, rmsAfterDC=${"%.4f".format(Locale.US, rmsAfterDc)}, maxBandRatio=${"%.3f".format(Locale.US, result.maxBandRatio)}, sileroStuck=$sileroStuck"
             )
             return true
         }
@@ -594,21 +632,12 @@ class VoiceProcessor(
     fun shutdown() {
         tts?.stop()
         tts?.shutdown()
+        recordingCuePlayer.release()
         sileroVad?.close()
         aiFacade.release()
     }
 
     // --- Helpers ---
-
-    private val whisperHallucinationPatterns = setOf(
-        "thank you", "thanks", "thank you.", "thanks.",
-        "thank you very much", "thank you very much.",
-        "you", "bye", "bye."
-    )
-
-    private fun isWhisperHallucination(text: String): Boolean =
-        text.trim().lowercase() in whisperHallucinationPatterns
-
 
     private fun applyTtsLanguage(languageCode: String?): Locale? {
         val candidateLocales = SpeechLanguageResolver.candidateLocales(languageCode, Locale.getDefault())

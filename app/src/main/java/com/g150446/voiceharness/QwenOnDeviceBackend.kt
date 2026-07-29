@@ -106,7 +106,10 @@ class QwenOnDeviceBackend(
                     temperature = 0.7,
                     tag = TAG
                 )
-            }.onFailure { e -> Log.e(TAG, "chat failed", e) }
+            }.onFailure { e ->
+                Log.e(TAG, "chat failed", e)
+                if (e is GenerationTimedOutException) releaseLocked()
+            }
         }
     }
 

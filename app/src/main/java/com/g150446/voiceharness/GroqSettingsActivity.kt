@@ -127,6 +127,46 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             }
         }
 
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("ASR ベース言語（Gemma）", fontSize = 14.sp)
+        Text(
+            "文字起こしプロンプトに反映されます。Chat には影響しません。",
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+        )
+        var speechBaseLanguage by remember {
+            mutableStateOf(ModelManager.currentSpeechBaseLanguage(context))
+        }
+        SpeechBaseLanguage.entries.forEach { language ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = speechBaseLanguage == language,
+                        onClick = {
+                            ModelManager.setSpeechBaseLanguage(context, language)
+                            speechBaseLanguage = language
+                            actionStatus = "ASR ベース言語: ${language.displayName}"
+                        }
+                    )
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = speechBaseLanguage == language,
+                    onClick = {
+                        ModelManager.setSpeechBaseLanguage(context, language)
+                        speechBaseLanguage = language
+                        actionStatus = "ASR ベース言語: ${language.displayName}"
+                    }
+                )
+                Column(modifier = Modifier.padding(start = 4.dp)) {
+                    Text(language.displayName, fontSize = 14.sp)
+                    Text(language.description, fontSize = 11.sp)
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
         Text(
             "状態: ${ModelManager.readinessLabel(status.readiness)}（${status.profile.displayName}）",
@@ -236,7 +276,7 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            "デフォルトは高速 (Qwen)。高品質が必要なときだけ Gemma に切替。\n" +
+            "デフォルトは高品質 (Gemma 4 E2B)。高速が必要なときだけ Qwen に切替。\n" +
                 "パス入力は不要です。",
             fontSize = 12.sp
         )

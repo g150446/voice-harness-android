@@ -7,6 +7,9 @@ import java.util.Locale
 object GroqChatRequestBuilder {
 
     private const val CHAT_MODEL = "openai/gpt-oss-120b"
+    internal const val CONCISE_RESPONSE_INSTRUCTION =
+        "Answer in one or two short sentences and include only the information needed. " +
+            "Only give a longer response when the user explicitly asks for details."
 
     data class ChatMessageSpec(
         val role: String,
@@ -28,9 +31,7 @@ object GroqChatRequestBuilder {
 
     fun buildMessageSpecs(userText: String, languageCode: String?): List<ChatMessageSpec> =
         buildList {
-            buildSystemPrompt(languageCode)?.let { prompt ->
-                add(ChatMessageSpec(role = "system", content = prompt))
-            }
+            add(ChatMessageSpec(role = "system", content = buildSystemPrompt(languageCode)))
             add(ChatMessageSpec(role = "user", content = userText))
         }
 
@@ -44,12 +45,10 @@ object GroqChatRequestBuilder {
         return JSONObject().apply {
             put("model", CHAT_MODEL)
             put("messages", JSONArray().apply {
-                buildSystemPromptWithReminders(languageCode, currentTimeMillis)?.let { prompt ->
-                    put(JSONObject().apply {
-                        put("role", "system")
-                        put("content", prompt)
-                    })
-                }
+                put(JSONObject().apply {
+                    put("role", "system")
+                    put("content", buildSystemPromptWithReminders(languageCode, currentTimeMillis))
+                })
                 conversationHistory.forEach { turn ->
                     put(JSONObject().apply {
                         put("role", turn.role)
@@ -91,26 +90,30 @@ object GroqChatRequestBuilder {
         }.toString()
     }
 
-    private fun buildSystemPrompt(languageCode: String?): String? {
+    private fun buildSystemPrompt(languageCode: String?): String {
         val normalizedCode = languageCode
             ?.trim()
             ?.takeIf { it.isNotBlank() }
             ?.lowercase(Locale.ROOT)
-            ?: return null
-        val locale = Locale.forLanguageTag(normalizedCode)
-        val languageTag = locale.toLanguageTag().takeIf { it.isNotBlank() && it != "und" } ?: normalizedCode
-        val languageName = locale.getDisplayLanguage(Locale.ENGLISH).ifBlank { languageTag }
+        val detectedLanguage = normalizedCode?.let { code ->
+            val locale = Locale.forLanguageTag(code)
+            val languageTag = locale.toLanguageTag()
+                .takeIf { it.isNotBlank() && it != "und" }
+                ?: code
+            val languageName = locale.getDisplayLanguage(Locale.ENGLISH).ifBlank { languageTag }
+            "The detected input language is $languageName ($languageTag). "
+        }.orEmpty()
 
         return "Respond in the same language as the user's transcribed request. " +
-            "The detected input language is $languageName ($languageTag). " +
+            detectedLanguage +
             "Do not translate unless the user explicitly asks for translation. " +
             "This response will be read aloud as speech, so write in natural spoken language. " +
             "Do not use markdown, bullet points, numbered lists, headers, or special characters. " +
             "Use short, clear sentences. Avoid parenthetical asides. " +
-            "Keep responses brief unless the user explicitly asks for a detailed explanation."
+            CONCISE_RESPONSE_INSTRUCTION
     }
 
-    private fun buildSystemPromptWithReminders(languageCode: String?, currentTimeMillis: Long): String? {
+    private fun buildSystemPromptWithReminders(languageCode: String?, currentTimeMillis: Long): String {
         val basePrompt = buildSystemPrompt(languageCode)
         val currentTimeStr = formatCurrentTimeJst(currentTimeMillis)
         val reminderInstructions = "You can set reminders for the user by calling the set_reminder function. " +
@@ -123,11 +126,7 @@ object GroqChatRequestBuilder {
             "If the time is ambiguous (e.g., just '3時' without AM/PM context), use your best judgment based on common usage. " +
             "If the user says something like '読み上げして', 'speak it aloud', 'notify with voice', or similar, set tts_enabled to true. " +
             "If critical information like the title or exact time is missing, ask the user for clarification in a natural way."
-        return if (basePrompt != null) {
-            "$basePrompt $reminderInstructions"
-        } else {
-            reminderInstructions
-        }
+        return "$basePrompt $reminderInstructions"
     }
 
     private fun formatCurrentTimeJst(millis: Long): String {

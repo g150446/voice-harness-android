@@ -2,14 +2,22 @@ package com.g150446.voiceharness
 
 internal const val SILERO_SPEECH_THRESHOLD = 0.5f
 internal const val SILERO_FRAME_MIN_RATIO = 0.05
-internal const val SILERO_STUCK_MAX_PROB = 0.01f
-internal const val BLE_RESCUE_PEAK_THRESHOLD = 0.08f
-internal const val BLE_RESCUE_RMS_THRESHOLD = 0.008f
-internal const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.48
+internal const val SILERO_STUCK_MAX_PROB = 0.05f
+internal const val BLE_RESCUE_PEAK_THRESHOLD = 0.03f
+internal const val BLE_RESCUE_RMS_THRESHOLD = 0.006f
+internal const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.35
+/**
+ * Quiet BLE mic priority: when Silero rejects (stuck or weak), accept by amplitude alone.
+ * Field quiet speech: peak=0.0215/rms=0.0138 and later peak=0.0085/rms=0.0013.
+ * Near-silence rejected: peak≈0.005/rms≈0.0012 — keep a small margin above that.
+ */
+internal const val BLE_ENERGY_RESCUE_PEAK_THRESHOLD = 0.007f
+internal const val BLE_ENERGY_RESCUE_RMS_THRESHOLD = 0.001f
 
 internal data class BleSileroDecision(
     val accepted: Boolean,
-    val spectrumReason: String? = null
+    val spectrumReason: String? = null,
+    val sileroStuck: Boolean = false
 )
 
 internal fun decideBleSileroOutcome(
@@ -22,23 +30,34 @@ internal fun decideBleSileroOutcome(
         return BleSileroDecision(accepted = true)
     }
 
-    val reason = if (maxProb <= SILERO_STUCK_MAX_PROB) {
+    val stuck = maxProb <= SILERO_STUCK_MAX_PROB
+    val reason = if (stuck) {
         "Silero output stuck near zero"
     } else {
         "Silero below speech ratio threshold"
     }
     return BleSileroDecision(
         accepted = false,
-        spectrumReason = reason
+        spectrumReason = reason,
+        sileroStuck = stuck
     )
 }
 
 internal fun shouldRescueBleSpectrum(
     peakAfterDc: Float?,
     rmsAfterDc: Float?,
-    maxBandRatio: Double
+    maxBandRatio: Double,
+    sileroStuck: Boolean = false
 ): Boolean {
     if (peakAfterDc == null || rmsAfterDc == null) return false
+    // Prefer quiet speech: energy gate whenever Silero did not accept.
+    // Band-ratio path remains as an additional accept path for clearer speech.
+    if (peakAfterDc >= BLE_ENERGY_RESCUE_PEAK_THRESHOLD &&
+        rmsAfterDc >= BLE_ENERGY_RESCUE_RMS_THRESHOLD
+    ) {
+        return true
+    }
+    if (sileroStuck) return false
     return maxBandRatio >= BLE_RESCUE_BAND_RATIO_THRESHOLD &&
         peakAfterDc >= BLE_RESCUE_PEAK_THRESHOLD &&
         rmsAfterDc >= BLE_RESCUE_RMS_THRESHOLD

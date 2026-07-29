@@ -7,8 +7,8 @@ TTSはAndroid `TextToSpeech`を使用する。
 
 | プロファイル | ASR | Chat | 用途 |
 |---|---|---|---|
-| Qwen（デフォルト） | Qwen3-ASR-0.6B Q8_0 GGUF | Qwen 3.5 0.8B LiteRT-LM | 高速・省メモリ |
-| Gemma | Gemma 4 E2B LiteRT-LM audio | 同じGemma engine | 高品質 |
+| Gemma（デフォルト） | Gemma 4 E2B LiteRT-LM audio | 同じGemma engine | 高品質 |
+| Qwen | Qwen3-ASR-0.6B Q8_0 GGUF | Qwen 3.5 0.8B LiteRT-LM | 高速・省メモリ |
 
 Qwen3-ASR自体がエンドツーエンドASRモデルなのでWhisperは併用しない。
 

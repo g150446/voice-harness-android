@@ -41,57 +41,65 @@ class BleSpeechPolicyTest {
 
         assertFalse(decision.accepted)
         assertEquals("Silero output stuck near zero", decision.spectrumReason)
+        assertTrue(decision.sileroStuck)
     }
 
     @Test
-    fun shouldRescueBleSpectrum_requiresAllRescueSignals() {
+    fun decideBleSileroOutcome_treatsWeakMaxProbAsStuck() {
+        // Field: maxProb=0.032 with 0 speech frames — still not usable Silero output.
+        val decision = decideBleSileroOutcome(
+            speechFrames = 0,
+            totalFrames = 21,
+            maxProb = 0.032f
+        )
+        assertFalse(decision.accepted)
+        assertTrue(decision.sileroStuck)
+    }
+
+    @Test
+    fun shouldRescueBleSpectrum_acceptsQuietBleSpeechEnergy() {
+        // Field quiet speech rejected before: peak=0.0215 rms=0.0138 band=0.035
         assertTrue(
             shouldRescueBleSpectrum(
-                peakAfterDc = 0.09f,
-                rmsAfterDc = 0.009f,
-                maxBandRatio = 0.50
+                peakAfterDc = 0.0215f,
+                rmsAfterDc = 0.0138f,
+                maxBandRatio = 0.035,
+                sileroStuck = true
             )
         )
-
-        assertFalse(
+        // 2nd attempt after first success (quieter BLE level)
+        assertTrue(
             shouldRescueBleSpectrum(
-                peakAfterDc = 0.07f,
-                rmsAfterDc = 0.009f,
-                maxBandRatio = 0.50
+                peakAfterDc = 0.0085f,
+                rmsAfterDc = 0.0013f,
+                maxBandRatio = 0.478,
+                sileroStuck = true
             )
         )
-
-        assertFalse(
+        assertTrue(
             shouldRescueBleSpectrum(
-                peakAfterDc = 0.09f,
-                rmsAfterDc = 0.007f,
-                maxBandRatio = 0.50
+                peakAfterDc = 0.0383f,
+                rmsAfterDc = 0.0146f,
+                maxBandRatio = 0.049,
+                sileroStuck = true
             )
         )
     }
 
     @Test
-    fun shouldRescueBleSpectrum_acceptsObservedBleSpeechLevels() {
-        // Logged failure cases that previously skipped Groq despite real speech.
-        assertTrue(
-            shouldRescueBleSpectrum(
-                peakAfterDc = 0.0950f,
-                rmsAfterDc = 0.0091f,
-                maxBandRatio = 0.766
-            )
-        )
-        assertTrue(
-            shouldRescueBleSpectrum(
-                peakAfterDc = 0.0940f,
-                rmsAfterDc = 0.0107f,
-                maxBandRatio = 0.650
-            )
-        )
-        // Genuine near-silence should still be rejected.
+    fun shouldRescueBleSpectrum_rejectsNearSilence() {
         assertFalse(
             shouldRescueBleSpectrum(
-                peakAfterDc = 0.0118f,
-                rmsAfterDc = 0.0020f,
+                peakAfterDc = 0.0051f,
+                rmsAfterDc = 0.0008f,
+                maxBandRatio = 0.387,
+                sileroStuck = true
+            )
+        )
+        assertFalse(
+            shouldRescueBleSpectrum(
+                peakAfterDc = 0.0040f,
+                rmsAfterDc = 0.0009f,
                 maxBandRatio = 0.427
             )
         )

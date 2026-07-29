@@ -18,20 +18,31 @@ class GroqChatRequestBuilderTest {
         assertEquals("system", messages[0].role)
         assertTrue(messages[0].content.contains("English (en)"))
         assertTrue(messages[0].content.contains("Do not translate unless the user explicitly asks for translation."))
-        assertTrue(messages[0].content.contains("Keep responses brief unless the user explicitly asks for a detailed explanation."))
+        assertTrue(messages[0].content.contains(GroqChatRequestBuilder.CONCISE_RESPONSE_INSTRUCTION))
         assertEquals("user", messages[1].role)
         assertEquals("Hello there", messages[1].content)
     }
 
     @Test
-    fun buildMessageSpecs_omitsSystemPromptWhenLanguageUnknown() {
+    fun buildMessageSpecs_addsConciseSystemPromptWhenLanguageUnknown() {
         val messages = GroqChatRequestBuilder.buildMessageSpecs(
             userText = "Hello there",
             languageCode = null
         )
 
-        assertEquals(1, messages.size)
-        assertEquals("user", messages[0].role)
-        assertFalse(messages[0].content.contains("Do not translate"))
+        assertEquals(2, messages.size)
+        assertEquals("system", messages[0].role)
+        assertTrue(messages[0].content.contains("Respond in the same language"))
+        assertTrue(messages[0].content.contains(GroqChatRequestBuilder.CONCISE_RESPONSE_INSTRUCTION))
+        assertFalse(messages[0].content.contains("detected input language"))
+        assertEquals("user", messages[1].role)
+        assertEquals("Hello there", messages[1].content)
+    }
+
+    @Test
+    fun liteRtSystemPrompt_isConciseWhenLanguageUnknown() {
+        val prompt = LitertLlmSupport.buildSystemPrompt(languageCode = null)
+
+        assertTrue(prompt.contains(GroqChatRequestBuilder.CONCISE_RESPONSE_INSTRUCTION))
     }
 }

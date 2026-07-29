@@ -6,7 +6,7 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Profile-aware facade. Default is QWEN; Gemma remains selectable.
+ * Profile-aware facade. Default is GEMMA; Qwen remains selectable.
  */
 class OnDeviceAiFacade(
     private val appContext: Context

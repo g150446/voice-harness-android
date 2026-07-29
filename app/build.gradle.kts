@@ -27,15 +27,22 @@ val qwenAsrNativeFiles = listOf(
 
 val prepareQwenAsrNative by tasks.registering(Sync::class) {
     val sourceDir = qwenAsrNativeDir.map(::file)
-    from(sourceDir) {
-        include(qwenAsrNativeFiles)
-        rename("llama-mtmd-cli", "libqwen_asr_cli.so")
+    val available = sourceDir.get().takeIf { it.isDirectory }?.let { dir ->
+        qwenAsrNativeFiles.all { dir.resolve(it).isFile }
+    } == true
+    if (available) {
+        from(sourceDir) {
+            include(qwenAsrNativeFiles)
+            rename("llama-mtmd-cli", "libqwen_asr_cli.so")
+        }
     }
     into(generatedQwenAsrJniDir.map { it.dir("arm64-v8a") })
     doFirst {
-        val missing = qwenAsrNativeFiles.filterNot { sourceDir.get().resolve(it).isFile }
-        check(missing.isEmpty()) {
-            "Missing Qwen3-ASR native files in ${sourceDir.get()}: ${missing.joinToString()}"
+        if (!available) {
+            logger.warn(
+                "Qwen3-ASR native files not found in ${sourceDir.get()}; " +
+                    "Gemma profile still works. Run ./scripts/prepare-qwen-asr-native.sh for Qwen."
+            )
         }
     }
 }

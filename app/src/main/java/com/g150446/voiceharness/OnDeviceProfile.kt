@@ -15,6 +15,6 @@ enum class OnDeviceProfile {
 
     companion object {
         fun fromStorage(value: String?): OnDeviceProfile =
-            entries.firstOrNull { it.name == value } ?: QWEN
+            entries.firstOrNull { it.name == value } ?: GEMMA
     }
 }
