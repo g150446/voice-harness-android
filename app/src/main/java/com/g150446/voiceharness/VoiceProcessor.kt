@@ -65,6 +65,12 @@ class VoiceProcessor(
     init {
         tts = TextToSpeech(appContext, this)
 
+        scope.launch(Dispatchers.IO) {
+            ModelManager.refresh(appContext)
+            aiBackend.ensureReady()
+                .onFailure { Log.w(TAG, "Background model warm-up failed: ${it.message}") }
+        }
+
         scope.launch {
             BleConnectionService.bleEvents.collect { event ->
                 when (event) {
@@ -153,7 +159,13 @@ class VoiceProcessor(
         }
 
         scope.launch(Dispatchers.IO) {
-            val wavFile = buildWavFile(pcmData) ?: run {
+            val trimmedPcm = PcmSilenceTrimmer.trim(pcmData, PCM_SAMPLE_RATE)
+            if (trimmedPcm !== pcmData) {
+                val beforeMs = pcmData.size * 1_000L / (PCM_SAMPLE_RATE * PCM_CHANNELS * 2)
+                val afterMs = trimmedPcm.size * 1_000L / (PCM_SAMPLE_RATE * PCM_CHANNELS * 2)
+                Log.d(TAG, "Trimmed BLE PCM from ${beforeMs}ms to ${afterMs}ms")
+            }
+            val wavFile = buildWavFile(trimmedPcm) ?: run {
                 BleConnectionService.setErrorMessage("WAV ファイルの作成に失敗しました")
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 return@launch
@@ -251,7 +263,7 @@ class VoiceProcessor(
             conversationSession.addTurn("user", transcribed)
 
             val chat = aiBackend.chat(
-                conversationHistory = conversationSession.turns,
+                conversationHistory = conversationSession.turnsForInference(),
                 languageCode = responseLanguageCode
             )
             if (chat.isFailure) {
@@ -616,6 +628,10 @@ class VoiceProcessor(
             BleConnectionService.setVoiceState(VoiceState.READY)
         }
         Log.d(TAG, "Switched on-device profile to $profile")
+        scope.launch(Dispatchers.IO) {
+            aiBackend.ensureReady()
+                .onFailure { Log.w(TAG, "Profile warm-up failed for $profile: ${it.message}") }
+        }
     }
 
     fun disconnect() {

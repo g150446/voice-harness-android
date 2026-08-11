@@ -24,6 +24,7 @@ enum class ModelReadiness {
 
 enum class ModelSlot {
     GEMMA,
+    FAST_CHAT,
     QWEN_LLM,
     QWEN_ASR_DECODER,
     QWEN_ASR_PROJECTOR
@@ -47,7 +48,11 @@ data class ModelStatus(
     val lastLoadMs: Long = 0L,
     val lastAsrMs: Long = 0L,
     val lastChatMs: Long = 0L,
+    val lastChatTtftMs: Long = 0L,
+    val lastPrefillTokensPerSecond: Double = 0.0,
+    val lastDecodeTokensPerSecond: Double = 0.0,
     val gemma: SlotStatus = SlotStatus(),
+    val fastChat: SlotStatus = SlotStatus(),
     val qwenLlm: SlotStatus = SlotStatus(),
     val qwenAsrDecoder: SlotStatus = SlotStatus(),
     val qwenAsrProjector: SlotStatus = SlotStatus()
@@ -63,12 +68,14 @@ object ModelManager {
     private const val KEY_SPEECH_BASE_LANGUAGE = "speech_base_language"
     private const val KEY_GEMMA_DEFAULT_MIGRATED = "gemma_default_migrated_v1"
     private const val KEY_GEMMA_PATH = "gemma_path"
+    private const val KEY_FAST_CHAT_PATH = "fast_chat_path"
     private const val KEY_QWEN_LLM_PATH = "qwen_llm_path"
     private const val KEY_QWEN_ASR_DECODER_PATH = "qwen_asr_decoder_path"
     private const val KEY_QWEN_ASR_PROJECTOR_PATH = "qwen_asr_projector_path"
     private const val MIN_MODEL_BYTES = 50_000_000L
 
     const val GEMMA_FILE = "gemma-4-E2B-it.litertlm"
+    const val FAST_CHAT_FILE = "qwen3_0_6b_mixed_int4.litertlm"
     const val QWEN_LLM_FILE = "qwen35_mm_q8_ekv2048.litertlm"
     const val QWEN_ASR_DECODER_FILE = "Qwen3-ASR-0.6B-Q8_0.gguf"
     const val QWEN_ASR_PROJECTOR_FILE = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
@@ -122,6 +129,17 @@ object ModelManager {
             preferredNames = listOf(GEMMA_FILE),
             extensions = listOf(".litertlm"),
             nameHints = listOf("gemma"),
+            allowUnhintedFallback = false,
+            configuredNameMustMatchHints = true
+        )
+
+    fun resolveFastChatModel(context: Context): File? =
+        resolveNamed(
+            context = context,
+            prefKey = KEY_FAST_CHAT_PATH,
+            preferredNames = listOf(FAST_CHAT_FILE),
+            extensions = listOf(".litertlm"),
+            nameHints = listOf("qwen3_0_6b_mixed_int4", "qwen3-0.6b", "qwen3_0.6b"),
             allowUnhintedFallback = false,
             configuredNameMustMatchHints = true
         )
@@ -238,11 +256,13 @@ object ModelManager {
     fun refresh(context: Context): ModelStatus {
         val profile = currentProfile(context)
         val gemmaFile = resolveGemmaModel(context)
+        val fastChatFile = resolveFastChatModel(context)
         val qwenLlmFile = resolveQwenLlmModel(context)
         val qwenAsrDecoderFile = resolveQwenAsrDecoder(context)
         val qwenAsrProjectorFile = resolveQwenAsrProjector(context)
 
         val gemma = toSlot(gemmaFile, "Gemma")
+        val fastChat = toSlot(fastChatFile, "Fast Chat")
         val qwenLlm = toSlot(qwenLlmFile, "Qwen LLM")
         val qwenAsrDecoder = toSlot(qwenAsrDecoderFile, "Qwen ASR decoder")
         val qwenAsrProjector = toSlot(qwenAsrProjectorFile, "Qwen ASR projector")
@@ -256,7 +276,8 @@ object ModelManager {
                 }
             }
             OnDeviceProfile.QWEN -> {
-                val missing = listOf(qwenLlm, qwenAsrDecoder, qwenAsrProjector).count {
+                val selectedChat = if (fastChat.readiness != ModelReadiness.MISSING) fastChat else qwenLlm
+                val missing = listOf(selectedChat, qwenAsrDecoder, qwenAsrProjector).count {
                     it.readiness == ModelReadiness.MISSING
                 }
                 if (missing > 0) {
@@ -264,10 +285,14 @@ object ModelManager {
                 } else {
                     StatusTuple(
                         ModelReadiness.FOUND,
-                        qwenLlm.path,
-                        qwenLlm.fileName,
-                        qwenLlm.sizeBytes + qwenAsrDecoder.sizeBytes + qwenAsrProjector.sizeBytes,
-                        "Qwen LLM + Qwen3-ASR 検出済み"
+                        selectedChat.path,
+                        selectedChat.fileName,
+                        selectedChat.sizeBytes + qwenAsrDecoder.sizeBytes + qwenAsrProjector.sizeBytes,
+                        if (selectedChat === fastChat) {
+                            "高速Chat + Qwen3-ASR 検出済み"
+                        } else {
+                            "従来Qwen Chat + Qwen3-ASR 検出済み"
+                        }
                     )
                 }
             }
@@ -283,6 +308,7 @@ object ModelManager {
         ) {
             current.copy(
                 gemma = gemma,
+                fastChat = fastChat,
                 qwenLlm = qwenLlm,
                 qwenAsrDecoder = qwenAsrDecoder,
                 qwenAsrProjector = qwenAsrProjector,
@@ -309,7 +335,11 @@ object ModelManager {
                 lastLoadMs = current.lastLoadMs,
                 lastAsrMs = current.lastAsrMs,
                 lastChatMs = current.lastChatMs,
+                lastChatTtftMs = current.lastChatTtftMs,
+                lastPrefillTokensPerSecond = current.lastPrefillTokensPerSecond,
+                lastDecodeTokensPerSecond = current.lastDecodeTokensPerSecond,
                 gemma = gemma,
+                fastChat = fastChat,
                 qwenLlm = qwenLlm,
                 qwenAsrDecoder = qwenAsrDecoder,
                 qwenAsrProjector = qwenAsrProjector
@@ -360,7 +390,7 @@ object ModelManager {
             val profile = _status.value.profile
             val activeReady = when (profile) {
                 OnDeviceProfile.GEMMA -> slot == ModelSlot.GEMMA
-                OnDeviceProfile.QWEN -> slot == ModelSlot.QWEN_LLM
+                OnDeviceProfile.QWEN -> slot == ModelSlot.FAST_CHAT || slot == ModelSlot.QWEN_LLM
             }
             if (activeReady) {
                 _status.value = _status.value.copy(
@@ -368,7 +398,11 @@ object ModelManager {
                     modelPath = path,
                     modelFileName = file.name,
                     modelSizeBytes = if (profile == OnDeviceProfile.QWEN) {
-                        _status.value.qwenLlm.sizeBytes +
+                        (if (_status.value.fastChat.readiness != ModelReadiness.MISSING) {
+                            _status.value.fastChat.sizeBytes
+                        } else {
+                            _status.value.qwenLlm.sizeBytes
+                        }) +
                             _status.value.qwenAsrDecoder.sizeBytes +
                             _status.value.qwenAsrProjector.sizeBytes
                     } else {
@@ -385,6 +419,7 @@ object ModelManager {
         updateSlot(slot, ModelReadiness.ERROR, _status.value.let {
             when (slot) {
                 ModelSlot.GEMMA -> it.gemma.path
+                ModelSlot.FAST_CHAT -> it.fastChat.path
                 ModelSlot.QWEN_LLM -> it.qwenLlm.path
                 ModelSlot.QWEN_ASR_DECODER -> it.qwenAsrDecoder.path
                 ModelSlot.QWEN_ASR_PROJECTOR -> it.qwenAsrProjector.path
@@ -404,7 +439,7 @@ object ModelManager {
 
     private fun isActiveSlot(slot: ModelSlot): Boolean = when (_status.value.profile) {
         OnDeviceProfile.GEMMA -> slot == ModelSlot.GEMMA
-        OnDeviceProfile.QWEN -> slot != ModelSlot.GEMMA
+        OnDeviceProfile.QWEN -> slot == ModelSlot.FAST_CHAT || slot == ModelSlot.QWEN_LLM
     }
 
     private fun updateSlot(slot: ModelSlot, readiness: ModelReadiness, path: String?, message: String) {
@@ -418,6 +453,7 @@ object ModelManager {
         )
         _status.value = when (slot) {
             ModelSlot.GEMMA -> _status.value.copy(gemma = slotStatus)
+            ModelSlot.FAST_CHAT -> _status.value.copy(fastChat = slotStatus)
             ModelSlot.QWEN_LLM -> _status.value.copy(qwenLlm = slotStatus)
             ModelSlot.QWEN_ASR_DECODER -> _status.value.copy(qwenAsrDecoder = slotStatus)
             ModelSlot.QWEN_ASR_PROJECTOR -> _status.value.copy(qwenAsrProjector = slotStatus)
@@ -466,6 +502,20 @@ object ModelManager {
         _status.value = _status.value.copy(lastChatMs = ms)
     }
 
+    fun recordChatMetrics(
+        latencyMs: Long,
+        timeToFirstTokenMs: Long,
+        prefillTokensPerSecond: Double,
+        decodeTokensPerSecond: Double
+    ) {
+        _status.value = _status.value.copy(
+            lastChatMs = latencyMs,
+            lastChatTtftMs = timeToFirstTokenMs,
+            lastPrefillTokensPerSecond = prefillTokensPerSecond,
+            lastDecodeTokensPerSecond = decodeTokensPerSecond
+        )
+    }
+
     fun readinessLabel(readiness: ModelReadiness): String = when (readiness) {
         ModelReadiness.MISSING -> "未検出"
         ModelReadiness.FOUND -> "検出済み"
@@ -487,6 +537,8 @@ object ModelManager {
                 val displayName = queryDisplayName(context, uri) ?: "model.bin"
                 val lower = displayName.lowercase()
                 val slot = slotHint ?: when {
+                    lower.contains("qwen3_0_6b_mixed_int4") ||
+                        lower.contains("qwen3-0.6b") -> ModelSlot.FAST_CHAT
                     lower.contains("gemma") -> ModelSlot.GEMMA
                     lower.contains("mmproj") || lower.contains("projector") -> ModelSlot.QWEN_ASR_PROJECTOR
                     lower.endsWith(".gguf") -> ModelSlot.QWEN_ASR_DECODER
@@ -501,6 +553,7 @@ object ModelManager {
                 }
                 val destName = when (slot) {
                     ModelSlot.GEMMA -> if (lower.endsWith(".litertlm")) displayName.substringAfterLast('/') else GEMMA_FILE
+                    ModelSlot.FAST_CHAT -> FAST_CHAT_FILE
                     ModelSlot.QWEN_LLM -> if (lower.endsWith(".litertlm")) displayName.substringAfterLast('/') else QWEN_LLM_FILE
                     ModelSlot.QWEN_ASR_DECODER -> QWEN_ASR_DECODER_FILE
                     ModelSlot.QWEN_ASR_PROJECTOR -> QWEN_ASR_PROJECTOR_FILE
@@ -533,6 +586,7 @@ object ModelManager {
                 }
                 val prefKey = when (slot) {
                     ModelSlot.GEMMA -> KEY_GEMMA_PATH
+                    ModelSlot.FAST_CHAT -> KEY_FAST_CHAT_PATH
                     ModelSlot.QWEN_LLM -> KEY_QWEN_LLM_PATH
                     ModelSlot.QWEN_ASR_DECODER -> KEY_QWEN_ASR_DECODER_PATH
                     ModelSlot.QWEN_ASR_PROJECTOR -> KEY_QWEN_ASR_PROJECTOR_PATH

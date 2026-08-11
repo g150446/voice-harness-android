@@ -58,7 +58,7 @@ class GenerationTimedOutException(
 
 internal object LitertLlmSupport {
     private const val TAG = "LitertLlmSupport"
-    const val CHAT_TIMEOUT_MS = 60_000L
+    const val CHAT_TIMEOUT_MS = 20_000L
     const val ASR_TIMEOUT_MS = 120_000L
     private const val CANCEL_GRACE_MS = 5_000L
 
@@ -105,11 +105,6 @@ internal object LitertLlmSupport {
     }
 
     fun buildSystemPrompt(languageCode: String?): String {
-        val base = GroqChatRequestBuilder.buildMessageSpecs(
-            userText = "",
-            languageCode = languageCode
-        ).firstOrNull { it.role == "system" }?.content
-
         val currentTimeStr = java.text.SimpleDateFormat(
             "yyyy-MM-dd'T'HH:mm:ssXXX",
             Locale.US
@@ -117,42 +112,54 @@ internal object LitertLlmSupport {
             timeZone = java.util.TimeZone.getTimeZone("Asia/Tokyo")
         }.format(java.util.Date())
 
-        val reminderInstructions =
-            "You can set reminders for the user by calling the set_reminder function. " +
-                "When the user asks to set a reminder, always call the function rather than just saying you will remember. " +
-                "The current date and time is $currentTimeStr (Asia/Tokyo, UTC+09:00). Use this as the reference for all relative time calculations. " +
-                "If the user asks for the current time, respond with only the hours and minutes, without the date or seconds. " +
-                "If the user asks for today's date, respond with only the year, month, and day, without the time. " +
-                "If the user mentions a time without a date, assume today based on the current time. " +
-                "If the user says something like '読み上げして', 'speak it aloud', or similar, set tts_enabled to true."
-
-        return listOfNotNull(base, reminderInstructions).joinToString(" ")
+        val detectedLanguage = languageCode
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { "Detected language: $it. " }
+            .orEmpty()
+        return "Reply in the user's language. $detectedLanguage" +
+            "Use natural speech without markdown. ${GroqChatRequestBuilder.CONCISE_RESPONSE_INSTRUCTION} " +
+            "For reminder requests, call set_reminder. Current time: $currentTimeStr Asia/Tokyo. " +
+            "Resolve relative times from it; a time without a date means today. " +
+            "Set tts_enabled only when spoken notification is requested."
     }
 
     fun createEngine(
         context: Context,
         modelPath: String,
         enableAudio: Boolean,
-        preferGpu: Boolean
+        preferGpu: Boolean,
+        maxNumTokens: Int? = null
     ): Engine {
-        val mainBackend = if (preferGpu) {
-            try {
-                Backend.GPU()
-            } catch (_: Exception) {
-                Backend.CPU()
+        fun initialize(backend: Backend): Engine {
+            val config = EngineConfig(
+                modelPath = modelPath,
+                backend = backend,
+                audioBackend = if (enableAudio) Backend.CPU() else null,
+                maxNumTokens = maxNumTokens,
+                cacheDir = context.cacheDir.absolutePath
+            )
+            val engine = Engine(config)
+            return try {
+                engine.initialize()
+                engine
+            } catch (error: Throwable) {
+                try {
+                    engine.close()
+                } catch (_: Exception) {
+                    // Preserve the initialization error.
+                }
+                throw error
             }
-        } else {
-            Backend.CPU()
         }
-        val config = EngineConfig(
-            modelPath = modelPath,
-            backend = mainBackend,
-            audioBackend = if (enableAudio) Backend.CPU() else null,
-            cacheDir = context.cacheDir.absolutePath
-        )
-        val engine = Engine(config)
-        engine.initialize()
-        return engine
+
+        if (!preferGpu) return initialize(Backend.CPU())
+        return try {
+            initialize(Backend.GPU())
+        } catch (gpuError: Throwable) {
+            Log.w(TAG, "GPU initialization failed for $modelPath; retrying on CPU", gpuError)
+            initialize(Backend.CPU())
+        }
     }
 
     fun runChat(
@@ -197,7 +204,13 @@ internal object LitertLlmSupport {
                 conversation.sendMessage(last.content)
             }
             val latency = System.currentTimeMillis() - started
-            ModelManager.recordChatMs(latency)
+            val performance = readBenchmarkInfo(conversation, tag)
+            ModelManager.recordChatMetrics(
+                latencyMs = latency,
+                timeToFirstTokenMs = performance.timeToFirstTokenMs,
+                prefillTokensPerSecond = performance.prefillTokensPerSecond,
+                decodeTokensPerSecond = performance.decodeTokensPerSecond
+            )
 
             val reminder = pendingReminder.getAndSet(null)
             val toolCalls = if (reminder != null) {
@@ -216,8 +229,46 @@ internal object LitertLlmSupport {
             }
 
             val text = response.toString().trim()
-            Log.d(tag, "Chat done in ${latency} ms tools=${toolCalls.size} text='${text.take(120)}'")
-            return ChatResult(text = text, toolCalls = toolCalls, latencyMs = latency)
+            Log.d(
+                tag,
+                "Chat done in ${latency} ms ttft=${performance.timeToFirstTokenMs}ms " +
+                    "prefill=${performance.prefillTokenCount}@${"%.1f".format(performance.prefillTokensPerSecond)}tok/s " +
+                    "decode=${performance.decodeTokenCount}@${"%.1f".format(performance.decodeTokensPerSecond)}tok/s " +
+                    "tools=${toolCalls.size} text='${text.take(120)}'"
+            )
+            return ChatResult(
+                text = text,
+                toolCalls = toolCalls,
+                latencyMs = latency,
+                performance = performance
+            )
         }
     }
+
+    /**
+     * LiteRT-LM 0.14 exposes benchmark getters in bytecode but not in its Kotlin metadata.
+     * Reflection keeps the metrics optional and avoids tying inference to that metadata issue.
+     */
+    private fun readBenchmarkInfo(conversation: Conversation, tag: String): ChatPerformance =
+        try {
+            val benchmark = conversation.javaClass
+                .getMethod("getBenchmarkInfo")
+                .invoke(conversation)
+            val type = benchmark.javaClass
+            fun doubleValue(method: String): Double =
+                (type.getMethod(method).invoke(benchmark) as Number).toDouble()
+            fun intValue(method: String): Int =
+                (type.getMethod(method).invoke(benchmark) as Number).toInt()
+
+            ChatPerformance(
+                timeToFirstTokenMs = (doubleValue("getTimeToFirstTokenInSecond") * 1000).toLong(),
+                prefillTokenCount = intValue("getLastPrefillTokenCount"),
+                decodeTokenCount = intValue("getLastDecodeTokenCount"),
+                prefillTokensPerSecond = doubleValue("getLastPrefillTokensPerSecond"),
+                decodeTokensPerSecond = doubleValue("getLastDecodeTokensPerSecond")
+            )
+        } catch (e: Exception) {
+            Log.w(tag, "Unable to read LiteRT-LM benchmark info: ${e.message}")
+            ChatPerformance()
+        }
 }

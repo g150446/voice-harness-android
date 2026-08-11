@@ -29,6 +29,7 @@ class GemmaOnDeviceBackend(
     private var engine: Engine? = null
     private var loadedModelPath: String? = null
     private val pendingReminder = AtomicReference<ReminderToolArgs?>(null)
+    private val fastChatEngine = DedicatedChatEngine(appContext, "$TAG/FastChat")
 
     override suspend fun ensureReady(): Result<Unit> = mutex.withLock {
         withContext(Dispatchers.IO) {
@@ -38,6 +39,7 @@ class GemmaOnDeviceBackend(
                 val path = modelFile.absolutePath
                 if (engine != null && loadedModelPath == path) {
                     ModelManager.markSlotReady(ModelSlot.GEMMA, path, ModelManager.status.value.lastLoadMs)
+                    ensureFastChatBestEffort()
                     return@runCatching
                 }
                 releaseLocked()
@@ -54,6 +56,9 @@ class GemmaOnDeviceBackend(
                 val loadMs = System.currentTimeMillis() - started
                 ModelManager.markSlotReady(ModelSlot.GEMMA, path, loadMs)
                 Log.d(TAG, "Gemma loaded in ${loadMs} ms")
+
+                ensureFastChatBestEffort()
+                Unit
             }.onFailure { e ->
                 Log.e(TAG, "ensureReady failed", e)
                 ModelManager.markSlotError(ModelSlot.GEMMA, e.message ?: "Gemma 読み込み失敗")
@@ -111,18 +116,24 @@ class GemmaOnDeviceBackend(
     ): Result<ChatResult> = mutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
-                val eng = engine ?: error("Gemma engine not ready")
-                LitertLlmSupport.runChat(
-                    engine = eng,
-                    conversationHistory = conversationHistory,
-                    languageCode = languageCode,
-                    pendingReminder = pendingReminder,
-                    temperature = 1.0,
-                    tag = TAG
-                )
+                if (fastChatEngine.isReady) {
+                    fastChatEngine.chat(conversationHistory, languageCode)
+                } else {
+                    val eng = engine ?: error("Gemma engine not ready")
+                    LitertLlmSupport.runChat(
+                        engine = eng,
+                        conversationHistory = conversationHistory,
+                        languageCode = languageCode,
+                        pendingReminder = pendingReminder,
+                        temperature = 0.7,
+                        tag = TAG
+                    )
+                }
             }.onFailure { e ->
                 Log.e(TAG, "chat failed", e)
-                if (e is GenerationTimedOutException) releaseLocked()
+                if (e is GenerationTimedOutException) {
+                    if (fastChatEngine.isReady) fastChatEngine.release() else releaseLocked()
+                }
             }
         }
     }
@@ -137,7 +148,20 @@ class GemmaOnDeviceBackend(
         ModelManager.refresh(appContext)
     }
 
+    private fun ensureFastChatBestEffort() {
+        ModelManager.resolveFastChatModel(appContext)?.let { fastModel ->
+            fastChatEngine.ensureReady(fastModel, ModelSlot.FAST_CHAT)
+                .onFailure { error ->
+                    ModelManager.markSlotError(
+                        ModelSlot.FAST_CHAT,
+                        "高速Chatの読み込みに失敗。Gemma Chatを使用: ${error.message}"
+                    )
+                }
+        }
+    }
+
     private fun releaseLocked() {
+        fastChatEngine.release()
         try {
             engine?.close()
         } catch (e: Exception) {

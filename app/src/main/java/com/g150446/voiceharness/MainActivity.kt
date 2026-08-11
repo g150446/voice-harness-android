@@ -457,7 +457,12 @@ fun HomeScreen(
             text = "モデル: ${modelStatus.profile.displayName} / ${ModelManager.readinessLabel(modelStatus.readiness)}" +
                 (modelStatus.modelFileName?.let { " ($it)" } ?: "") +
                 if (modelStatus.lastAsrMs > 0 || modelStatus.lastChatMs > 0) {
-                    "  ASR ${modelStatus.lastAsrMs}ms / Chat ${modelStatus.lastChatMs}ms"
+                    "  ASR ${modelStatus.lastAsrMs}ms / Chat ${modelStatus.lastChatMs}ms" +
+                        if (modelStatus.lastChatTtftMs > 0) {
+                            " / TTFT ${modelStatus.lastChatTtftMs}ms"
+                        } else {
+                            ""
+                        }
                 } else {
                     ""
                 },

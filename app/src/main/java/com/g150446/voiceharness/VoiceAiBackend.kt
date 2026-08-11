@@ -16,7 +16,16 @@ data class ChatToolCall(
 data class ChatResult(
     val text: String,
     val toolCalls: List<ChatToolCall> = emptyList(),
-    val latencyMs: Long = 0L
+    val latencyMs: Long = 0L,
+    val performance: ChatPerformance = ChatPerformance()
+)
+
+data class ChatPerformance(
+    val timeToFirstTokenMs: Long = 0L,
+    val prefillTokenCount: Int = 0,
+    val decodeTokenCount: Int = 0,
+    val prefillTokensPerSecond: Double = 0.0,
+    val decodeTokensPerSecond: Double = 0.0
 )
 
 interface SttBackend {

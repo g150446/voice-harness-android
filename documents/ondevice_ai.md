@@ -7,8 +7,8 @@ TTSはAndroid `TextToSpeech`を使用する。
 
 | プロファイル | ASR | Chat | 用途 |
 |---|---|---|---|
-| Gemma（デフォルト） | Gemma 4 E2B LiteRT-LM audio | 同じGemma engine | 高品質 |
-| Qwen | Qwen3-ASR-0.6B Q8_0 GGUF | Qwen 3.5 0.8B LiteRT-LM | 高速・省メモリ |
+| Gemma（デフォルト） | Gemma 4 E2B LiteRT-LM audio | Qwen3-0.6B INT4（未配置時はGemma） | 高品質ASR |
+| Qwen | Qwen3-ASR-0.6B Q8_0 GGUF | Qwen3-0.6B INT4（未配置時はQwen 3.5） | 高速 |
 
 Qwen3-ASR自体がエンドツーエンドASRモデルなのでWhisperは併用しない。
 
@@ -19,12 +19,14 @@ Qwen3-ASR自体がエンドツーエンドASRモデルなのでWhisperは併用�
 ```text
 models/
 ├── qwen35_mm_q8_ekv2048.litertlm
+├── qwen3_0_6b_mixed_int4.litertlm
 ├── Qwen3-ASR-0.6B-Q8_0.gguf
 ├── mmproj-Qwen3-ASR-0.6B-Q8_0.gguf
 └── gemma-4-E2B-it.litertlm
 ```
 
-Qwenを使う場合はQwenの3ファイルすべてが必要。Gemmaは単一ファイルで動作する。
+`qwen3_0_6b_mixed_int4.litertlm` は両プロファイル共通の高速Chatモデル。未配置時は
+各プロファイルの従来Chatモデルへフォールバックする。
 
 ## ビルド
 
@@ -57,8 +59,9 @@ BLE PCM → VAD → WAV → 選択中プロファイルのASR
         → conversation history → Chat → reminder tool → Android TTS
 ```
 
-QwenではASRごとにllama.cpp CLIを分離プロセスとして起動する。Chat用LiteRT-LM engineは
-backendが保持する。設定画面でプロファイルを切り替えると既存engineを解放する。
+QwenではASRごとにllama.cpp CLIを分離プロセスとして起動する。高速Chat用LiteRT-LM
+engineはGPU優先でbackendが保持し、GPU初期化に失敗した場合のみCPUへ切り替える。
+設定画面でプロファイルを切り替えると既存engineを解放する。
 
 ## 状態とログ
 

@@ -176,6 +176,7 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(8.dp))
         Text("Gemma: ${slotLabel(status.gemma)}", fontSize = 12.sp)
+        Text("高速Chat: ${slotLabel(status.fastChat)}", fontSize = 12.sp)
         Text("Qwen LLM: ${slotLabel(status.qwenLlm)}", fontSize = 12.sp)
         Text("Qwen ASR decoder: ${slotLabel(status.qwenAsrDecoder)}", fontSize = 12.sp)
         Text("Qwen ASR projector: ${slotLabel(status.qwenAsrProjector)}", fontSize = 12.sp)
@@ -185,6 +186,21 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             if (status.lastLoadMs > 0) Text("Load: ${status.lastLoadMs} ms", fontSize = 12.sp)
             if (status.lastAsrMs > 0) Text("ASR: ${status.lastAsrMs} ms", fontSize = 12.sp)
             if (status.lastChatMs > 0) Text("Chat: ${status.lastChatMs} ms", fontSize = 12.sp)
+            if (status.lastChatTtftMs > 0) {
+                Text("TTFT: ${status.lastChatTtftMs} ms", fontSize = 12.sp)
+            }
+            if (status.lastPrefillTokensPerSecond > 0.0) {
+                Text(
+                    "Prefill: ${"%.1f".format(status.lastPrefillTokensPerSecond)} tok/s",
+                    fontSize = 12.sp
+                )
+            }
+            if (status.lastDecodeTokensPerSecond > 0.0) {
+                Text(
+                    "Decode: ${"%.1f".format(status.lastDecodeTokensPerSecond)} tok/s",
+                    fontSize = 12.sp
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -207,6 +223,18 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                     "Qwen LLM を取り込む"
                 }
             )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = {
+                importSlot = ModelSlot.FAST_CHAT
+                pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+            },
+            enabled = !importing,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("高速Chatモデルを取り込む")
         }
 
         if (status.profile == OnDeviceProfile.QWEN) {
@@ -276,8 +304,8 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            "デフォルトは高品質 (Gemma 4 E2B)。高速が必要なときだけ Qwen に切替。\n" +
-                "パス入力は不要です。",
+            "高速Chatモデルがある場合はQwen/Gemmaの両方で優先使用します。" +
+                "未配置または読み込み失敗時は従来Chatへ戻ります。",
             fontSize = 12.sp
         )
 
