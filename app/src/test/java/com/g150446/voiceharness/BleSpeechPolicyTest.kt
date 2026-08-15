@@ -8,6 +8,22 @@ import org.junit.Test
 class BleSpeechPolicyTest {
 
     @Test
+    fun isBlePcmCaptureComplete_acceptsNormalCapture() {
+        assertTrue(isBlePcmCaptureComplete(recordingDurationMs = 5_000, pcmDurationMs = 4_700))
+    }
+
+    @Test
+    fun isBlePcmCaptureComplete_rejectsObservedTruncatedCaptures() {
+        assertFalse(isBlePcmCaptureComplete(recordingDurationMs = 5_050, pcmDurationMs = 580))
+        assertFalse(isBlePcmCaptureComplete(recordingDurationMs = 3_570, pcmDurationMs = 1_340))
+    }
+
+    @Test
+    fun isBlePcmCaptureComplete_defersShortTapToVad() {
+        assertTrue(isBlePcmCaptureComplete(recordingDurationMs = 800, pcmDurationMs = 200))
+    }
+
+    @Test
     fun decideBleSileroOutcome_acceptsWhenSpeechRatioClearsThreshold() {
         val decision = decideBleSileroOutcome(
             speechFrames = 3,

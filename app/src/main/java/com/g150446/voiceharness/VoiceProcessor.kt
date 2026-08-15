@@ -1,6 +1,7 @@
 package com.g150446.voiceharness
 
 import android.content.Context
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -49,6 +50,7 @@ class VoiceProcessor(
 
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
+    private var recordingStartedAtElapsedMs = 0L
 
     private val sileroVad: SileroVad? = try {
         SileroVad(appContext)
@@ -60,7 +62,7 @@ class VoiceProcessor(
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var responseLanguageCode: String? = null
-    private val recordingCuePlayer = RecordingCuePlayer()
+    private val recordingCuePlayer = RecordingCuePlayer(appContext)
 
     init {
         tts = TextToSpeech(appContext, this)
@@ -71,21 +73,19 @@ class VoiceProcessor(
                 .onFailure { Log.w(TAG, "Background model warm-up failed: ${it.message}") }
         }
 
-        scope.launch {
-            BleConnectionService.bleEvents.collect { event ->
-                when (event) {
-                    is BleEvent.RecordingStarted -> handleBleRecordingStarted()
-                    is BleEvent.RecordingStopped -> handleBleRecordingStopped()
-                    else -> {}
+    }
+
+    internal fun handleBleInput(input: BleVoiceInput) {
+        when (input) {
+            is BleVoiceInput.Audio -> {
+                if (isCollectingPcm) {
+                    pcmBuffer.write(input.packet.pcmData)
                 }
             }
-        }
-
-        scope.launch {
-            BleConnectionService.audioPackets.collect { packet ->
-                if (isCollectingPcm) {
-                    pcmBuffer.write(packet.pcmData)
-                }
+            is BleVoiceInput.Event -> when (input.event) {
+                is BleEvent.RecordingStarted -> handleBleRecordingStarted()
+                is BleEvent.RecordingStopped -> handleBleRecordingStopped()
+                else -> Unit
             }
         }
     }
@@ -105,6 +105,7 @@ class VoiceProcessor(
     private fun handleBleRecordingStarted() {
         if (BleConnectionService.voiceState.value == VoiceState.RECORDING) return
         pcmBuffer.reset()
+        recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
         isCollectingPcm = true
         BleConnectionService.setBleMode(true)
         BleConnectionService.setTranscription("")
@@ -121,13 +122,50 @@ class VoiceProcessor(
             !BleConnectionService.bleMode.value
         ) return
         isCollectingPcm = false
+        val recordingDurationMs = (SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs)
+            .coerceAtLeast(0L)
+        recordingStartedAtElapsedMs = 0L
         val pcmData = pcmBuffer.toByteArray()
+        val pcmDurationMs = pcmData.size * 1_000L /
+            (PCM_SAMPLE_RATE * PCM_CHANNELS * (PCM_BITS_PER_SAMPLE / 8))
         pcmBuffer.reset()
         BleConnectionService.setBleMode(false)
-        Log.d(TAG, "BLE recording stopped by firmware, ${pcmData.size} bytes of PCM")
+        Log.d(
+            TAG,
+            "BLE recording stopped by firmware: wall=${recordingDurationMs}ms, " +
+                "pcm=${pcmDurationMs}ms (${pcmData.size} bytes)"
+        )
 
         tts?.stop()
         recordingCuePlayer.playStopped()
+
+        if (!isBlePcmCaptureComplete(recordingDurationMs, pcmDurationMs)) {
+            val completeness = if (recordingDurationMs > 0L) {
+                pcmDurationMs * 100L / recordingDurationMs
+            } else {
+                0L
+            }
+            Log.w(
+                TAG,
+                "Incomplete BLE PCM capture ($completeness%): refusing ASR to prevent hallucination"
+            )
+            conversationSession.reset()
+            historyRepository.addEntry(HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = System.currentTimeMillis(),
+                transcription = "",
+                response = "",
+                isSilent = true,
+                errorMessage = "音声データの受信が不完全でした"
+            ))
+            BleConnectionService.setTranscription("")
+            BleConnectionService.setResponse("")
+            BleConnectionService.setErrorMessage(
+                "音声データを十分に受信できませんでした（もう一度話してください）"
+            )
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            return
+        }
 
         if (!hasSpeechInPcm(pcmData)) {
             Log.d(TAG, "VAD: no speech in BLE audio — skipping transcription")

@@ -19,11 +19,11 @@ import android.os.ParcelUuid
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -42,6 +42,11 @@ sealed class BleEvent {
     data object LightSleepWake : BleEvent()
     data object PeerConnected : BleEvent()
     data object PeerDisconnected : BleEvent()
+}
+
+sealed class BleVoiceInput {
+    data class Audio(val packet: AudioPacket) : BleVoiceInput()
+    data class Event(val event: BleEvent) : BleVoiceInput()
 }
 
 private enum class ScanPurpose {
@@ -72,11 +77,10 @@ class BleManager(
     private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
     val connectionState: StateFlow<BleConnectionState> = _connectionState
 
-    private val _audioPackets = MutableSharedFlow<AudioPacket>(extraBufferCapacity = 64)
-    val audioPackets: SharedFlow<AudioPacket> = _audioPackets
-
-    private val _bleEvents = MutableSharedFlow<BleEvent>(extraBufferCapacity = 16)
-    val bleEvents: SharedFlow<BleEvent> = _bleEvents
+    // Audio packets and recording events must share one lossless queue. Separate flows can
+    // let RecordingStopped overtake buffered PCM and tryEmit silently fails when full.
+    private val voiceInputChannel = Channel<BleVoiceInput>(Channel.UNLIMITED)
+    val voiceInputs = voiceInputChannel.receiveAsFlow()
 
     private val _scannedDevices = MutableStateFlow<List<BleDeviceInfo>>(emptyList())
     val scannedDevices: StateFlow<List<BleDeviceInfo>> = _scannedDevices
@@ -162,6 +166,7 @@ class BleManager(
         bluetoothManager?.let { stopScan(it) }
         disconnectInternal()
         _connectionState.value = BleConnectionState.DISCONNECTED
+        voiceInputChannel.close()
     }
 
     private fun startAutoConnect() {
@@ -342,6 +347,7 @@ class BleManager(
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     if (!isCurrentGatt) return
+                    requestAudioConnectionPriority(gatt, "connected")
                     Log.d(TAG, "GATT connected, requesting MTU")
                     gatt.requestMtu(247)
                 }
@@ -550,7 +556,11 @@ class BleManager(
                     }
                 }
                 lastSeqNum = seqNum
-                _audioPackets.tryEmit(AudioPacket(seqNum, data.copyOfRange(2, data.size)))
+                enqueueVoiceInput(
+                    BleVoiceInput.Audio(
+                        AudioPacket(seqNum, data.copyOfRange(2, data.size))
+                    )
+                )
             }
 
             0x55 -> {
@@ -559,6 +569,9 @@ class BleManager(
                     0x01 -> {
                         // Avoid false PCM gap warnings across recording sessions.
                         lastSeqNum = -1
+                        this@BleManager.gatt?.let {
+                            requestAudioConnectionPriority(it, "recording started")
+                        }
                         BleEvent.RecordingStarted
                     }
                     0x02 -> BleEvent.RecordingStopped
@@ -585,8 +598,24 @@ class BleManager(
                     }
                     else -> null
                 } ?: return
-                _bleEvents.tryEmit(event)
+                enqueueVoiceInput(BleVoiceInput.Event(event))
             }
+        }
+    }
+
+    private fun enqueueVoiceInput(input: BleVoiceInput) {
+        val result = voiceInputChannel.trySend(input)
+        if (result.isFailure) {
+            Log.e(TAG, "Failed to enqueue BLE voice input: $input", result.exceptionOrNull())
+        }
+    }
+
+    private fun requestAudioConnectionPriority(gatt: BluetoothGatt, reason: String) {
+        val accepted = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+        if (accepted) {
+            Log.d(TAG, "Requested high BLE connection priority ($reason)")
+        } else {
+            Log.w(TAG, "High BLE connection priority request rejected ($reason)")
         }
     }
 

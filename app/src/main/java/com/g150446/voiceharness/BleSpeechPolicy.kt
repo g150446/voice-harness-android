@@ -13,6 +13,20 @@ internal const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.35
  */
 internal const val BLE_ENERGY_RESCUE_PEAK_THRESHOLD = 0.007f
 internal const val BLE_ENERGY_RESCUE_RMS_THRESHOLD = 0.001f
+internal const val BLE_CAPTURE_CHECK_MIN_DURATION_MS = 1_000L
+internal const val BLE_CAPTURE_MIN_COMPLETENESS_RATIO = 0.70
+
+/**
+ * Reject a long BLE recording when far less PCM arrived than wall-clock time implies.
+ * Short taps are left to the normal minimum-length and VAD checks.
+ */
+internal fun isBlePcmCaptureComplete(
+    recordingDurationMs: Long,
+    pcmDurationMs: Long
+): Boolean {
+    if (recordingDurationMs < BLE_CAPTURE_CHECK_MIN_DURATION_MS) return true
+    return pcmDurationMs.toDouble() / recordingDurationMs >= BLE_CAPTURE_MIN_COMPLETENESS_RATIO
+}
 
 internal data class BleSileroDecision(
     val accepted: Boolean,

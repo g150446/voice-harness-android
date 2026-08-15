@@ -16,11 +16,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
@@ -35,12 +32,6 @@ class BleConnectionService : Service() {
         // BLE state flows — independent of Service lifecycle.
         private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
         val connectionState: StateFlow<BleConnectionState> = _connectionState.asStateFlow()
-
-        private val _audioPackets = MutableSharedFlow<AudioPacket>(extraBufferCapacity = 64)
-        val audioPackets: SharedFlow<AudioPacket> = _audioPackets.asSharedFlow()
-
-        private val _bleEvents = MutableSharedFlow<BleEvent>(extraBufferCapacity = 16)
-        val bleEvents: SharedFlow<BleEvent> = _bleEvents.asSharedFlow()
 
         private val _scannedDevices = MutableStateFlow<List<BleDeviceInfo>>(emptyList())
         val scannedDevices: StateFlow<List<BleDeviceInfo>> = _scannedDevices.asStateFlow()
@@ -146,6 +137,7 @@ class BleConnectionService : Service() {
         startForegroundWithNotification("BLE: Scanning...")
 
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        voiceProcessor = VoiceProcessor(applicationContext, serviceScope)
         bleManager = BleManager(applicationContext, serviceScope).also { mgr ->
             mgr.start(bluetoothManager)
 
@@ -162,10 +154,7 @@ class BleConnectionService : Service() {
                 }
             }
             serviceScope.launch {
-                mgr.audioPackets.collect { _audioPackets.tryEmit(it) }
-            }
-            serviceScope.launch {
-                mgr.bleEvents.collect { _bleEvents.tryEmit(it) }
+                mgr.voiceInputs.collect { voiceProcessor?.handleBleInput(it) }
             }
             serviceScope.launch {
                 mgr.scannedDevices.collect { _scannedDevices.value = it }
@@ -184,7 +173,6 @@ class BleConnectionService : Service() {
             }
         }
 
-        voiceProcessor = VoiceProcessor(applicationContext, serviceScope)
         ModelManager.refresh(applicationContext)
 
         ServiceWatchdog.schedule(this)
