@@ -38,6 +38,22 @@ BLE PCM → VAD → Gemma ASR (audio) → Gemma Chat (text + set_reminder tool) 
 デフォルトプロファイルは Gemma。設定画面で Qwen に切り替え可能。
 ASR タイムアウトは 120 秒、Chat は 60 秒。タイムアウト時は engine を破棄し次回ロードする。
 
+## エンジンの所有と直列実行
+
+Gemmaプロファイルは、1つの `GemmaOnDeviceBackend` エンジンをASRとChatで共有し、
+mutexで直列実行する。Gemma ASRと別の高速Chatエンジンを同時に保持しない。
+
+razr 50sでは、複数のLiteRT-LMエンジンを同時に保持した構成でGPU delegateやメモリ資源が
+競合し、以前は動作していたGemma ASRがモデル切り替え後に `ASR error` になる事象を確認
+した。高速Chatの並行常駐より、ASRの安定性とピークメモリの抑制を優先する。
+
+将来別のChatモデルを再導入する場合は、少なくとも以下を実機で確認する。
+
+- Gemma ASR実行中に別エンジンをロード・推論しない
+- GPU delegateを複数エンジンが同時所有しない
+- 連続5回のASR / Chatで初期化失敗、OOM、タイムアウトがない
+- プロファイル切り替え時に旧エンジンが確実にcloseされる
+
 ## 計測ログ (logcat)
 
 ```bash

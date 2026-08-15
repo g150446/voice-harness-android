@@ -18,6 +18,7 @@ Android                          nRF52840
    │── scan (no filter) ─────────────▶│
    │◀─ advertisement (Service UUID) ──│
    │── connectGatt ──────────────────▶│
+   │── requestConnectionPriority(HIGH)│
    │── requestMtu(247) ───────────────▶│
    │◀─ onMtuChanged ──────────────────│
    │── discoverServices ─────────────▶│
@@ -45,6 +46,26 @@ seq (0-255)  0xAA     PCM データ (16-bit LE, mono, 16kHz)
 - `seq` はラップアラウンドするシーケンス番号（欠落検出用）
 - PCM は 16-bit Little Endian 符号付き整数
 - サンプルレート 16,000 Hz、モノラル
+- 通常のPCM payloadは最大200 bytes（パケット全体は最大202 bytes）
+- 20 ms / 640 bytesの音声フレームは通常4通知に分割され、約200 notifications/sになる
+
+## 音声ストリームの送達規約
+
+音声通知は「GATT APIを呼び出した」だけで送達済みと扱わない。HarnessNodeは
+`bt_gatt_notify_cb()` の完了コールバックを使い、次の規約を守る。
+
+1. 同時送信中の通知を6個までに制限する
+2. `-ENOMEM` / `-EAGAIN` の場合は同じPCM範囲を再試行する
+3. 通知が受理された後だけ `seq` とPCMオフセットを進める
+4. 受理済みPCM通知をdrainしてから録音停止イベント `0x02` を送る
+
+Android側は接続時と録音開始時に `CONNECTION_PRIORITY_HIGH` を要求する。また、PCMと
+録音イベントを単一の順序付きChannelで処理し、録音停止が未処理PCMを追い越さないように
+する。PCMの期待量は毎秒32,000 bytesで、1秒以上の録音では壁時計時間の70%以上を
+受信できなければASRを実行しない。
+
+Bluetoothヘッドセット併用時の音声経路と調査手順は
+[`ble_audio_reliability.md`](ble_audio_reliability.md)を参照。
 
 ### イベントパケット
 

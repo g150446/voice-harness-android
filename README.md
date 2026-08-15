@@ -126,6 +126,7 @@ adb logcat -s VoiceViewModel SileroVad BleManager BleConnectionService
 ## 詳細ドキュメント
 
 - [`documents/ble_protocol.md`](documents/ble_protocol.md) — BLE パケット仕様
+- [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
 - [`documents/architecture.md`](documents/architecture.md) — アーキテクチャ詳細
 - [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — オンデバイスモデルの準備・運用

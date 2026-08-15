@@ -33,6 +33,9 @@
 └─────────────────────┘  │ ・Android TTS      │
                          └────────────────────┘
 
+BleManager ── Channel<BleVoiceInput> ──▶ BleConnectionService ──▶ VoiceProcessor
+             （PCMとイベントを同じ順序で配送）
+
 ┌─────────────────────────────────────────────┐
 │            BleSpeechDetector                │
 │  ・PCM → Float 変換                         │
@@ -71,20 +74,20 @@ READY ──── 録音開始 ──▶ RECORDING ──── 停止 ──�
 通常は `CONNECTED` から切断されたときに保存済みデバイスへ自動再接続を試みる。  
 ただしユーザーが `Disconnect` を押した場合は `DISCONNECTED` のまま待機し、`Scan devices` から明示的に再接続するまで自動再接続しない。
 
-## Flow アーキテクチャ
+## 状態Flowと音声入力Channel
 
-`BleManager` の Flow を `BleConnectionService` が中継し、`VoiceViewModel` が収集する。
-ViewModel は Service より先に生成されることがあるため、Flow を Service インスタンスではなく **companion object** に置いて app ライフタイムで保持している。
+UIへ公開する状態と、高レートのBLE音声入力は別の仕組みで扱う。
+ViewModelはServiceより先に生成されることがあるため、UI状態の `StateFlow` を
+`BleConnectionService` の **companion object** に置き、appライフタイムで保持する。
 
 ```kotlin
 // BleConnectionService companion object (app ライフタイム)
 // BLE 状態
 val connectionState: StateFlow<BleConnectionState>
-val audioPackets: SharedFlow<AudioPacket>
-val bleEvents: SharedFlow<BleEvent>
 val scannedDevices: StateFlow<List<BleDeviceInfo>>
 val preferredDevice: StateFlow<BleDeviceInfo?>
 val batteryLevel: StateFlow<Int?>
+val isPrimary: StateFlow<Boolean>
 
 // 音声処理状態 (VoiceProcessor が書き込む)
 val voiceState: StateFlow<VoiceState>
@@ -94,8 +97,15 @@ val errorMessage: StateFlow<String>
 val bleMode: StateFlow<Boolean>
 ```
 
-Service が起動したら BleManager の Flow を collect して companion object に中継する。
-`VoiceProcessor` は `BleConnectionService` の `serviceScope` 内で動作し、BLE イベント / 音声パケットを収集して音声処理パイプライン（VAD → オンデバイスAI → TTS）を実行する。処理結果は同じ companion object の状態 Flow に書き込まれ、ViewModel / UI がそれを観察する。
+PCMと録音イベントには別々の `SharedFlow` を使わない。`BleManager` は
+`BleVoiceInput.Audio` と `BleVoiceInput.Event` を単一の `Channel.UNLIMITED` に投入し、
+Serviceの1つのcollectorが `VoiceProcessor.handleBleInput()` へ渡す。これにより、
+バッファ満杯による `tryEmit()` の無言の失敗と、録音停止イベントによるPCMの追い越しを
+防ぐ。
+
+Serviceは `VoiceProcessor` を先に生成してから `BleManager` を開始する。VoiceProcessorは
+音声処理パイプライン（完全性検査 → VAD → オンデバイスAI → TTS）を実行し、結果を
+companion objectの状態Flowへ書き込む。ViewModel / UIはその状態だけを観察する。
 
 ### バックグラウンド動作の仕組み
 
@@ -117,12 +127,15 @@ Activity が破棄された（画面消灯・タスクスワイプ・再起動�
 nRF52840                        Android
     │── 0x01 (RecordingStarted) ──▶│
     │                               │ handleBleRecordingStarted()
+    │                               │   requestConnectionPriority(HIGH)
     │                               │   isCollectingPcm = true
     │                               │   state = RECORDING
+    │                               │   cue → built-in speaker
     │── [audio packets] ────────────▶│
     │                               │   pcmBuffer.write(packet.pcmData)
     │── 0x02 (RecordingStopped) ───▶│
     │                               │ handleBleRecordingStopped()
+    │                               │   PCM completeness check
     │                               │   Silero VAD
     │                               │   FFT fallback / rescue
     │                               │   buildWavFile()
@@ -134,6 +147,11 @@ nRF52840                        Android
 Android 側から録音開始/停止コマンドを送る必要はない。ファームウェアがジェスチャー検知と録音タイミングを自律制御する。  
 Android アプリ側の UI は BLE デバイスのスキャン・選択・接続・切断だけを担当する。  
 スキャン結果はアプリ内で単一選択リストとして表示し、ユーザーは対象デバイスを選んで `Connect` する。
+
+1秒以上の録音では、16 kHz / 16-bit / monoから算出したPCM時間が壁時計の録音時間の
+70%未満ならASRへ進めない。これは欠落音声による無関係な文字列生成を防ぐ境界であり、
+VADより前に評価する。Bluetoothヘッドセットとの併用を含む詳細は
+[`ble_audio_reliability.md`](ble_audio_reliability.md)を参照。
 
 ## BLE 音声判定
 
