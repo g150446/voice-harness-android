@@ -36,6 +36,9 @@
 BleManager ── Channel<BleVoiceInput> ──▶ BleConnectionService ──▶ VoiceProcessor
              （PCMとイベントを同じ順序で配送）
 
+VoiceProcessor ── ResponseOutputTarget ──┬──▶ Android TTS
+                                        └──▶ SmartGlassesOutputManager ──▶ Z100
+
 ┌─────────────────────────────────────────────┐
 │            BleSpeechDetector                │
 │  ・PCM → Float 変換                         │
@@ -188,6 +191,24 @@ Gemma 4 LiteRT-LMで両方を処理する。モデル探索と状態管理は`Mo
 - `VoiceProcessor.kt`
   - 候補ロケールを順番に試しながら TTS を実行する
   - 長文応答は複数 utterance に分けてキューイングし、最後のチャンク完了で `READY` に戻す
+
+## AI返答の出力先
+
+`ResponseOutputTarget` は `PHONE_AUDIO` と `SMART_GLASSES` を持ち、SharedPreferencesへ
+保存する。電話画面の返答StateFlowと履歴保存は出力先に関係なく更新する。
+
+Z100選択時は `SmartGlassesOutputManager` がVuzix Connect経由のSDK状態を監視し、返答が
+完成した時点でのみグラスの制御を要求する。`requestControl()`後は非同期の
+`controlledByMe`成功通知をタイムアウト付きで待つ。制御取得後は
+`Layout.TEXT_BOTTOM_LEFT_ALIGN` と `sendText()` で全文を一度に表示する。表示成功から
+12秒後に自動で制御を解放し、次のHarnessNode録音とZ100 BLEトランザクションが重ならない
+ようにする。新しいBLE録音開始時は、表示中なら消去して制御解放し、既にidleなら
+Z100向け操作を省略する。
+
+SDK利用不可、未リンク、未接続、制御取得失敗、表示開始例外の場合は、同じ返答をAndroid
+TTSへフォールバックする。Z100表示に成功した場合はTTSを実行せず、音声状態を `READY`
+へ戻して次の録音を受け付ける。詳細は
+[`smart_glasses_output.md`](smart_glasses_output.md)を参照。
 
 ## WAV ファイル生成
 

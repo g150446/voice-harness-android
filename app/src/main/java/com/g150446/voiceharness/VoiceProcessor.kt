@@ -37,9 +37,10 @@ private const val PCM_BITS_PER_SAMPLE = 16
  * Owns the audio processing pipeline: PCM buffering → VAD → on-device STT/LLM → TTS.
  * Profile (Gemma default / Qwen) is selected via Model Settings.
  */
-class VoiceProcessor(
+internal class VoiceProcessor(
     private val appContext: Context,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val smartGlassesOutput: SmartGlassesOutputManager
 ) : TextToSpeech.OnInitListener {
 
     private val historyRepository = HistoryRepository(appContext)
@@ -104,6 +105,9 @@ class VoiceProcessor(
 
     private fun handleBleRecordingStarted() {
         if (BleConnectionService.voiceState.value == VoiceState.RECORDING) return
+        // Prefer an already-idle Z100 (auto-release after the read window). When still
+        // displaying, stopDisplay() clears it; when idle it skips Z100 BLE traffic.
+        smartGlassesOutput.stopDisplay()
         pcmBuffer.reset()
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
         isCollectingPcm = true
@@ -114,7 +118,10 @@ class VoiceProcessor(
         if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) tts?.stop()
         BleConnectionService.setVoiceState(VoiceState.RECORDING)
         recordingCuePlayer.playStarted()
-        Log.d(TAG, "BLE recording started (firmware-initiated)")
+        Log.d(
+            TAG,
+            "BLE recording started (firmware-initiated), glasses=${smartGlassesOutput.state.value}"
+        )
     }
 
     private fun handleBleRecordingStopped() {
@@ -342,7 +349,7 @@ class VoiceProcessor(
                     isSilent = false,
                     errorMessage = ""
                 ))
-                speakResponse(responseText)
+                presentResponse(finalResponse)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error during on-device transcribe/respond", e)
@@ -496,7 +503,7 @@ class VoiceProcessor(
                 isSilent = false,
                 errorMessage = ""
             ))
-            speakResponse(errorMsg)
+            presentResponse(errorMsg)
             return
         }
 
@@ -513,7 +520,7 @@ class VoiceProcessor(
                 isSilent = false,
                 errorMessage = ""
             ))
-            speakResponse(errorMsg)
+            presentResponse(errorMsg)
             return
         }
 
@@ -537,7 +544,7 @@ class VoiceProcessor(
             errorMessage = ""
         ))
         conversationSession.reset()
-        speakResponse(confirmation)
+        presentResponse(confirmation)
     }
 
     private fun parseIso8601ToMillis(datetimeStr: String): Long? {
@@ -615,6 +622,28 @@ class VoiceProcessor(
 
     // --- TTS ---
 
+    private suspend fun presentResponse(text: String) {
+        val target = BleConnectionService.responseOutputTarget.value
+        val glassesResult = if (target == ResponseOutputTarget.SMART_GLASSES) {
+            smartGlassesOutput.displayResponse(text)
+        } else {
+            null
+        }
+        val decision = decideResponseDelivery(target, glassesResult)
+        if (decision.useSmartGlasses) {
+            tts?.stop()
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            Log.d(TAG, "Response routed to Z100")
+            return
+        }
+        decision.fallbackMessage?.let {
+            BleConnectionService.setErrorMessage(it)
+            val failure = glassesResult as? SmartGlassesDisplayResult.Failed
+            Log.w(TAG, "$it: ${failure?.message}", failure?.cause)
+        }
+        speakResponse(text)
+    }
+
     private fun speakResponse(text: String) {
         BleConnectionService.setVoiceState(VoiceState.SPEAKING)
         if (ttsReady && text.isNotBlank()) {
@@ -662,6 +691,7 @@ class VoiceProcessor(
     fun switchProfile(profile: OnDeviceProfile) {
         aiFacade.switchProfile(profile)
         tts?.stop()
+        smartGlassesOutput.stopDisplay()
         if (BleConnectionService.voiceState.value != VoiceState.RECORDING) {
             BleConnectionService.setVoiceState(VoiceState.READY)
         }
@@ -674,6 +704,7 @@ class VoiceProcessor(
 
     fun disconnect() {
         tts?.stop()
+        smartGlassesOutput.stopDisplay()
         isCollectingPcm = false
         pcmBuffer.reset()
         BleConnectionService.setBleMode(false)

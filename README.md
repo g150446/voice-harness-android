@@ -31,9 +31,10 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 
 ### 必要なもの
 
-- Android 7.0 以上 (API 24+)
+- Android 12 以上 (API 31+)
 - XIAO nRF52840 Sense（`harness-node/nordic-main` ファームウェア書き込み済み）
 - QwenまたはGemmaのオンデバイスモデル（詳細は下記ドキュメント参照）
+- （任意）Vuzix Z100とVuzix Connect（AI返答をスマートグラスへ表示する場合）
 
 ### アプリのインストール
 
@@ -80,6 +81,16 @@ AI が読み上げ中に再度ジェスチャーを行うと、読み上げを�
 
 読み上げ中は **■ Stop Speaking** で中断し、すぐに新しい録音を開始できる。
 
+### AI返答の出力先
+
+ホーム画面の **AI返答の出力先** で、従来のTTS音声とVuzix Z100を切り替えられる。
+Z100を選ぶとAI返答全文をグラスへ一度に表示し、電話画面と履歴にも返答を残す。
+Vuzix Connect、Z100のリンクまたは接続、グラスの制御取得に失敗した場合は、自動的に
+TTSへ戻して返答を読み上げる。
+
+Z100を利用する前にVuzix Connectでグラスをリンク・接続する。アプリ内の
+**Vuzix Connectを開く** ボタンから設定画面を起動できる。
+
 ---
 
 ## ビルド・開発
@@ -118,6 +129,7 @@ adb logcat -s VoiceViewModel SileroVad BleManager BleConnectionService
 | `QwenOnDeviceBackend.kt` | Qwen3-ASRとQwen 3.5の実行 |
 | `GemmaOnDeviceBackend.kt` | Gemma 4の実行 |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
+| `SmartGlassesOutputManager.kt` | Vuzix Z100の状態監視、制御取得、返答全文表示 |
 | `MainActivity.kt` | UI（Jetpack Compose） |
 | `GroqSettingsActivity.kt` | オンデバイスモデル設定画面 |
 
@@ -127,6 +139,7 @@ adb logcat -s VoiceViewModel SileroVad BleManager BleConnectionService
 
 - [`documents/ble_protocol.md`](documents/ble_protocol.md) — BLE パケット仕様
 - [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
+- [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Vuzix Z100へのAI返答出力とフォールバック仕様
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
 - [`documents/architecture.md`](documents/architecture.md) — アーキテクチャ詳細
 - [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — オンデバイスモデルの準備・運用

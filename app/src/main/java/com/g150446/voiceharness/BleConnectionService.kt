@@ -61,6 +61,13 @@ class BleConnectionService : Service() {
         private val _bleMode = MutableStateFlow(false)
         val bleMode: StateFlow<Boolean> = _bleMode.asStateFlow()
 
+        private val _responseOutputTarget = MutableStateFlow(ResponseOutputTarget.PHONE_AUDIO)
+        val responseOutputTarget: StateFlow<ResponseOutputTarget> =
+            _responseOutputTarget.asStateFlow()
+
+        private val _smartGlassesState = MutableStateFlow(SmartGlassesState())
+        val smartGlassesState: StateFlow<SmartGlassesState> = _smartGlassesState.asStateFlow()
+
         // Internal setters used by VoiceProcessor (same module/package).
         internal fun setVoiceState(state: VoiceState) { _voiceState.value = state }
         internal fun setTranscription(text: String) { _transcription.value = text }
@@ -96,6 +103,18 @@ class BleConnectionService : Service() {
             instance?.voiceProcessor?.stopSpeaking()
         }
 
+        fun initializeResponseOutputTarget(context: Context) {
+            _responseOutputTarget.value = ResponseOutputPreferences(context).target()
+        }
+
+        fun setResponseOutputTarget(context: Context, target: ResponseOutputTarget) {
+            ResponseOutputPreferences(context).setTarget(target)
+            _responseOutputTarget.value = target
+            if (target == ResponseOutputTarget.PHONE_AUDIO) {
+                instance?.smartGlassesOutputManager?.stopDisplay()
+            }
+        }
+
         fun disconnectProcessor() {
             instance?.voiceProcessor?.disconnect()
         }
@@ -126,6 +145,7 @@ class BleConnectionService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var bleManager: BleManager? = null
     private var voiceProcessor: VoiceProcessor? = null
+    private var smartGlassesOutputManager: SmartGlassesOutputManager? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
@@ -137,7 +157,17 @@ class BleConnectionService : Service() {
         startForegroundWithNotification("BLE: Scanning...")
 
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        voiceProcessor = VoiceProcessor(applicationContext, serviceScope)
+        initializeResponseOutputTarget(applicationContext)
+        smartGlassesOutputManager = SmartGlassesOutputManager(applicationContext).also { manager ->
+            serviceScope.launch {
+                manager.state.collect { _smartGlassesState.value = it }
+            }
+        }
+        voiceProcessor = VoiceProcessor(
+            applicationContext,
+            serviceScope,
+            requireNotNull(smartGlassesOutputManager)
+        )
         bleManager = BleManager(applicationContext, serviceScope).also { mgr ->
             mgr.start(bluetoothManager)
 
@@ -188,6 +218,7 @@ class BleConnectionService : Service() {
         Log.d(TAG, "Service destroyed")
         voiceProcessor?.shutdown()
         bleManager?.shutdown()
+        smartGlassesOutputManager?.close()
         serviceScope.cancel()
         releaseWakeLock()
         _connectionState.value = BleConnectionState.DISCONNECTED
@@ -195,6 +226,7 @@ class BleConnectionService : Service() {
         _batteryLevel.value = null
         _voiceState.value = VoiceState.READY
         _bleMode.value = false
+        _smartGlassesState.value = SmartGlassesState()
         instance = null
     }
 

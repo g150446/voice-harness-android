@@ -48,6 +48,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     val errorMessage: StateFlow<String> = BleConnectionService.errorMessage
     val bleMode: StateFlow<Boolean> = BleConnectionService.bleMode
     val isPrimary: StateFlow<Boolean> = BleConnectionService.isPrimary
+    val responseOutputTarget: StateFlow<ResponseOutputTarget> =
+        BleConnectionService.responseOutputTarget
+    val smartGlassesState: StateFlow<SmartGlassesState> =
+        BleConnectionService.smartGlassesState
     val modelStatus: StateFlow<ModelStatus> = ModelManager.status
 
     fun setOnDeviceProfile(profile: OnDeviceProfile) {
@@ -67,6 +71,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        BleConnectionService.initializeResponseOutputTarget(application)
         ModelManager.refresh(application)
 
         viewModelScope.launch {
@@ -103,6 +108,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopSpeaking() {
         BleConnectionService.stopSpeaking()
+    }
+
+    fun setResponseOutputTarget(target: ResponseOutputTarget) {
+        BleConnectionService.setResponseOutputTarget(getApplication(), target)
     }
 
     fun startBleScan() {

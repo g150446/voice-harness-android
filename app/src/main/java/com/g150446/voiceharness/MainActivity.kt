@@ -96,15 +96,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hasBlePermissions(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) ==
-                PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
-                PackageManager.PERMISSION_GRANTED
-        } else {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED
-        }
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) ==
+            PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestBatteryOptimizationExemption() {
@@ -125,13 +120,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestAllPermissions() {
-        val permissions = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions += Manifest.permission.BLUETOOTH_SCAN
-            permissions += Manifest.permission.BLUETOOTH_CONNECT
-        } else {
-            permissions += Manifest.permission.ACCESS_FINE_LOCATION
-        }
+        val permissions = mutableListOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions += Manifest.permission.POST_NOTIFICATIONS
         }
@@ -173,6 +165,8 @@ fun HomeScreen(
     val batteryLevel by viewModel.batteryLevel.collectAsState()
     val isPrimary by viewModel.isPrimary.collectAsState()
     val connectionPriority by viewModel.connectionPriority.collectAsState()
+    val responseOutputTarget by viewModel.responseOutputTarget.collectAsState()
+    val smartGlassesState by viewModel.smartGlassesState.collectAsState()
     val modelStatus by viewModel.modelStatus.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -317,6 +311,93 @@ fun HomeScreen(
                     .fillMaxWidth()
                     .padding(bottom = 24.dp)
             )
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(bottom = 12.dp))
+
+        Text(
+            text = "AI返答の出力先",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = "音声", fontSize = 12.sp)
+            Switch(
+                checked = responseOutputTarget == ResponseOutputTarget.SMART_GLASSES,
+                onCheckedChange = { useSmartGlasses ->
+                    viewModel.setResponseOutputTarget(
+                        if (useSmartGlasses) {
+                            ResponseOutputTarget.SMART_GLASSES
+                        } else {
+                            ResponseOutputTarget.PHONE_AUDIO
+                        }
+                    )
+                },
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+            Text(text = "Z100", fontSize = 12.sp)
+        }
+
+        val glassesStatusText = when {
+            !smartGlassesState.available -> "Vuzix Connectを利用できません"
+            !smartGlassesState.linked -> "Z100は未リンクです"
+            !smartGlassesState.connected -> "Z100は未接続です"
+            smartGlassesState.displaying -> "Z100に返答を表示中"
+            smartGlassesState.controlledByMe -> "Z100接続済み（制御中）"
+            else -> "Z100接続済み"
+        }
+        Text(
+            text = smartGlassesState.deviceName?.let { "$glassesStatusText: $it" }
+                ?: glassesStatusText,
+            fontSize = 11.sp,
+            color = if (smartGlassesState.connected) {
+                Color(0xFF43A047)
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+        )
+
+        OutlinedButton(
+            onClick = {
+                val launchIntent = context.packageManager
+                    .getLaunchIntentForPackage(VUZIX_CONNECT_PACKAGE)
+                val intent = launchIntent ?: Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("market://details?id=$VUZIX_CONNECT_PACKAGE")
+                )
+                try {
+                    context.startActivity(intent)
+                } catch (error: Exception) {
+                    Log.w(TAG, "Could not open Vuzix Connect", error)
+                    try {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                Uri.parse(
+                                    "https://play.google.com/store/apps/details?id=$VUZIX_CONNECT_PACKAGE"
+                                )
+                            )
+                        )
+                    } catch (browserError: Exception) {
+                        Log.e(TAG, "Could not open the Vuzix Connect web page", browserError)
+                    }
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp)
+        ) {
+            Text("Vuzix Connectを開く")
         }
 
         Text(
@@ -501,6 +582,8 @@ fun HomeScreen(
         }
     }
 }
+
+private const val VUZIX_CONNECT_PACKAGE = "com.vuzix.connect"
 
 @Composable
 fun HistoryListScreen(
