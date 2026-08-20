@@ -28,9 +28,10 @@
 │     BleManager      │  │   VoiceProcessor   │
 │ ・BLE スキャン・接続 │  │ ・BLE イベント収集  │
 │ ・GATT / パケット解析│  │ ・PCM バッファ管理  │
-│ ・自動再接続        │  │ ・Silero VAD / FFT  │
-│ ・優先デバイス保存   │  │ ・On-device AI      │
-└─────────────────────┘  │ ・Android TTS      │
+│ ・自動再接続        │  │ ・ストリーミング VAD │
+│ ・優先デバイス保存   │  │ ・Silero VAD / FFT  │
+└─────────────────────┘  │ ・On-device AI      │
+                         │ ・Android TTS      │
                          └────────────────────┘
 
 BleManager ── Channel<BleVoiceInput> ──▶ BleConnectionService ──▶ VoiceProcessor
@@ -107,7 +108,7 @@ Serviceの1つのcollectorが `VoiceProcessor.handleBleInput()` へ渡す。こ�
 防ぐ。
 
 Serviceは `VoiceProcessor` を先に生成してから `BleManager` を開始する。VoiceProcessorは
-音声処理パイプライン（完全性検査 → VAD → オンデバイスAI → TTS）を実行し、結果を
+音声処理パイプライン（ストリーミング無音監視 → 完全性検査 → VAD → オンデバイスAI → TTS）を実行し、結果を
 companion objectの状態Flowへ書き込む。ViewModel / UIはその状態だけを観察する。
 
 ### バックグラウンド動作の仕組み
@@ -136,18 +137,21 @@ nRF52840                        Android
     │                               │   cue → built-in speaker
     │── [audio packets] ────────────▶│
     │                               │   pcmBuffer.write(packet.pcmData)
+    │                               │   ストリーミング Silero（無音 5 秒監視）
+    │                               │
+    │◀─ RX 0x00 (無音 5 秒時のみ) ──│
     │── 0x02 (RecordingStopped) ───▶│
     │                               │ handleBleRecordingStopped()
     │                               │   PCM completeness check
     │                               │   Silero VAD
-    │                               │   FFT fallback / rescue
+    │                               │   FFT fallback / stuck 時のみ energy rescue
     │                               │   buildWavFile()
     │                               │   Qwen3-ASR / Gemma ASR
     │                               │   Qwen 3.5 / Gemma Chat
     │                               │   TTS 読み上げ
 ```
 
-Android 側から録音開始/停止コマンドを送る必要はない。ファームウェアがジェスチャー検知と録音タイミングを自律制御する。  
+録音開始はファームウェアのジェスチャー（TX `0x01`）が担う。停止はジェスチャー（TX `0x02`）に加え、Android が連続無音 5 秒を検出したとき RX `0x00` を送る。  
 Android アプリ側の UI は BLE デバイスのスキャン・選択・接続・切断だけを担当する。  
 スキャン結果はアプリ内で単一選択リストとして表示し、ユーザーは対象デバイスを選んで `Connect` する。
 
@@ -158,13 +162,14 @@ VADより前に評価する。Bluetoothヘッドセットとの併用を含む�
 
 ## BLE 音声判定
 
-BLE 音声は `VoiceProcessor.hasSpeechInPcm()` が担当し、次の順で判定する。
+BLE 音声は `VoiceProcessor` が担当し、次の順で判定する。
 
-1. `SileroVad.kt` で 512 サンプルごとの推論を行う
-2. Silero が異常に低い確率へ張り付く場合だけでなく、通常推論でも音声比率が閾値未満だった場合は `BleSpeechDetector.kt` の FFT 判定で再評価する
-3. FFT 判定でも境界値だった場合は、`peakAfterDC` / `rmsAfterDC` / `maxBandRatio` を使った rescue 条件で BLE 音声を救済する
+1. 録音中: `SilenceEndpointTracker` が 512 サンプルごとに Silero 確率を見て、連続無音 5 秒で RX `0x00` を送る
+2. 録音後: `hasSpeechInPcm()` がクリップ全体を `SileroVad.kt` で 512 サンプルごとに推論する
+3. Silero が異常に低い確率へ張り付く場合だけでなく、通常推論でも音声比率が閾値未満だった場合は `BleSpeechDetector.kt` の FFT 判定で再評価する
+4. Silero が stuck のときだけ、`peakAfterDC` / `rmsAfterDC` が小声の実測値以上ならエネルギー救済する。通常の非音声判定を振幅だけで上書きしない
 
-これにより、Sileroモデルの不調だけでなく、BLEマイク特有の低振幅な囁き声があっても文字起こしを止めにくくしている。
+無音ノイズを ASR に渡すとプロンプト語彙を幻覚するため、救済は小声の実測値に限る。詳細は [`vad.md`](vad.md) を参照。
 
 ## オンデバイスAI
 

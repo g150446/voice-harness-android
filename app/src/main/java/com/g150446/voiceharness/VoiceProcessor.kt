@@ -52,6 +52,10 @@ internal class VoiceProcessor(
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
     private var recordingStartedAtElapsedMs = 0L
+    private val pipelineTiming = PipelineTimingTracker()
+    private val silenceEndpoint = SilenceEndpointTracker()
+    private val streamingFramePcm = ByteArray(SileroVad.FRAME_SIZE * 2)
+    private var streamingFrameOffset = 0
 
     private val sileroVad: SileroVad? = try {
         SileroVad(appContext)
@@ -81,6 +85,7 @@ internal class VoiceProcessor(
             is BleVoiceInput.Audio -> {
                 if (isCollectingPcm) {
                     pcmBuffer.write(input.packet.pcmData)
+                    feedStreamingVad(input.packet.pcmData)
                 }
             }
             is BleVoiceInput.Event -> when (input.event) {
@@ -109,6 +114,7 @@ internal class VoiceProcessor(
         // displaying, stopDisplay() clears it; when idle it skips Z100 BLE traffic.
         smartGlassesOutput.stopDisplay()
         pcmBuffer.reset()
+        resetStreamingVad()
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
         isCollectingPcm = true
         BleConnectionService.setBleMode(true)
@@ -124,11 +130,12 @@ internal class VoiceProcessor(
         )
     }
 
-    private fun handleBleRecordingStopped() {
+    private fun handleBleRecordingStopped(reason: String = "firmware") {
         if (BleConnectionService.voiceState.value != VoiceState.RECORDING ||
             !BleConnectionService.bleMode.value
         ) return
         isCollectingPcm = false
+        resetStreamingVad()
         val recordingDurationMs = (SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs)
             .coerceAtLeast(0L)
         recordingStartedAtElapsedMs = 0L
@@ -139,7 +146,7 @@ internal class VoiceProcessor(
         BleConnectionService.setBleMode(false)
         Log.d(
             TAG,
-            "BLE recording stopped by firmware: wall=${recordingDurationMs}ms, " +
+            "BLE recording stopped ($reason): wall=${recordingDurationMs}ms, " +
                 "pcm=${pcmDurationMs}ms (${pcmData.size} bytes)"
         )
 
@@ -193,6 +200,7 @@ internal class VoiceProcessor(
         }
 
         // Leave RECORDING immediately so UI does not appear stuck while VAD/WAV prep finishes.
+        pipelineTiming.start(SystemClock.elapsedRealtime())
         BleConnectionService.setVoiceState(VoiceState.TRANSCRIBING)
         val needsColdLoad = ModelManager.status.value.readiness != ModelReadiness.READY
         if (needsColdLoad) {
@@ -211,6 +219,7 @@ internal class VoiceProcessor(
                 Log.d(TAG, "Trimmed BLE PCM from ${beforeMs}ms to ${afterMs}ms")
             }
             val wavFile = buildWavFile(trimmedPcm) ?: run {
+                pipelineTiming.discard()
                 BleConnectionService.setErrorMessage("WAV ファイルの作成に失敗しました")
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 return@launch
@@ -305,7 +314,36 @@ internal class VoiceProcessor(
             if (conversationSession.isExpired()) {
                 conversationSession.reset()
             }
-            conversationSession.addTurn("user", transcribed)
+
+            val resetParse = ConversationResetDetector.parse(transcribed)
+            if (resetParse.shouldReset) {
+                conversationSession.reset()
+                Log.d(TAG, "Conversation context reset by voice command")
+                val remaining = resetParse.remainingUserText?.trim().orEmpty()
+                if (remaining.isEmpty()) {
+                    val confirmation = ConversationResetDetector.confirmationMessage(
+                        languageCode = responseLanguageCode,
+                        remainingUserText = null
+                    )
+                    BleConnectionService.setResponse(confirmation)
+                    historyRepository.addEntry(
+                        HistoryEntry(
+                            id = UUID.randomUUID().toString(),
+                            timestamp = System.currentTimeMillis(),
+                            transcription = transcribed,
+                            response = confirmation,
+                            isSilent = false,
+                            errorMessage = ""
+                        )
+                    )
+                    presentResponse(confirmation)
+                    return
+                }
+                BleConnectionService.setTranscription(remaining)
+                conversationSession.addTurn("user", remaining)
+            } else {
+                conversationSession.addTurn("user", transcribed)
+            }
 
             val chat = aiBackend.chat(
                 conversationHistory = conversationSession.turnsForInference(),
@@ -365,11 +403,53 @@ internal class VoiceProcessor(
                 errorMessage = errMsg
             ))
         } finally {
+            pipelineTiming.discardIfRunning()
             try { file.delete() } catch (_: Exception) {}
         }
     }
 
     // --- VAD helpers ---
+
+    private fun resetStreamingVad() {
+        silenceEndpoint.reset()
+        streamingFrameOffset = 0
+        sileroVad?.reset()
+    }
+
+    private fun feedStreamingVad(pcmData: ByteArray) {
+        if (!isCollectingPcm || pcmData.isEmpty()) return
+        var offset = 0
+        while (offset < pcmData.size) {
+            val copy = minOf(streamingFramePcm.size - streamingFrameOffset, pcmData.size - offset)
+            System.arraycopy(pcmData, offset, streamingFramePcm, streamingFrameOffset, copy)
+            streamingFrameOffset += copy
+            offset += copy
+            if (streamingFrameOffset < streamingFramePcm.size) return
+            streamingFrameOffset = 0
+            val isSpeech = try {
+                frameLooksLikeSpeech(streamingFramePcm)
+            } catch (e: Exception) {
+                Log.w(TAG, "Streaming VAD frame failed — treating as silence", e)
+                false
+            }
+            if (silenceEndpoint.onFrame(isSpeech)) {
+                Log.d(TAG, "Silence endpoint: ${BLE_SILENCE_STOP_MS}ms silence, stopping recording")
+                BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
+                handleBleRecordingStopped("silence-timeout")
+                return
+            }
+        }
+    }
+
+    private fun frameLooksLikeSpeech(pcmFrame: ByteArray): Boolean {
+        val analysis = BleSpeechDetector.analyzeBlePcm(pcmFrame)
+        val vad = sileroVad ?: return analysis.rmsAfterDc >= BLE_ENERGY_RESCUE_RMS_THRESHOLD &&
+            analysis.peakAfterDc >= BLE_ENERGY_RESCUE_PEAK_THRESHOLD
+        val samples = FloatArray(analysis.samples.size) { i ->
+            analysis.samples[i] * analysis.gain
+        }
+        return vad.predict(samples) > SILERO_SPEECH_THRESHOLD
+    }
 
     private fun hasSpeechInPcm(pcmData: ByteArray): Boolean {
         // ~0.15s at 16kHz mono 16-bit — drop click/glitch clips, keep short quiet phrases.
@@ -623,6 +703,7 @@ internal class VoiceProcessor(
     // --- TTS ---
 
     private suspend fun presentResponse(text: String) {
+        commitPipelineTiming()
         val target = BleConnectionService.responseOutputTarget.value
         val glassesResult = if (target == ResponseOutputTarget.SMART_GLASSES) {
             smartGlassesOutput.displayResponse(text)
@@ -688,6 +769,12 @@ internal class VoiceProcessor(
         BleConnectionService.setVoiceState(VoiceState.READY)
     }
 
+    private fun commitPipelineTiming() {
+        val elapsed = pipelineTiming.commit(SystemClock.elapsedRealtime()) ?: return
+        BleConnectionService.setLastPipelineMs(elapsed)
+        Log.d(TAG, "Pipeline timing: $elapsed ms")
+    }
+
     fun switchProfile(profile: OnDeviceProfile) {
         aiFacade.switchProfile(profile)
         tts?.stop()
@@ -707,6 +794,7 @@ internal class VoiceProcessor(
         smartGlassesOutput.stopDisplay()
         isCollectingPcm = false
         pcmBuffer.reset()
+        resetStreamingVad()
         BleConnectionService.setBleMode(false)
         val currentState = BleConnectionService.voiceState.value
         if (currentState == VoiceState.RECORDING || currentState == VoiceState.SPEAKING) {

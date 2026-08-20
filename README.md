@@ -8,8 +8,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 [nRF52840 ジェスチャー検知]
         │ BLE 0x01 (録音開始通知)
         ▼
-[Android: PCM 蓄積]
-        │ BLE 0x02 (録音停止通知)
+[Android: PCM 蓄積 + ストリーミング VAD]
+        │ BLE 0x02 または 無音5秒 → RX 0x00
         ▼
 [Silero VAD + FFT fallback]
         │ 音声あり
@@ -70,7 +70,7 @@ cd voice-harness-android
 
 1. nRF52840 で録音ジェスチャーを行う
 2. 画面が **Recording (BLE)...** になり、PCM 音声を蓄積
-3. 再度ジェスチャーを行うと録音停止 → `Silero VAD` で音声判定し、必要に応じて FFT フォールバック / rescue 判定を行ってからテキスト化・AI 応答・読み上げ
+3. 再度ジェスチャーを行うか、無音が 5 秒続くと録音停止 → `Silero VAD` で音声判定し、必要に応じて FFT フォールバック / rescue 判定を行ってからテキスト化・AI 応答・読み上げ
 
 AI が読み上げ中に再度ジェスチャーを行うと、読み上げを中断して新しい対話を開始できる。
 
@@ -109,14 +109,15 @@ Z100を利用する前にVuzix Connectでグラスをリンク・接続する。
 ./gradlew :app:installDebug
 
 # ログ確認（VAD・BLE）
-adb logcat -s VoiceViewModel SileroVad BleManager BleConnectionService
+adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 ```
 
 ### VAD 修正メモ
 
 - BLE 経路は `Silero VAD` を優先し、`maxProb` が異常に低い場合は FFT ベース解析に自動フォールバックする
 - FFT 側は無音フレームを除いた「アクティブフレーム」基準で判定する
-- それでも境界値になる BLE 音声は `peakAfterDC` / `rmsAfterDC` / `maxBandRatio` に基づく rescue 条件で Groq 送信を継続する
+- Silero が stuck のときだけ、小声の実測振幅以上ならエネルギー救済する。無音ノイズは拒否する
+- 録音中に無音が 5 秒続くと Android が RX `0x00` で録音を止める
 
 ### 主要ファイル
 
@@ -124,7 +125,8 @@ adb logcat -s VoiceViewModel SileroVad BleManager BleConnectionService
 |---|---|
 | `BleManager.kt` | BLE スキャン・接続・パケット解析 |
 | `BleConnectionService.kt` | BLE をフォアグラウンドサービスとして管理 |
-| `VoiceProcessor.kt` | 録音制御・VAD・オンデバイスAI・TTS |
+| `VoiceProcessor.kt` | 録音制御・ストリーミング VAD・オンデバイスAI・TTS |
+| `SilenceEndpointTracker.kt` | 録音中の連続無音 5 秒判定 |
 | `ModelManager.kt` | モデル探索、取り込み、状態管理 |
 | `QwenOnDeviceBackend.kt` | Qwen3-ASRとQwen 3.5の実行 |
 | `GemmaOnDeviceBackend.kt` | Gemma 4の実行 |

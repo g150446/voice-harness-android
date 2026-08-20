@@ -8,8 +8,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 MODELS=(
   "$ROOT_DIR/models/gemma-4-E2B-it.litertlm"
-  "$ROOT_DIR/models/qwen3_0_6b_mixed_int4.litertlm"
-  "$ROOT_DIR/models/qwen35_mm_q8_ekv2048.litertlm"
+  "$ROOT_DIR/models/LFM2.5-2.6B-Q4_K_M.gguf"
   "$ROOT_DIR/models/Qwen3-ASR-0.6B-Q8_0.gguf"
   "$ROOT_DIR/models/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
 )

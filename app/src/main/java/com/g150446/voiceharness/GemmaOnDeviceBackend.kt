@@ -48,7 +48,14 @@ class GemmaOnDeviceBackend(
                     context = appContext,
                     modelPath = path,
                     enableAudio = true,
-                    preferGpu = true
+                    preferGpu = true,
+                    speculativeDecoding = if (
+                        ModelManager.isSpeculativeDecodingEnabled(appContext)
+                    ) {
+                        SpeculativeDecodingMode.AUTO
+                    } else {
+                        SpeculativeDecodingMode.DISABLED
+                    }
                 )
                 loadedModelPath = path
                 val loadMs = System.currentTimeMillis() - started
@@ -69,8 +76,9 @@ class GemmaOnDeviceBackend(
                 if (!audioFile.isFile) error("Audio file missing: ${audioFile.absolutePath}")
                 val started = System.currentTimeMillis()
                 val baseLanguage = ModelManager.currentSpeechBaseLanguage(appContext)
-                val asrPrompt = AsrPromptBuilder.build(baseLanguage)
-                Log.d(TAG, "ASR baseLanguage=$baseLanguage")
+                val vocabulary = AsrVocabularyCatalog.all(appContext)
+                val asrPrompt = AsrPromptBuilder.build(baseLanguage, vocabulary)
+                Log.d(TAG, "ASR baseLanguage=$baseLanguage vocabulary=${vocabulary.size}")
                 eng.createConversation(
                     ConversationConfig(
                         samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 0.0)

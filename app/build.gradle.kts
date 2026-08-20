@@ -33,7 +33,16 @@ val prepareQwenAsrNative by tasks.registering(Sync::class) {
     if (available) {
         from(sourceDir) {
             include(qwenAsrNativeFiles)
-            rename("llama-mtmd-cli", "libqwen_asr_cli.so")
+            rename { fileName: String ->
+                when {
+                    fileName == "llama-mtmd-cli" -> "libqwen_asr_cli.so"
+                    fileName == "libllama.so" -> "libqwnlm.so"
+                    fileName == "libggml.so" -> "libqasr.so"
+                    fileName == "libmtmd.so" -> "libqmtm.so"
+                    fileName.startsWith("libggml-") -> fileName.replaceFirst("libggml-", "libqasr-")
+                    else -> fileName
+                }
+            }
         }
     }
     into(generatedQwenAsrJniDir.map { it.dir("arm64-v8a") })
@@ -43,6 +52,18 @@ val prepareQwenAsrNative by tasks.registering(Sync::class) {
                 "Qwen3-ASR native files not found in ${sourceDir.get()}; " +
                     "Gemma profile still works. Run ./scripts/prepare-qwen-asr-native.sh for Qwen."
             )
+        }
+    }
+    doLast {
+        val abiDir = generatedQwenAsrJniDir.get().asFile.resolve("arm64-v8a")
+        if (abiDir.isDirectory && abiDir.listFiles()?.any { it.extension == "so" } == true) {
+            exec {
+                commandLine(
+                    "python3",
+                    rootProject.layout.projectDirectory.file("scripts/rewrite-qwen-asr-sonames.py").asFile.absolutePath,
+                    abiDir.absolutePath
+                )
+            }
         }
     }
 }
@@ -113,6 +134,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.14.0")
+    implementation("ai.liquid.leap:leap-sdk:0.10.7")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")

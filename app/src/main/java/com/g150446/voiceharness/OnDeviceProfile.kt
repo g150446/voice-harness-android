@@ -1,7 +1,7 @@
 package com.g150446.voiceharness
 
 enum class OnDeviceProfile {
-    /** Fast path: Qwen3-ASR + Qwen3.5-0.8B */
+    /** Qwen3-ASR + LFM 2.5 2.6B (LEAP) */
     QWEN,
 
     /** Quality path: Gemma 4 E2B multimodal ASR + chat */
@@ -9,7 +9,7 @@ enum class OnDeviceProfile {
 
     val displayName: String
         get() = when (this) {
-            QWEN -> "高速 (Qwen)"
+            QWEN -> "Qwen ASR + LFM 2.5"
             GEMMA -> "高品質 (Gemma 4 E2B)"
         }
 

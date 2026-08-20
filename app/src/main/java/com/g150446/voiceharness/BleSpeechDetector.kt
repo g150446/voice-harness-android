@@ -31,6 +31,7 @@ data class SpectrumVadResult(
 object BleSpeechDetector {
     private const val SILERO_TARGET_PEAK = 0.5f
     private const val MIN_PEAK_FOR_GAIN = 0.001f
+    internal const val SILERO_MAX_GAIN = 10f
     private const val ACTIVE_FRAME_ENERGY_RATIO = 0.1
 
     const val FFT_FRAME_SIZE = 512
@@ -65,7 +66,11 @@ object BleSpeechDetector {
         }
 
         val rmsAfterDc = if (samples.isNotEmpty()) sqrt(energy / samples.size).toFloat() else 0f
-        val gain = if (peakAfterDc > MIN_PEAK_FOR_GAIN) SILERO_TARGET_PEAK / peakAfterDc else 1f
+        val gain = if (peakAfterDc > MIN_PEAK_FOR_GAIN) {
+            min(SILERO_TARGET_PEAK / peakAfterDc, SILERO_MAX_GAIN)
+        } else {
+            1f
+        }
 
         return BlePcmAnalysis(
             samples = samples,

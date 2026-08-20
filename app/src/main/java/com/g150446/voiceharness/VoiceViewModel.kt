@@ -52,6 +52,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
         BleConnectionService.responseOutputTarget
     val smartGlassesState: StateFlow<SmartGlassesState> =
         BleConnectionService.smartGlassesState
+    val lastPipelineMs: StateFlow<Long> = BleConnectionService.lastPipelineMs
     val modelStatus: StateFlow<ModelStatus> = ModelManager.status
 
     fun setOnDeviceProfile(profile: OnDeviceProfile) {

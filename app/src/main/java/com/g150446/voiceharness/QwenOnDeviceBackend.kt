@@ -10,30 +10,24 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Qwen3-ASR GGUF handles speech recognition; the compact shared LiteRT-LM model handles chat.
+ * Qwen3-ASR GGUF handles speech recognition; LFM 2.5 2.6B (LEAP) handles chat.
  */
 class QwenOnDeviceBackend(
     private val appContext: Context
 ) : VoiceAiBackend {
 
-    override val name: String = "Qwen3-ASR + FastChat"
+    override val name: String = "Qwen3-ASR + LFM2.5"
     override val profile: OnDeviceProfile = OnDeviceProfile.QWEN
 
     private val mutex = Mutex()
     private val asrCli = QwenAsrCli(appContext)
-    private val chatEngine = DedicatedChatEngine(appContext, TAG)
+    private val chatEngine = LeapChatEngine(appContext)
 
     override suspend fun ensureReady(): Result<Unit> = mutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
-                val fastModel = ModelManager.resolveFastChatModel(appContext)
-                val legacyModel = ModelManager.resolveQwenLlmModel(appContext)
-                val modelFile = listOfNotNull(fastModel, legacyModel)
-                    .firstOrNull(chatEngine::isLoaded)
-                    ?: fastModel
-                    ?: legacyModel
-                    ?: error("Chatモデルが見つかりません（.litertlm）。")
-                val chatSlot = if (modelFile == fastModel) ModelSlot.FAST_CHAT else ModelSlot.QWEN_LLM
+                val chatModel = ModelManager.resolveLfmChatModel(appContext)
+                    ?: error("LFM Chat が見つかりません（${ModelManager.LFM_CHAT_FILE}）。")
                 val decoder = ModelManager.resolveQwenAsrDecoder(appContext)
                     ?: error("Qwen3-ASR decoder が見つかりません（${ModelManager.QWEN_ASR_DECODER_FILE}）。")
                 val projector = ModelManager.resolveQwenAsrProjector(appContext)
@@ -41,26 +35,12 @@ class QwenOnDeviceBackend(
                 require(asrCli.executable.isFile && asrCli.executable.canExecute()) {
                     "Qwen3-ASR native runtime is not available for this device"
                 }
-                val fastResult = chatEngine.ensureReady(modelFile, chatSlot)
-                if (fastResult.isFailure && fastModel != null && legacyModel != null) {
-                    ModelManager.markSlotError(
-                        ModelSlot.FAST_CHAT,
-                        "高速Chatの読み込みに失敗。従来Qwen Chatを使用: ${fastResult.exceptionOrNull()?.message}"
-                    )
-                    chatEngine.ensureReady(legacyModel, ModelSlot.QWEN_LLM).getOrThrow()
-                } else {
-                    fastResult.getOrThrow()
-                }
+                chatEngine.ensureReady(chatModel, ModelSlot.LFM_CHAT).getOrThrow()
                 ModelManager.markSlotReady(ModelSlot.QWEN_ASR_DECODER, decoder.absolutePath, 0)
                 ModelManager.markSlotReady(ModelSlot.QWEN_ASR_PROJECTOR, projector.absolutePath, 0)
             }.onFailure { e ->
                 Log.e(TAG, "ensureReady failed", e)
-                val slot = if (ModelManager.resolveFastChatModel(appContext) != null) {
-                    ModelSlot.FAST_CHAT
-                } else {
-                    ModelSlot.QWEN_LLM
-                }
-                ModelManager.markSlotError(slot, e.message ?: "Qwen 準備失敗")
+                ModelManager.markSlotError(ModelSlot.LFM_CHAT, e.message ?: "Qwen + LFM 準備失敗")
                 releaseLocked()
             }
         }
@@ -75,8 +55,12 @@ class QwenOnDeviceBackend(
                     ?: error("Qwen3-ASR decoder is missing")
                 val projector = ModelManager.resolveQwenAsrProjector(appContext)
                     ?: error("Qwen3-ASR projector is missing")
+                val baseLanguage = ModelManager.currentSpeechBaseLanguage(appContext)
+                val vocabulary = AsrVocabularyCatalog.all(appContext)
+                val asrPrompt = AsrPromptBuilder.build(baseLanguage, vocabulary)
                 val started = System.currentTimeMillis()
-                val result = asrCli.transcribe(audioFile, decoder, projector)
+                Log.d(TAG, "ASR baseLanguage=$baseLanguage vocabulary=${vocabulary.size}")
+                val result = asrCli.transcribe(audioFile, decoder, projector, asrPrompt)
                 val latency = System.currentTimeMillis() - started
                 ModelManager.recordAsrMs(latency)
                 Log.d(TAG, "ASR done in $latency ms: '${result.text.take(120)}'")

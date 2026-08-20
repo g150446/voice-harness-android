@@ -83,15 +83,6 @@ class BleSpeechPolicyTest {
                 sileroStuck = true
             )
         )
-        // 2nd attempt after first success (quieter BLE level)
-        assertTrue(
-            shouldRescueBleSpectrum(
-                peakAfterDc = 0.0085f,
-                rmsAfterDc = 0.0013f,
-                maxBandRatio = 0.478,
-                sileroStuck = true
-            )
-        )
         assertTrue(
             shouldRescueBleSpectrum(
                 peakAfterDc = 0.0383f,
@@ -107,8 +98,17 @@ class BleSpeechPolicyTest {
         assertFalse(
             shouldRescueBleSpectrum(
                 peakAfterDc = 0.0051f,
-                rmsAfterDc = 0.0008f,
+                rmsAfterDc = 0.0012f,
                 maxBandRatio = 0.387,
+                sileroStuck = true
+            )
+        )
+        // Previously rescued quieter clip — indistinguishable from electrical noise.
+        assertFalse(
+            shouldRescueBleSpectrum(
+                peakAfterDc = 0.0085f,
+                rmsAfterDc = 0.0013f,
+                maxBandRatio = 0.478,
                 sileroStuck = true
             )
         )
@@ -117,6 +117,18 @@ class BleSpeechPolicyTest {
                 peakAfterDc = 0.0040f,
                 rmsAfterDc = 0.0009f,
                 maxBandRatio = 0.427
+            )
+        )
+    }
+
+    @Test
+    fun shouldRescueBleSpectrum_doesNotEnergyRescueWhenSileroRejectedNormally() {
+        assertFalse(
+            shouldRescueBleSpectrum(
+                peakAfterDc = 0.0215f,
+                rmsAfterDc = 0.0138f,
+                maxBandRatio = 0.035,
+                sileroStuck = false
             )
         )
     }

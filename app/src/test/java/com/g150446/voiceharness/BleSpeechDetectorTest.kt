@@ -1,5 +1,6 @@
 package com.g150446.voiceharness
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,6 +22,18 @@ class BleSpeechDetectorTest {
         assertTrue(analysis.peakBeforeDc > analysis.peakAfterDc)
         assertTrue(analysis.peakAfterDc > 0.03f)
         assertTrue(analysis.gain > 5f)
+        assertTrue(analysis.gain <= BleSpeechDetector.SILERO_MAX_GAIN)
+    }
+
+    @Test
+    fun analyzeBlePcm_capsGainOnNearSilence() {
+        val pcmData = buildPcm { index ->
+            (0.005f * sin(2.0 * PI * 1000.0 * index / 16_000.0)).toFloat()
+        }
+
+        val analysis = BleSpeechDetector.analyzeBlePcm(pcmData)
+
+        assertEquals(BleSpeechDetector.SILERO_MAX_GAIN, analysis.gain, 0.001f)
     }
 
     @Test

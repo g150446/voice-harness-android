@@ -27,7 +27,8 @@ enum class ModelSlot {
     FAST_CHAT,
     QWEN_LLM,
     QWEN_ASR_DECODER,
-    QWEN_ASR_PROJECTOR
+    QWEN_ASR_PROJECTOR,
+    LFM_CHAT
 }
 
 data class SlotStatus(
@@ -51,11 +52,14 @@ data class ModelStatus(
     val lastChatTtftMs: Long = 0L,
     val lastPrefillTokensPerSecond: Double = 0.0,
     val lastDecodeTokensPerSecond: Double = 0.0,
+    val speculativeDecodingActive: Boolean = false,
+    val debugPipelineTimingEnabled: Boolean = false,
     val gemma: SlotStatus = SlotStatus(),
     val fastChat: SlotStatus = SlotStatus(),
     val qwenLlm: SlotStatus = SlotStatus(),
     val qwenAsrDecoder: SlotStatus = SlotStatus(),
-    val qwenAsrProjector: SlotStatus = SlotStatus()
+    val qwenAsrProjector: SlotStatus = SlotStatus(),
+    val lfmChat: SlotStatus = SlotStatus()
 )
 
 /**
@@ -66,12 +70,15 @@ object ModelManager {
     private const val PREFS = "model_prefs"
     private const val KEY_PROFILE = "on_device_profile"
     private const val KEY_SPEECH_BASE_LANGUAGE = "speech_base_language"
+    private const val KEY_SPECULATIVE_DECODING = "speculative_decoding"
+    private const val KEY_DEBUG_PIPELINE_TIMING = "debug_pipeline_timing"
     private const val KEY_GEMMA_DEFAULT_MIGRATED = "gemma_default_migrated_v1"
     private const val KEY_GEMMA_PATH = "gemma_path"
     private const val KEY_FAST_CHAT_PATH = "fast_chat_path"
     private const val KEY_QWEN_LLM_PATH = "qwen_llm_path"
     private const val KEY_QWEN_ASR_DECODER_PATH = "qwen_asr_decoder_path"
     private const val KEY_QWEN_ASR_PROJECTOR_PATH = "qwen_asr_projector_path"
+    private const val KEY_LFM_CHAT_PATH = "lfm_chat_path"
     private const val MIN_MODEL_BYTES = 50_000_000L
 
     const val GEMMA_FILE = "gemma-4-E2B-it.litertlm"
@@ -79,6 +86,7 @@ object ModelManager {
     const val QWEN_LLM_FILE = "qwen35_mm_q8_ekv2048.litertlm"
     const val QWEN_ASR_DECODER_FILE = "Qwen3-ASR-0.6B-Q8_0.gguf"
     const val QWEN_ASR_PROJECTOR_FILE = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"
+    const val LFM_CHAT_FILE = "LFM2.5-2.6B-Q4_K_M.gguf"
 
     private val _status = MutableStateFlow(ModelStatus())
     val status: StateFlow<ModelStatus> = _status.asStateFlow()
@@ -120,6 +128,30 @@ object ModelManager {
             .edit()
             .putString(KEY_SPEECH_BASE_LANGUAGE, language.name)
             .apply()
+    }
+
+    /** MTP (speculative decoding) preference. Takes effect the next time an engine is created. */
+    fun isSpeculativeDecodingEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SPECULATIVE_DECODING, true)
+
+    fun setSpeculativeDecodingEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_SPECULATIVE_DECODING, enabled)
+            .apply()
+    }
+
+    fun isDebugPipelineTimingEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_DEBUG_PIPELINE_TIMING, false)
+
+    fun setDebugPipelineTimingEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_DEBUG_PIPELINE_TIMING, enabled)
+            .apply()
+        _status.value = _status.value.copy(debugPipelineTimingEnabled = enabled)
     }
 
     fun resolveGemmaModel(context: Context): File? =
@@ -175,10 +207,20 @@ object ModelManager {
         configuredNameMustMatchHints = true
     )
 
+    fun resolveLfmChatModel(context: Context): File? = resolveNamed(
+        context = context,
+        prefKey = KEY_LFM_CHAT_PATH,
+        preferredNames = listOf(LFM_CHAT_FILE),
+        extensions = listOf(".gguf"),
+        nameHints = listOf("lfm2.5-2.6b", "lfm2_5-2.6b", "lfm25-2.6b", "lfm2.5_2.6b"),
+        allowUnhintedFallback = false,
+        configuredNameMustMatchHints = true
+    )
+
     /** Backward-compatible single-file resolve for active profile primary model. */
     fun resolveModelFile(context: Context): File? = when (currentProfile(context)) {
         OnDeviceProfile.GEMMA -> resolveGemmaModel(context)
-        OnDeviceProfile.QWEN -> resolveQwenLlmModel(context)
+        OnDeviceProfile.QWEN -> resolveLfmChatModel(context)
     }
 
     private fun resolveNamed(
@@ -260,12 +302,14 @@ object ModelManager {
         val qwenLlmFile = resolveQwenLlmModel(context)
         val qwenAsrDecoderFile = resolveQwenAsrDecoder(context)
         val qwenAsrProjectorFile = resolveQwenAsrProjector(context)
+        val lfmChatFile = resolveLfmChatModel(context)
 
         val gemma = toSlot(gemmaFile, "Gemma")
         val fastChat = toSlot(fastChatFile, "Fast Chat")
         val qwenLlm = toSlot(qwenLlmFile, "Qwen LLM")
         val qwenAsrDecoder = toSlot(qwenAsrDecoderFile, "Qwen ASR decoder")
         val qwenAsrProjector = toSlot(qwenAsrProjectorFile, "Qwen ASR projector")
+        val lfmChat = toSlot(lfmChatFile, "LFM Chat")
 
         val (readiness, path, fileName, size, message) = when (profile) {
             OnDeviceProfile.GEMMA -> {
@@ -276,29 +320,25 @@ object ModelManager {
                 }
             }
             OnDeviceProfile.QWEN -> {
-                val selectedChat = if (fastChat.readiness != ModelReadiness.MISSING) fastChat else qwenLlm
-                val missing = listOf(selectedChat, qwenAsrDecoder, qwenAsrProjector).count {
+                val missing = listOf(lfmChat, qwenAsrDecoder, qwenAsrProjector).count {
                     it.readiness == ModelReadiness.MISSING
                 }
                 if (missing > 0) {
-                    StatusTuple(ModelReadiness.MISSING, null, null, 0L, "Qwen 必須モデルが $missing 件未検出。")
+                    StatusTuple(ModelReadiness.MISSING, null, null, 0L, "Qwen ASR + LFM 必須モデルが $missing 件未検出。")
                 } else {
                     StatusTuple(
                         ModelReadiness.FOUND,
-                        selectedChat.path,
-                        selectedChat.fileName,
-                        selectedChat.sizeBytes + qwenAsrDecoder.sizeBytes + qwenAsrProjector.sizeBytes,
-                        if (selectedChat === fastChat) {
-                            "高速Chat + Qwen3-ASR 検出済み"
-                        } else {
-                            "従来Qwen Chat + Qwen3-ASR 検出済み"
-                        }
+                        lfmChat.path,
+                        lfmChat.fileName,
+                        lfmChat.sizeBytes + qwenAsrDecoder.sizeBytes + qwenAsrProjector.sizeBytes,
+                        "Qwen3-ASR + LFM 2.5 検出済み"
                     )
                 }
             }
         }
 
         val current = _status.value
+        val debugPipelineTimingEnabled = isDebugPipelineTimingEnabled(context)
         // Preserve READY/LOADING if same active path still valid.
         val next = if (
             (current.readiness == ModelReadiness.READY || current.readiness == ModelReadiness.LOADING) &&
@@ -312,9 +352,11 @@ object ModelManager {
                 qwenLlm = qwenLlm,
                 qwenAsrDecoder = qwenAsrDecoder,
                 qwenAsrProjector = qwenAsrProjector,
+                lfmChat = lfmChat,
                 modelSizeBytes = size,
                 modelFileName = fileName ?: current.modelFileName,
-                message = if (current.readiness == ModelReadiness.READY) current.message else message
+                message = if (current.readiness == ModelReadiness.READY) current.message else message,
+                debugPipelineTimingEnabled = debugPipelineTimingEnabled
             )
         } else {
             ModelStatus(
@@ -338,11 +380,13 @@ object ModelManager {
                 lastChatTtftMs = current.lastChatTtftMs,
                 lastPrefillTokensPerSecond = current.lastPrefillTokensPerSecond,
                 lastDecodeTokensPerSecond = current.lastDecodeTokensPerSecond,
+                debugPipelineTimingEnabled = debugPipelineTimingEnabled,
                 gemma = gemma,
                 fastChat = fastChat,
                 qwenLlm = qwenLlm,
                 qwenAsrDecoder = qwenAsrDecoder,
-                qwenAsrProjector = qwenAsrProjector
+                qwenAsrProjector = qwenAsrProjector,
+                lfmChat = lfmChat
             )
         }
         _status.value = next
@@ -386,11 +430,11 @@ object ModelManager {
     fun markSlotReady(slot: ModelSlot, path: String, loadMs: Long) {
         val file = File(path)
         updateSlot(slot, ModelReadiness.READY, path, "準備完了")
-        if (isActiveSlot(slot) || slot == ModelSlot.QWEN_LLM || slot == ModelSlot.GEMMA) {
+        if (isActiveSlot(slot) || slot == ModelSlot.LFM_CHAT || slot == ModelSlot.GEMMA) {
             val profile = _status.value.profile
             val activeReady = when (profile) {
                 OnDeviceProfile.GEMMA -> slot == ModelSlot.GEMMA
-                OnDeviceProfile.QWEN -> slot == ModelSlot.FAST_CHAT || slot == ModelSlot.QWEN_LLM
+                OnDeviceProfile.QWEN -> slot == ModelSlot.LFM_CHAT
             }
             if (activeReady) {
                 _status.value = _status.value.copy(
@@ -398,11 +442,7 @@ object ModelManager {
                     modelPath = path,
                     modelFileName = file.name,
                     modelSizeBytes = if (profile == OnDeviceProfile.QWEN) {
-                        (if (_status.value.fastChat.readiness != ModelReadiness.MISSING) {
-                            _status.value.fastChat.sizeBytes
-                        } else {
-                            _status.value.qwenLlm.sizeBytes
-                        }) +
+                        _status.value.lfmChat.sizeBytes +
                             _status.value.qwenAsrDecoder.sizeBytes +
                             _status.value.qwenAsrProjector.sizeBytes
                     } else {
@@ -423,9 +463,10 @@ object ModelManager {
                 ModelSlot.QWEN_LLM -> it.qwenLlm.path
                 ModelSlot.QWEN_ASR_DECODER -> it.qwenAsrDecoder.path
                 ModelSlot.QWEN_ASR_PROJECTOR -> it.qwenAsrProjector.path
+                ModelSlot.LFM_CHAT -> it.lfmChat.path
             }
         }, message)
-        if (isActiveSlot(slot) || slot == ModelSlot.QWEN_LLM || slot == ModelSlot.GEMMA) {
+        if (isActiveSlot(slot) || slot == ModelSlot.LFM_CHAT || slot == ModelSlot.GEMMA) {
             _status.value = _status.value.copy(
                 readiness = ModelReadiness.ERROR,
                 message = message
@@ -439,7 +480,7 @@ object ModelManager {
 
     private fun isActiveSlot(slot: ModelSlot): Boolean = when (_status.value.profile) {
         OnDeviceProfile.GEMMA -> slot == ModelSlot.GEMMA
-        OnDeviceProfile.QWEN -> slot == ModelSlot.FAST_CHAT || slot == ModelSlot.QWEN_LLM
+        OnDeviceProfile.QWEN -> slot == ModelSlot.LFM_CHAT
     }
 
     private fun updateSlot(slot: ModelSlot, readiness: ModelReadiness, path: String?, message: String) {
@@ -457,6 +498,7 @@ object ModelManager {
             ModelSlot.QWEN_LLM -> _status.value.copy(qwenLlm = slotStatus)
             ModelSlot.QWEN_ASR_DECODER -> _status.value.copy(qwenAsrDecoder = slotStatus)
             ModelSlot.QWEN_ASR_PROJECTOR -> _status.value.copy(qwenAsrProjector = slotStatus)
+            ModelSlot.LFM_CHAT -> _status.value.copy(lfmChat = slotStatus)
         }
     }
 
@@ -464,7 +506,7 @@ object ModelManager {
         // compatibility
         val slot = when (currentProfileFromStatus()) {
             OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
-            OnDeviceProfile.QWEN -> ModelSlot.QWEN_LLM
+            OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
         }
         markSlotLoading(slot, path)
     }
@@ -472,7 +514,7 @@ object ModelManager {
     fun markReady(path: String, loadMs: Long) {
         val slot = when (currentProfileFromStatus()) {
             OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
-            OnDeviceProfile.QWEN -> ModelSlot.QWEN_LLM
+            OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
         }
         markSlotReady(slot, path, loadMs)
     }
@@ -480,7 +522,7 @@ object ModelManager {
     fun markError(message: String, path: String? = _status.value.modelPath) {
         val slot = when (currentProfileFromStatus()) {
             OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
-            OnDeviceProfile.QWEN -> ModelSlot.QWEN_LLM
+            OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
         }
         markSlotError(slot, message)
         if (path != null) {
@@ -516,6 +558,11 @@ object ModelManager {
         )
     }
 
+    /** Whether the loaded engine actually got MTP, which can differ from the preference. */
+    fun recordSpeculativeDecoding(active: Boolean) {
+        _status.value = _status.value.copy(speculativeDecodingActive = active)
+    }
+
     fun readinessLabel(readiness: ModelReadiness): String = when (readiness) {
         ModelReadiness.MISSING -> "未検出"
         ModelReadiness.FOUND -> "検出済み"
@@ -537,6 +584,7 @@ object ModelManager {
                 val displayName = queryDisplayName(context, uri) ?: "model.bin"
                 val lower = displayName.lowercase()
                 val slot = slotHint ?: when {
+                    lower.contains("lfm") -> ModelSlot.LFM_CHAT
                     lower.contains("qwen3_0_6b_mixed_int4") ||
                         lower.contains("qwen3-0.6b") -> ModelSlot.FAST_CHAT
                     lower.contains("gemma") -> ModelSlot.GEMMA
@@ -547,7 +595,12 @@ object ModelManager {
                     lower.endsWith(".litertlm") -> ModelSlot.QWEN_LLM
                     else -> ModelSlot.QWEN_LLM
                 }
-                val expectedExtension = if (slot == ModelSlot.QWEN_ASR_DECODER || slot == ModelSlot.QWEN_ASR_PROJECTOR) ".gguf" else ".litertlm"
+                val expectedExtension = when (slot) {
+                    ModelSlot.QWEN_ASR_DECODER,
+                    ModelSlot.QWEN_ASR_PROJECTOR,
+                    ModelSlot.LFM_CHAT -> ".gguf"
+                    else -> ".litertlm"
+                }
                 require(lower.endsWith(expectedExtension)) {
                     "$expectedExtension モデルを選択してください。"
                 }
@@ -557,6 +610,7 @@ object ModelManager {
                     ModelSlot.QWEN_LLM -> if (lower.endsWith(".litertlm")) displayName.substringAfterLast('/') else QWEN_LLM_FILE
                     ModelSlot.QWEN_ASR_DECODER -> QWEN_ASR_DECODER_FILE
                     ModelSlot.QWEN_ASR_PROJECTOR -> QWEN_ASR_PROJECTOR_FILE
+                    ModelSlot.LFM_CHAT -> LFM_CHAT_FILE
                 }
                 val dest = File(preferredModelsDir(context), destName)
                 val tmp = File(preferredModelsDir(context), "$destName.partial")
@@ -590,6 +644,7 @@ object ModelManager {
                     ModelSlot.QWEN_LLM -> KEY_QWEN_LLM_PATH
                     ModelSlot.QWEN_ASR_DECODER -> KEY_QWEN_ASR_DECODER_PATH
                     ModelSlot.QWEN_ASR_PROJECTOR -> KEY_QWEN_ASR_PROJECTOR_PATH
+                    ModelSlot.LFM_CHAT -> KEY_LFM_CHAT_PATH
                 }
                 remember(context, prefKey, dest)
                 refresh(context)

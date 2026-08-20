@@ -19,6 +19,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -167,6 +168,68 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             }
         }
 
+        if (status.profile == OnDeviceProfile.GEMMA) {
+            Spacer(modifier = Modifier.height(16.dp))
+            var mtpEnabled by remember {
+                mutableStateOf(ModelManager.isSpeculativeDecodingEnabled(context))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("MTP / 投機的デコード（Gemma）", fontSize = 14.sp)
+                    Text(
+                        "対応モデルでデコードを高速化します。" +
+                            "切り替えるとモデルを再読み込みします。",
+                        fontSize = 11.sp
+                    )
+                }
+                Switch(
+                    checked = mtpEnabled,
+                    onCheckedChange = { next ->
+                        ModelManager.setSpeculativeDecodingEnabled(context, next)
+                        mtpEnabled = next
+                        BleConnectionService.reloadOnDeviceBackend(context)
+                        actionStatus = if (next) {
+                            "MTP ON。モデルを再読み込みします"
+                        } else {
+                            "MTP OFF。モデルを再読み込みします"
+                        }
+                    }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+        var debugPipelineTiming by remember {
+            mutableStateOf(ModelManager.isDebugPipelineTimingEnabled(context))
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("処理時間を表示（デバッグ）", fontSize = 14.sp)
+                Text(
+                    "録音終了からAI返答生成までの時間をホーム画面に出します。",
+                    fontSize = 11.sp
+                )
+            }
+            Switch(
+                checked = debugPipelineTiming,
+                onCheckedChange = { next ->
+                    ModelManager.setDebugPipelineTimingEnabled(context, next)
+                    debugPipelineTiming = next
+                    actionStatus = if (next) {
+                        "処理時間表示 ON"
+                    } else {
+                        "処理時間表示 OFF"
+                    }
+                }
+            )
+        }
+
         Spacer(modifier = Modifier.height(12.dp))
         Text(
             "状態: ${ModelManager.readinessLabel(status.readiness)}（${status.profile.displayName}）",
@@ -176,8 +239,7 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(8.dp))
         Text("Gemma: ${slotLabel(status.gemma)}", fontSize = 12.sp)
-        Text("高速Chat: ${slotLabel(status.fastChat)}", fontSize = 12.sp)
-        Text("Qwen LLM: ${slotLabel(status.qwenLlm)}", fontSize = 12.sp)
+        Text("LFM Chat: ${slotLabel(status.lfmChat)}", fontSize = 12.sp)
         Text("Qwen ASR decoder: ${slotLabel(status.qwenAsrDecoder)}", fontSize = 12.sp)
         Text("Qwen ASR projector: ${slotLabel(status.qwenAsrProjector)}", fontSize = 12.sp)
 
@@ -201,6 +263,10 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                     fontSize = 12.sp
                 )
             }
+            Text(
+                "MTP: ${if (status.speculativeDecodingActive) "有効" else "無効"}",
+                fontSize = 12.sp
+            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -209,7 +275,7 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             onClick = {
                 importSlot = when (status.profile) {
                     OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
-                    OnDeviceProfile.QWEN -> ModelSlot.QWEN_LLM
+                    OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
                 }
                 pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
             },
@@ -220,21 +286,23 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                 if (status.profile == OnDeviceProfile.GEMMA) {
                     "Gemma を取り込む"
                 } else {
-                    "Qwen LLM を取り込む"
+                    "LFM Chat を取り込む"
                 }
             )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = {
-                importSlot = ModelSlot.FAST_CHAT
-                pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
-            },
-            enabled = !importing,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("高速Chatモデルを取り込む")
+        if (status.profile == OnDeviceProfile.QWEN) {
+            OutlinedButton(
+                onClick = {
+                    importSlot = ModelSlot.LFM_CHAT
+                    pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+                },
+                enabled = !importing,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("LFM 2.5 GGUF を取り込む")
+            }
         }
 
         if (status.profile == OnDeviceProfile.QWEN) {
@@ -304,9 +372,14 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            "高速Chatモデルがある場合はQwen/Gemmaの両方で優先使用します。" +
-                "未配置または読み込み失敗時は従来Chatへ戻ります。",
+            "Qwen プロファイルは Qwen3-ASR と LFM 2.5 2.6B（LEAP）を使います。" +
+                "Gemma 4 E2B への切り替えはこのまま使えます。",
             fontSize = 12.sp
+        )
+        Text(
+            "MTP は設定がONでも、モデル未対応や初期化失敗時は自動的に無効になります。",
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 8.dp)
         )
 
         if (actionStatus.isNotEmpty()) {

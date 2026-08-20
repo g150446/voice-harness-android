@@ -68,12 +68,16 @@ class BleConnectionService : Service() {
         private val _smartGlassesState = MutableStateFlow(SmartGlassesState())
         val smartGlassesState: StateFlow<SmartGlassesState> = _smartGlassesState.asStateFlow()
 
+        private val _lastPipelineMs = MutableStateFlow(0L)
+        val lastPipelineMs: StateFlow<Long> = _lastPipelineMs.asStateFlow()
+
         // Internal setters used by VoiceProcessor (same module/package).
         internal fun setVoiceState(state: VoiceState) { _voiceState.value = state }
         internal fun setTranscription(text: String) { _transcription.value = text }
         internal fun setResponse(text: String) { _response.value = text }
         internal fun setErrorMessage(text: String) { _errorMessage.value = text }
         internal fun setBleMode(mode: Boolean) { _bleMode.value = mode }
+        internal fun setLastPipelineMs(ms: Long) { _lastPipelineMs.value = ms }
 
         private var instance: BleConnectionService? = null
 
@@ -126,6 +130,15 @@ class BleConnectionService : Service() {
             } else {
                 ModelManager.setProfile(context.applicationContext, profile)
             }
+        }
+
+        /**
+         * Re-creates the on-device engine so settings that are only read at engine creation
+         * (MTP) take effect. Reuses the profile-switch path, which releases the active backend
+         * unconditionally and warms the replacement up in the background.
+         */
+        fun reloadOnDeviceBackend(context: Context) {
+            switchOnDeviceProfile(context, ModelManager.currentProfile(context.applicationContext))
         }
 
         fun start(context: Context) {
@@ -183,7 +196,7 @@ class BleConnectionService : Service() {
                     }
                 }
             }
-            serviceScope.launch {
+            serviceScope.launch(Dispatchers.IO) {
                 mgr.voiceInputs.collect { voiceProcessor?.handleBleInput(it) }
             }
             serviceScope.launch {

@@ -57,14 +57,39 @@ razr 50sでは、複数のLiteRT-LMエンジンを同時に保持した構成で
 ## 計測ログ (logcat)
 
 ```bash
-adb logcat -s VoiceProcessor:D GemmaOnDeviceBackend:D ModelManager:D
+adb logcat -s VoiceProcessor:D GemmaOnDeviceBackend:D ModelManager:D LitertLlmSupport:D
 ```
 
 - `Model loaded in N ms`
 - `ASR done in N ms`
 - `Chat done in N ms`
+- `Engine initialized backend=GPU mtp=true ...`（MTP の有効/無効）
 
 UI の Model Settings / ホームの Model 行にも Load / ASR / Chat ms を表示。
+
+## MTP（speculative decoding）
+
+Gemma はエンジン生成時に `Capabilities.hasSpeculativeDecodingSupport()` で判定し、対応して
+いれば MTP を自動で有効化する（`SpeculativeDecodingMode.AUTO`）。Qwen 系は既定で無効。
+
+- グローバルな実験的フラグなので、`Engine()` 直前に毎回明示代入してモデル間で漏らさない
+- MTP 有効で初期化できない場合、MTP を切って自動リトライする
+
+### 設定画面での切替
+
+Gemma プロファイル時、モデル設定画面に「MTP / 投機的デコード（Gemma）」トグルが出る
+（既定 ON）。切り替えるとその場でモデルを再ロードして反映する。
+
+A/B 比較の手順:
+
+1. トグル ON でモデルを読み込み、短文 Chat を1回流して `Decode: N tok/s` を控える
+2. トグルを OFF にする（自動で再ロードされる）
+3. 同じ短文 Chat をもう一度流し、`Decode: N tok/s` を比べる
+
+`Decode` の下の `MTP: 有効 / 無効` は設定値ではなく**実際にエンジンへ渡った値**。
+トグル ON でも、モデル未対応や初期化失敗の退避で `無効` になることがある。
+
+詳細は `documents/gemma4_mtp_status.md`。
 
 ## Phase 0 Go/No-Go (razr 50s)
 
@@ -77,9 +102,30 @@ UI の Model Settings / ホームの Model 行にも Load / ASR / Chat ms を表
 - ASR 15秒音声でおおよそ 10 秒以内
 - 短文 Chat おおよそ 10 秒以内
 
+## ASR 認識語彙
+
+Gemma ASR プロンプトには固有名詞の希望表記リストを付与できる。
+
+- 既定語は `AsrVocabularyCatalog.builtIn`（初期: ちいかわ / ハチワレ / うさぎ）
+- 製品として常に載せたい語は `builtIn` に `AsrVocabularyTerm` を1行追加する
+- 再ビルドなしの試験語はアプリ files 直下の `asr_vocabulary_extra.txt`  
+  （1行1語。`表記` または `表記<TAB>読みヒント<TAB>説明`。`#` はコメント）
+- 日本語 / 自動のときだけプロンプトへ載せる。英語モードには載せない
+
+## 会話コンテキストのリセット
+
+マルチターン履歴（`ConversationSession`）は最大約10分、または次の音声指示でクリアできる。
+
+例: 「コンテキストをリセットして」「会話をクリア」「reset context」
+
+- リセットのみ: 固定の確認文を返し、Chat には進まない
+- 「リセットして。〇〇は？」のように続く文がある場合: 履歴を消してから後半だけを新規 user として Chat
+- 永続の会話履歴 UI（History）は消さない。対象は推論用セッションのみ
+
 ## 未対応 / 今後
 
 - モデル自動ダウンロード UI
 - GPU バックエンド自動選択
 - E4B 切替
 - ネットワークAPIフォールバック（方針上なし）
+- ASR 語彙の設定画面 UI

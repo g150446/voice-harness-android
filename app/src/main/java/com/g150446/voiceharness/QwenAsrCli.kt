@@ -62,10 +62,16 @@ internal class QwenAsrCli(private val context: Context) {
     val executable: File
         get() = File(nativeDir, EXECUTABLE_NAME)
 
-    fun transcribe(audioFile: File, decoder: File, projector: File): QwenAsrCliResult {
+    fun transcribe(
+        audioFile: File,
+        decoder: File,
+        projector: File,
+        prompt: String
+    ): QwenAsrCliResult {
         require(audioFile.isFile) { "Audio file missing: ${audioFile.absolutePath}" }
         require(decoder.isFile) { "Qwen3-ASR decoder missing: ${decoder.absolutePath}" }
-        require(projector.isFile) { "Qwen3-ASR audio projector missing: ${projector.absolutePath}" }
+        require(projector.isFile) { "Qwen3-ASR projector missing: ${projector.absolutePath}" }
+        require(prompt.isNotBlank()) { "Qwen3-ASR prompt must not be blank" }
         require(executable.isFile && executable.canExecute()) {
             "Qwen3-ASR native runtime is not available"
         }
@@ -75,7 +81,7 @@ internal class QwenAsrCli(private val context: Context) {
             "-m", decoder.absolutePath,
             "--mmproj", projector.absolutePath,
             "--audio", audioFile.absolutePath,
-            "-p", ASR_PROMPT,
+            "-p", prompt,
             "-n", "64",
             "-c", "1024",
             "-t", "4",
@@ -84,7 +90,7 @@ internal class QwenAsrCli(private val context: Context) {
             "--temp", "0",
             "--no-warmup"
         )
-        Log.d(TAG, "Starting Qwen3-ASR process")
+        Log.d(TAG, "Starting Qwen3-ASR process promptChars=${prompt.length}")
         val process = ProcessBuilder(command)
             .directory(context.cacheDir)
             .redirectErrorStream(false)
@@ -130,7 +136,5 @@ internal class QwenAsrCli(private val context: Context) {
         private const val TAG = "QwenAsrCli"
         private const val EXECUTABLE_NAME = "libqwen_asr_cli.so"
         private const val TIMEOUT_SECONDS = 60L
-        private const val ASR_PROMPT =
-            "Transcribe the audio in its original language. Output only the transcription."
     }
 }

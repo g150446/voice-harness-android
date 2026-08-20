@@ -168,6 +168,7 @@ fun HomeScreen(
     val responseOutputTarget by viewModel.responseOutputTarget.collectAsState()
     val smartGlassesState by viewModel.smartGlassesState.collectAsState()
     val modelStatus by viewModel.modelStatus.collectAsState()
+    val lastPipelineMs by viewModel.lastPipelineMs.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
@@ -309,8 +310,22 @@ fun HomeScreen(
                 fontSize = 15.sp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 24.dp)
+                    .padding(
+                        bottom = if (
+                            modelStatus.debugPipelineTimingEnabled && lastPipelineMs > 0L
+                        ) 8.dp else 24.dp
+                    )
             )
+            if (modelStatus.debugPipelineTimingEnabled && lastPipelineMs > 0L) {
+                Text(
+                    text = formatPipelineTiming(lastPipelineMs),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp)
+                )
+            }
         }
 
         HorizontalDivider(modifier = Modifier.padding(bottom = 12.dp))
@@ -537,7 +552,10 @@ fun HomeScreen(
         Text(
             text = "モデル: ${modelStatus.profile.displayName} / ${ModelManager.readinessLabel(modelStatus.readiness)}" +
                 (modelStatus.modelFileName?.let { " ($it)" } ?: "") +
-                if (modelStatus.lastAsrMs > 0 || modelStatus.lastChatMs > 0) {
+                if (
+                    modelStatus.debugPipelineTimingEnabled &&
+                    (modelStatus.lastAsrMs > 0 || modelStatus.lastChatMs > 0)
+                ) {
                     "  ASR ${modelStatus.lastAsrMs}ms / Chat ${modelStatus.lastChatMs}ms" +
                         if (modelStatus.lastChatTtftMs > 0) {
                             " / TTFT ${modelStatus.lastChatTtftMs}ms"

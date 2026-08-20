@@ -1,10 +1,13 @@
 package com.g150446.voiceharness
 
 /**
- * Builds Gemma multimodal ASR text prompts from [SpeechBaseLanguage].
+ * Builds on-device ASR text prompts from [SpeechBaseLanguage] for Gemma and Qwen.
  */
 object AsrPromptBuilder {
-    fun build(baseLanguage: SpeechBaseLanguage): String {
+    fun build(
+        baseLanguage: SpeechBaseLanguage,
+        vocabulary: List<AsrVocabularyTerm> = AsrVocabularyCatalog.builtIn
+    ): String {
         val languageBlock = when (baseLanguage) {
             SpeechBaseLanguage.JAPANESE ->
                 "The primary language of the speech is Japanese. " +
@@ -21,6 +24,12 @@ object AsrPromptBuilder {
                     "Do not translate between Japanese and English."
         }
 
+        val includeVocabulary =
+            baseLanguage == SpeechBaseLanguage.JAPANESE ||
+                baseLanguage == SpeechBaseLanguage.AUTO
+        val vocabularySection =
+            if (includeVocabulary) AsrVocabularyCatalog.promptSection(vocabulary) else null
+
         return buildString {
             append("Transcribe the following speech segment. ")
             append(languageBlock)
@@ -32,6 +41,10 @@ object AsrPromptBuilder {
             append("* Do not invent words or digits when speech is unclear.\n")
             append("* When transcribing numbers spoken by a person, write the digits, i.e. write 1.7 and not ")
             append("one point seven, and write 3 instead of three.")
+            if (vocabularySection != null) {
+                append("\n")
+                append(vocabularySection)
+            }
         }
     }
 }

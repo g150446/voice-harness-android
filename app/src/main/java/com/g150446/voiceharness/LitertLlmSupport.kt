@@ -3,11 +3,14 @@ package com.g150446.voiceharness
 import android.content.Context
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Capabilities
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.Tool
@@ -16,6 +19,12 @@ import com.google.ai.edge.litertlm.ToolSet
 import com.google.ai.edge.litertlm.tool
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * Whether an engine may use MTP (multi-token prediction / speculative decoding).
+ * [AUTO] enables it only when the model file actually ships a drafter; [DISABLED] never does.
+ */
+internal enum class SpeculativeDecodingMode { AUTO, DISABLED }
 
 internal data class ReminderToolArgs(
     val title: String,
@@ -124,14 +133,23 @@ internal object LitertLlmSupport {
             "Set tts_enabled only when spoken notification is requested."
     }
 
+    @OptIn(ExperimentalApi::class)
     fun createEngine(
         context: Context,
         modelPath: String,
         enableAudio: Boolean,
         preferGpu: Boolean,
-        maxNumTokens: Int? = null
+        maxNumTokens: Int? = null,
+        speculativeDecoding: SpeculativeDecodingMode = SpeculativeDecodingMode.DISABLED
     ): Engine {
-        fun initialize(backend: Backend): Engine {
+        val mtpRequested = speculativeDecoding == SpeculativeDecodingMode.AUTO &&
+            supportsSpeculativeDecoding(modelPath)
+
+        fun initialize(backend: Backend, useMtp: Boolean): Engine {
+            // enableSpeculativeDecoding is a global experimental flag, so assign it on every
+            // attempt instead of only when enabling. That keeps one model's MTP setting from
+            // leaking into the next engine loaded in this process.
+            ExperimentalFlags.enableSpeculativeDecoding = useMtp
             val config = EngineConfig(
                 modelPath = modelPath,
                 backend = backend,
@@ -142,6 +160,8 @@ internal object LitertLlmSupport {
             val engine = Engine(config)
             return try {
                 engine.initialize()
+                ModelManager.recordSpeculativeDecoding(useMtp)
+                Log.d(TAG, "Engine initialized backend=${backend.name} mtp=$useMtp $modelPath")
                 engine
             } catch (error: Throwable) {
                 try {
@@ -153,14 +173,37 @@ internal object LitertLlmSupport {
             }
         }
 
-        if (!preferGpu) return initialize(Backend.CPU())
+        fun initializeWithBackendFallback(useMtp: Boolean): Engine {
+            if (!preferGpu) return initialize(Backend.CPU(), useMtp)
+            return try {
+                initialize(Backend.GPU(), useMtp)
+            } catch (gpuError: Throwable) {
+                Log.w(TAG, "GPU initialization failed for $modelPath; retrying on CPU", gpuError)
+                initialize(Backend.CPU(), useMtp)
+            }
+        }
+
         return try {
-            initialize(Backend.GPU())
-        } catch (gpuError: Throwable) {
-            Log.w(TAG, "GPU initialization failed for $modelPath; retrying on CPU", gpuError)
-            initialize(Backend.CPU())
+            initializeWithBackendFallback(mtpRequested)
+        } catch (error: Throwable) {
+            if (!mtpRequested) throw error
+            // A usable engine matters more than the speedup, so give up MTP rather than the load.
+            Log.w(TAG, "MTP initialization failed for $modelPath; retrying without MTP", error)
+            initializeWithBackendFallback(false)
         }
     }
+
+    /**
+     * Forcing the flag on for a model without a drafter fails, so gate on the model file itself.
+     * Opens the model natively, so call this once per load rather than per request.
+     */
+    private fun supportsSpeculativeDecoding(modelPath: String): Boolean =
+        try {
+            Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
+        } catch (e: Throwable) {
+            Log.w(TAG, "MTP capability check failed for $modelPath: ${e.message}")
+            false
+        }
 
     fun runChat(
         engine: Engine,

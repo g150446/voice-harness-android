@@ -7,12 +7,15 @@ internal const val BLE_RESCUE_PEAK_THRESHOLD = 0.03f
 internal const val BLE_RESCUE_RMS_THRESHOLD = 0.006f
 internal const val BLE_RESCUE_BAND_RATIO_THRESHOLD = 0.35
 /**
- * Quiet BLE mic priority: when Silero rejects (stuck or weak), accept by amplitude alone.
- * Field quiet speech: peak=0.0215/rms=0.0138 and later peak=0.0085/rms=0.0013.
- * Near-silence rejected: peak≈0.005/rms≈0.0012 — keep a small margin above that.
+ * Energy rescue is only for Silero stuck on real quiet speech.
+ * Field quiet speech: peak=0.0215/rms=0.0138.
+ * Near-silence: peak≈0.005/rms≈0.0012 — must stay below these floors.
+ * The previous 0.0085/0.0013 clip is indistinguishable from silence.
  */
-internal const val BLE_ENERGY_RESCUE_PEAK_THRESHOLD = 0.007f
-internal const val BLE_ENERGY_RESCUE_RMS_THRESHOLD = 0.001f
+internal const val BLE_ENERGY_RESCUE_PEAK_THRESHOLD = 0.015f
+internal const val BLE_ENERGY_RESCUE_RMS_THRESHOLD = 0.004f
+internal const val BLE_SILENCE_STOP_MS = 5_000L
+internal const val BLE_RX_STOP_RECORDING = 0x00.toByte()
 internal const val BLE_CAPTURE_CHECK_MIN_DURATION_MS = 1_000L
 internal const val BLE_CAPTURE_MIN_COMPLETENESS_RATIO = 0.70
 
@@ -64,14 +67,10 @@ internal fun shouldRescueBleSpectrum(
     sileroStuck: Boolean = false
 ): Boolean {
     if (peakAfterDc == null || rmsAfterDc == null) return false
-    // Prefer quiet speech: energy gate whenever Silero did not accept.
-    // Band-ratio path remains as an additional accept path for clearer speech.
-    if (peakAfterDc >= BLE_ENERGY_RESCUE_PEAK_THRESHOLD &&
-        rmsAfterDc >= BLE_ENERGY_RESCUE_RMS_THRESHOLD
-    ) {
-        return true
+    if (sileroStuck) {
+        return peakAfterDc >= BLE_ENERGY_RESCUE_PEAK_THRESHOLD &&
+            rmsAfterDc >= BLE_ENERGY_RESCUE_RMS_THRESHOLD
     }
-    if (sileroStuck) return false
     return maxBandRatio >= BLE_RESCUE_BAND_RATIO_THRESHOLD &&
         peakAfterDc >= BLE_RESCUE_PEAK_THRESHOLD &&
         rmsAfterDc >= BLE_RESCUE_RMS_THRESHOLD
