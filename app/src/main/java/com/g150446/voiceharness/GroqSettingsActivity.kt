@@ -17,6 +17,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -32,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.g150446.voiceharness.ui.theme.HarnessVoiceTheme
@@ -128,21 +130,68 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("ASR ベース言語（Gemma）", fontSize = 14.sp)
-        Text(
-            "文字起こしプロンプトに反映されます。Chat には影響しません。",
-            fontSize = 12.sp,
-            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
-        )
-        var speechBaseLanguage by remember {
-            mutableStateOf(ModelManager.currentSpeechBaseLanguage(context))
+        if (status.profile == OnDeviceProfile.GROQ) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Groq API キー", fontSize = 14.sp)
+            Text(
+                "Whisper（文字起こし）と Chat Completions に使います。端末内にのみ保存されます。",
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+            )
+            var apiKey by remember { mutableStateOf(GroqPrefs.getApiKey(context)) }
+            OutlinedTextField(
+                value = apiKey,
+                onValueChange = { apiKey = it },
+                label = { Text("GROQ_API_KEY") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    GroqPrefs.setApiKey(context, apiKey)
+                    ModelManager.refresh(context)
+                    BleConnectionService.switchOnDeviceProfile(context, OnDeviceProfile.GROQ)
+                    actionStatus = if (apiKey.isBlank()) {
+                        "API キーをクリアしました"
+                    } else {
+                        "API キーを保存しました"
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("API キーを保存")
+            }
         }
-        SpeechBaseLanguage.entries.forEach { language ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
+
+        if (!status.profile.isCloud) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("ASR ベース言語（Gemma）", fontSize = 14.sp)
+            Text(
+                "文字起こしプロンプトに反映されます。Chat には影響しません。",
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+            )
+            var speechBaseLanguage by remember {
+                mutableStateOf(ModelManager.currentSpeechBaseLanguage(context))
+            }
+            SpeechBaseLanguage.entries.forEach { language ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = speechBaseLanguage == language,
+                            onClick = {
+                                ModelManager.setSpeechBaseLanguage(context, language)
+                                speechBaseLanguage = language
+                                actionStatus = "ASR ベース言語: ${language.displayName}"
+                            }
+                        )
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
                         selected = speechBaseLanguage == language,
                         onClick = {
                             ModelManager.setSpeechBaseLanguage(context, language)
@@ -150,54 +199,44 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                             actionStatus = "ASR ベース言語: ${language.displayName}"
                         }
                     )
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                RadioButton(
-                    selected = speechBaseLanguage == language,
-                    onClick = {
-                        ModelManager.setSpeechBaseLanguage(context, language)
-                        speechBaseLanguage = language
-                        actionStatus = "ASR ベース言語: ${language.displayName}"
+                    Column(modifier = Modifier.padding(start = 4.dp)) {
+                        Text(language.displayName, fontSize = 14.sp)
+                        Text(language.description, fontSize = 11.sp)
                     }
-                )
-                Column(modifier = Modifier.padding(start = 4.dp)) {
-                    Text(language.displayName, fontSize = 14.sp)
-                    Text(language.description, fontSize = 11.sp)
                 }
             }
-        }
 
-        if (status.profile == OnDeviceProfile.GEMMA) {
-            Spacer(modifier = Modifier.height(16.dp))
-            var mtpEnabled by remember {
-                mutableStateOf(ModelManager.isSpeculativeDecodingEnabled(context))
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("MTP / 投機的デコード（Gemma）", fontSize = 14.sp)
-                    Text(
-                        "対応モデルでデコードを高速化します。" +
-                            "切り替えるとモデルを再読み込みします。",
-                        fontSize = 11.sp
+            if (status.profile == OnDeviceProfile.GEMMA) {
+                Spacer(modifier = Modifier.height(16.dp))
+                var mtpEnabled by remember {
+                    mutableStateOf(ModelManager.isSpeculativeDecodingEnabled(context))
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("MTP / 投機的デコード（Gemma）", fontSize = 14.sp)
+                        Text(
+                            "対応モデルでデコードを高速化します。" +
+                                "切り替えるとモデルを再読み込みします。",
+                            fontSize = 11.sp
+                        )
+                    }
+                    Switch(
+                        checked = mtpEnabled,
+                        onCheckedChange = { next ->
+                            ModelManager.setSpeculativeDecodingEnabled(context, next)
+                            mtpEnabled = next
+                            BleConnectionService.reloadOnDeviceBackend(context)
+                            actionStatus = if (next) {
+                                "MTP ON。モデルを再読み込みします"
+                            } else {
+                                "MTP OFF。モデルを再読み込みします"
+                            }
+                        }
                     )
                 }
-                Switch(
-                    checked = mtpEnabled,
-                    onCheckedChange = { next ->
-                        ModelManager.setSpeculativeDecodingEnabled(context, next)
-                        mtpEnabled = next
-                        BleConnectionService.reloadOnDeviceBackend(context)
-                        actionStatus = if (next) {
-                            "MTP ON。モデルを再読み込みします"
-                        } else {
-                            "MTP OFF。モデルを再読み込みします"
-                        }
-                    }
-                )
             }
         }
 
@@ -237,11 +276,13 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
         )
         Text(status.message, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
 
-        Spacer(modifier = Modifier.height(8.dp))
-        Text("Gemma: ${slotLabel(status.gemma)}", fontSize = 12.sp)
-        Text("LFM Chat: ${slotLabel(status.lfmChat)}", fontSize = 12.sp)
-        Text("Qwen ASR decoder: ${slotLabel(status.qwenAsrDecoder)}", fontSize = 12.sp)
-        Text("Qwen ASR projector: ${slotLabel(status.qwenAsrProjector)}", fontSize = 12.sp)
+        if (!status.profile.isCloud) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Gemma: ${slotLabel(status.gemma)}", fontSize = 12.sp)
+            Text("LFM Chat: ${slotLabel(status.lfmChat)}", fontSize = 12.sp)
+            Text("Qwen ASR decoder: ${slotLabel(status.qwenAsrDecoder)}", fontSize = 12.sp)
+            Text("Qwen ASR projector: ${slotLabel(status.qwenAsrProjector)}", fontSize = 12.sp)
+        }
 
         if (status.lastLoadMs > 0 || status.lastAsrMs > 0 || status.lastChatMs > 0) {
             Spacer(modifier = Modifier.height(8.dp))
@@ -263,117 +304,146 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                     fontSize = 12.sp
                 )
             }
-            Text(
-                "MTP: ${if (status.speculativeDecodingActive) "有効" else "無効"}",
-                fontSize = 12.sp
-            )
+            if (!status.profile.isCloud) {
+                Text(
+                    "MTP: ${if (status.speculativeDecodingActive) "有効" else "無効"}",
+                    fontSize = 12.sp
+                )
+            }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        if (!status.profile.isCloud) {
+            Spacer(modifier = Modifier.height(16.dp))
 
-        Button(
-            onClick = {
-                importSlot = when (status.profile) {
-                    OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
-                    OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
-                }
-                pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
-            },
-            enabled = !importing,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                if (status.profile == OnDeviceProfile.GEMMA) {
-                    "Gemma を取り込む"
-                } else {
-                    "LFM Chat を取り込む"
-                }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-        if (status.profile == OnDeviceProfile.QWEN) {
-            OutlinedButton(
+            Button(
                 onClick = {
-                    importSlot = ModelSlot.LFM_CHAT
+                    importSlot = when (status.profile) {
+                        OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
+                        OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
+                        OnDeviceProfile.GROQ -> null
+                    }
                     pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
                 },
                 enabled = !importing,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("LFM 2.5 GGUF を取り込む")
-            }
-        }
-
-        if (status.profile == OnDeviceProfile.QWEN) {
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = {
-                    importSlot = ModelSlot.QWEN_ASR_DECODER
-                    pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
-                },
-                enabled = !importing,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Qwen ASR decoder を取り込む") }
-
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = {
-                    importSlot = ModelSlot.QWEN_ASR_PROJECTOR
-                    pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
-                },
-                enabled = !importing,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Qwen ASR projector を取り込む") }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-        Button(
-            onClick = {
-                actionStatus = "読み込み中..."
-                scope.launch {
-                    ModelManager.refresh(context)
-                    val backend: VoiceAiBackend = when (ModelManager.currentProfile(context)) {
-                        OnDeviceProfile.QWEN -> QwenOnDeviceBackend(context.applicationContext)
-                        OnDeviceProfile.GEMMA -> GemmaOnDeviceBackend(context.applicationContext)
-                    }
-                    val result = withContext(Dispatchers.IO) { backend.ensureReady() }
-                    // Don't keep a second engine if service already has one; release probe engine.
-                    backend.release()
-                    // Service facade will load on next use; force service switch to sync.
-                    BleConnectionService.switchOnDeviceProfile(
-                        context,
-                        ModelManager.currentProfile(context)
-                    )
-                    actionStatus = if (result.isSuccess) {
-                        "準備確認OK（${ModelManager.status.value.lastLoadMs} ms）"
+                Text(
+                    if (status.profile == OnDeviceProfile.GEMMA) {
+                        "Gemma を取り込む"
                     } else {
-                        "失敗: ${result.exceptionOrNull()?.message ?: "不明なエラー"}"
+                        "LFM Chat を取り込む"
                     }
-                }
-            },
-            enabled = canLoad,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("モデルを読み込む")
-        }
+                )
+            }
 
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = {
-                ModelManager.refresh(context)
-                actionStatus = statusSummary(ModelManager.status.value)
-            },
-            enabled = !importing,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("再スキャン")
+            Spacer(modifier = Modifier.height(8.dp))
+            if (status.profile == OnDeviceProfile.QWEN) {
+                OutlinedButton(
+                    onClick = {
+                        importSlot = ModelSlot.LFM_CHAT
+                        pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
+                    enabled = !importing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("LFM 2.5 GGUF を取り込む")
+                }
+            }
+
+            if (status.profile == OnDeviceProfile.QWEN) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        importSlot = ModelSlot.QWEN_ASR_DECODER
+                        pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
+                    enabled = !importing,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Qwen ASR decoder を取り込む") }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        importSlot = ModelSlot.QWEN_ASR_PROJECTOR
+                        pickModelLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
+                    enabled = !importing,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Qwen ASR projector を取り込む") }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    actionStatus = "読み込み中..."
+                    scope.launch {
+                        ModelManager.refresh(context)
+                        val backend: VoiceAiBackend = when (ModelManager.currentProfile(context)) {
+                            OnDeviceProfile.QWEN -> QwenOnDeviceBackend(context.applicationContext)
+                            OnDeviceProfile.GEMMA -> GemmaOnDeviceBackend(context.applicationContext)
+                            OnDeviceProfile.GROQ -> GroqVoiceAiBackend(context.applicationContext)
+                        }
+                        val result = withContext(Dispatchers.IO) { backend.ensureReady() }
+                        // Don't keep a second engine if service already has one; release probe engine.
+                        backend.release()
+                        // Service facade will load on next use; force service switch to sync.
+                        BleConnectionService.switchOnDeviceProfile(
+                            context,
+                            ModelManager.currentProfile(context)
+                        )
+                        actionStatus = if (result.isSuccess) {
+                            "準備確認OK（${ModelManager.status.value.lastLoadMs} ms）"
+                        } else {
+                            "失敗: ${result.exceptionOrNull()?.message ?: "不明なエラー"}"
+                        }
+                    }
+                },
+                enabled = canLoad,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("モデルを読み込む")
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    ModelManager.refresh(context)
+                    actionStatus = statusSummary(ModelManager.status.value)
+                },
+                enabled = !importing,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("再スキャン")
+            }
+        } else {
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = {
+                    actionStatus = "接続確認中..."
+                    scope.launch {
+                        ModelManager.refresh(context)
+                        val backend = GroqVoiceAiBackend(context.applicationContext)
+                        val result = withContext(Dispatchers.IO) { backend.ensureReady() }
+                        backend.release()
+                        BleConnectionService.switchOnDeviceProfile(context, OnDeviceProfile.GROQ)
+                        actionStatus = if (result.isSuccess) {
+                            "Groq 準備OK"
+                        } else {
+                            "失敗: ${result.exceptionOrNull()?.message ?: "不明なエラー"}"
+                        }
+                    }
+                },
+                enabled = canLoad,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("接続を確認")
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            "Qwen プロファイルは Qwen3-ASR と LFM 2.5 2.6B（LEAP）を使います。" +
-                "Gemma 4 E2B への切り替えはこのまま使えます。",
+            "ローカルは Gemma 4 E2B または Qwen3-ASR + LFM 2.5。" +
+                "Cloud (Groq) は Whisper + Chat Completions を使います。",
             fontSize = 12.sp
         )
         Text(

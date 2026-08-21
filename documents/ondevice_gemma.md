@@ -2,7 +2,8 @@
 
 ## 概要
 
-STT / LLM を Groq API から **端末内 Gemma 4 E2B (LiteRT-LM)** に置換。
+**端末内 Gemma 4 E2B (LiteRT-LM)** による STT / LLM プロファイル。  
+設定画面では Qwen ASR + LFM、および Cloud (Groq) にも切り替え可能（[`groq_cloud.md`](groq_cloud.md)）。
 TTS は従来どおり Android `TextToSpeech`。
 
 ## 依存
@@ -35,7 +36,7 @@ adb push gemma-4-E2B-it.litertlm /data/data/com.g150446.voiceharness/files/model
 BLE PCM → VAD → Gemma ASR (audio) → Gemma Chat (text + set_reminder tool) → TTS
 ```
 
-デフォルトプロファイルは Gemma。設定画面で Qwen に切り替え可能。
+デフォルトプロファイルは Gemma。設定画面で Qwen または Cloud (Groq) に切り替え可能。
 ASR タイムアウトは 120 秒、Chat は 60 秒。タイムアウト時は engine を破棄し次回ロードする。
 
 ## エンジンの所有と直列実行

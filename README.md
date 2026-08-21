@@ -1,6 +1,6 @@
 # Voice Harness
 
-Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして使い、端末内モデルで音声認識・AI応答を行い、Android TTSで読み上げる。
+Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして使い、オンデバイスまたは Groq API で音声認識・AI応答を行い、Android TTS（または Vuzix Z100）で出力する。
 
 ## 概要
 
@@ -14,14 +14,22 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 [Silero VAD + FFT fallback]
         │ 音声あり
         ▼
-[Qwen3-ASR / Gemma] → 文字起こし
+[ASR: Gemma / Qwen3-ASR / Groq Whisper] → 文字起こし
         │
         ▼
-[Qwen 3.5 / Gemma] → AI 応答
+[Chat: Gemma / LFM 2.5 / Groq Chat] → AI 応答
         │
         ▼
-[Android TTS]      → 読み上げ
+[Android TTS or Z100] → 出力
 ```
+
+プロファイルは **モデル設定** で切替:
+
+| プロファイル | ASR | Chat |
+|---|---|---|
+| 高品質 (Gemma 4 E2B) | Gemma | Gemma |
+| Qwen ASR + LFM 2.5 | Qwen3-ASR | LFM 2.5 |
+| Cloud (Groq) | Whisper | gpt-oss-120b |
 
 電話マイクでの録音も可能（BLE 未接続時のフォールバック）。
 
@@ -33,7 +41,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 
 - Android 12 以上 (API 31+)
 - XIAO nRF52840 Sense（`harness-node/nordic-main` ファームウェア書き込み済み）
-- QwenまたはGemmaのオンデバイスモデル（詳細は下記ドキュメント参照）
+- ローカル利用時: Qwen / Gemma / LFM のオンデバイスモデル（詳細は下記ドキュメント参照）
+- クラウド利用時: Groq API キー（モデルファイル不要）
 - （任意）Vuzix Z100とVuzix Connect（AI返答をスマートグラスへ表示する場合）
 
 ### アプリのインストール
@@ -45,11 +54,19 @@ cd voice-harness-android
 ./gradlew :app:installDebug
 ```
 
+Tailscale 経由の例（razr 50s、事前に `adb tcpip 5555` 済み）:
+
+```bash
+adb connect 100.102.210.64:5555
+./gradlew :app:installDebug
+```
+
 ### 初期設定
 
 1. アプリを起動し、要求された権限（Bluetooth・マイク・通知）を許可する
-2. `models/`へモデルを配置し、`./scripts/push-all-models.sh`で端末へ転送する
-3. 画面下部の **モデル設定** でQwenまたはGemmaを選択し、モデルを読み込む
+2. 画面下部の **モデル設定** でプロファイルを選ぶ
+   - **ローカル**: `models/` を配置し `./scripts/push-all-models.sh`、または画面から取り込み → モデルを読み込む
+   - **Cloud (Groq)**: API キーを入力して保存
 
 ### nRF52840 との接続
 
@@ -127,17 +144,20 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 |---|---|
 | `BleManager.kt` | BLE スキャン・接続・パケット解析 |
 | `BleConnectionService.kt` | BLE をフォアグラウンドサービスとして管理 |
-| `VoiceProcessor.kt` | 録音制御・ストリーミング VAD・オンデバイスAI・TTS |
+| `VoiceProcessor.kt` | 録音制御・ストリーミング VAD・AI・TTS |
 | `SilenceEndpointTracker.kt` | 録音中の連続無音 5 秒判定 |
 | `AsrVocabulary.kt` | ASR Preferred spellings とトリガー語（アニメ） |
 | `AsrTextFilter.kt` | 語彙エコー・儀礼句など ASR 幻覚の破棄 |
 | `ModelManager.kt` | モデル探索、取り込み、状態管理 |
-| `QwenOnDeviceBackend.kt` | Qwen3-ASRとQwen 3.5の実行 |
-| `GemmaOnDeviceBackend.kt` | Gemma 4の実行 |
+| `OnDeviceAiFacade.kt` | プロファイル切替（Gemma / Qwen / Groq） |
+| `QwenOnDeviceBackend.kt` | Qwen3-ASR + LFM 2.5（LEAP） |
+| `GemmaOnDeviceBackend.kt` | Gemma 4 の実行 |
+| `GroqVoiceAiBackend.kt` | Groq Whisper + Chat Completions |
+| `GroqPrefs.kt` | Groq API キー保存 |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
 | `SmartGlassesOutputManager.kt` | Vuzix Z100の状態監視、制御取得、返答全文表示 |
 | `MainActivity.kt` | UI（Jetpack Compose） |
-| `GroqSettingsActivity.kt` | オンデバイスモデル設定画面 |
+| `GroqSettingsActivity.kt` | モデル設定画面（ローカル + Groq） |
 
 ---
 
@@ -148,5 +168,7 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 - [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Vuzix Z100へのAI返答出力とフォールバック仕様
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
 - [`documents/architecture.md`](documents/architecture.md) — アーキテクチャ詳細
-- [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — オンデバイスモデルの準備・運用
+- [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — AIバックエンド（ローカル / Groq）の準備・運用
+- [`documents/groq_cloud.md`](documents/groq_cloud.md) — Cloud (Groq) プロファイル
+- [`documents/ondevice_gemma.md`](documents/ondevice_gemma.md) — Gemma 4 統合メモ
 - [`documents/qwen_asr_encoder_issue.md`](documents/qwen_asr_encoder_issue.md) — Qwen3-ASR方式の調査・端末検証結果

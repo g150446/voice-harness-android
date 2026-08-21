@@ -221,6 +221,7 @@ object ModelManager {
     fun resolveModelFile(context: Context): File? = when (currentProfile(context)) {
         OnDeviceProfile.GEMMA -> resolveGemmaModel(context)
         OnDeviceProfile.QWEN -> resolveLfmChatModel(context)
+        OnDeviceProfile.GROQ -> null
     }
 
     private fun resolveNamed(
@@ -335,6 +336,25 @@ object ModelManager {
                     )
                 }
             }
+            OnDeviceProfile.GROQ -> {
+                if (GroqPrefs.hasApiKey(context)) {
+                    StatusTuple(
+                        ModelReadiness.READY,
+                        null,
+                        "Groq Cloud",
+                        0L,
+                        "Groq API キー設定済み（Whisper + Chat）"
+                    )
+                } else {
+                    StatusTuple(
+                        ModelReadiness.MISSING,
+                        null,
+                        null,
+                        0L,
+                        "Groq API キー未設定。下の欄に入力して保存してください。"
+                    )
+                }
+            }
         }
 
         val current = _status.value
@@ -435,6 +455,7 @@ object ModelManager {
             val activeReady = when (profile) {
                 OnDeviceProfile.GEMMA -> slot == ModelSlot.GEMMA
                 OnDeviceProfile.QWEN -> slot == ModelSlot.LFM_CHAT
+                OnDeviceProfile.GROQ -> false
             }
             if (activeReady) {
                 _status.value = _status.value.copy(
@@ -481,6 +502,20 @@ object ModelManager {
     private fun isActiveSlot(slot: ModelSlot): Boolean = when (_status.value.profile) {
         OnDeviceProfile.GEMMA -> slot == ModelSlot.GEMMA
         OnDeviceProfile.QWEN -> slot == ModelSlot.LFM_CHAT
+        OnDeviceProfile.GROQ -> false
+    }
+
+    fun markCloudReady(context: Context) {
+        if (currentProfile(context) != OnDeviceProfile.GROQ) return
+        _status.value = _status.value.copy(
+            profile = OnDeviceProfile.GROQ,
+            readiness = ModelReadiness.READY,
+            modelPath = null,
+            modelFileName = "Groq Cloud",
+            modelSizeBytes = 0L,
+            message = "Groq API 準備完了",
+            lastLoadMs = 0L
+        )
     }
 
     private fun updateSlot(slot: ModelSlot, readiness: ModelReadiness, path: String?, message: String) {
@@ -504,29 +539,54 @@ object ModelManager {
 
     fun markLoading(path: String) {
         // compatibility
-        val slot = when (currentProfileFromStatus()) {
-            OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
-            OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
+        when (currentProfileFromStatus()) {
+            OnDeviceProfile.GROQ -> {
+                _status.value = _status.value.copy(
+                    readiness = ModelReadiness.LOADING,
+                    message = "Groq 接続確認中..."
+                )
+            }
+            OnDeviceProfile.GEMMA -> markSlotLoading(ModelSlot.GEMMA, path)
+            OnDeviceProfile.QWEN -> markSlotLoading(ModelSlot.LFM_CHAT, path)
         }
-        markSlotLoading(slot, path)
     }
 
     fun markReady(path: String, loadMs: Long) {
-        val slot = when (currentProfileFromStatus()) {
-            OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
-            OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
+        when (currentProfileFromStatus()) {
+            OnDeviceProfile.GROQ -> {
+                _status.value = _status.value.copy(
+                    readiness = ModelReadiness.READY,
+                    modelFileName = "Groq Cloud",
+                    message = "Groq API 準備完了",
+                    lastLoadMs = loadMs
+                )
+            }
+            OnDeviceProfile.GEMMA -> markSlotReady(ModelSlot.GEMMA, path, loadMs)
+            OnDeviceProfile.QWEN -> markSlotReady(ModelSlot.LFM_CHAT, path, loadMs)
         }
-        markSlotReady(slot, path, loadMs)
     }
 
     fun markError(message: String, path: String? = _status.value.modelPath) {
-        val slot = when (currentProfileFromStatus()) {
-            OnDeviceProfile.GEMMA -> ModelSlot.GEMMA
-            OnDeviceProfile.QWEN -> ModelSlot.LFM_CHAT
-        }
-        markSlotError(slot, message)
-        if (path != null) {
-            _status.value = _status.value.copy(modelPath = path)
+        when (currentProfileFromStatus()) {
+            OnDeviceProfile.GROQ -> {
+                _status.value = _status.value.copy(
+                    readiness = ModelReadiness.ERROR,
+                    message = message,
+                    modelPath = path
+                )
+            }
+            OnDeviceProfile.GEMMA -> {
+                markSlotError(ModelSlot.GEMMA, message)
+                if (path != null) {
+                    _status.value = _status.value.copy(modelPath = path)
+                }
+            }
+            OnDeviceProfile.QWEN -> {
+                markSlotError(ModelSlot.LFM_CHAT, message)
+                if (path != null) {
+                    _status.value = _status.value.copy(modelPath = path)
+                }
+            }
         }
     }
 

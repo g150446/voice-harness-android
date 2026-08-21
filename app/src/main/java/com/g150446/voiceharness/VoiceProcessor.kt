@@ -236,7 +236,8 @@ internal class VoiceProcessor(
         responseLanguageCode = null
 
         try {
-            val coldStart = ModelManager.status.value.readiness != ModelReadiness.READY
+            val coldStart = !aiBackend.profile.isCloud &&
+                ModelManager.status.value.readiness != ModelReadiness.READY
             if (coldStart) {
                 BleConnectionService.setErrorMessage(
                     "初回はモデル読み込みのため30〜60秒かかることがあります"

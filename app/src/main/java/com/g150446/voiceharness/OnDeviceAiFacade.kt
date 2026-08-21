@@ -23,6 +23,7 @@ class OnDeviceAiFacade(
     private fun backendFor(profile: OnDeviceProfile): VoiceAiBackend = when (profile) {
         OnDeviceProfile.QWEN -> QwenOnDeviceBackend(appContext)
         OnDeviceProfile.GEMMA -> GemmaOnDeviceBackend(appContext)
+        OnDeviceProfile.GROQ -> GroqVoiceAiBackend(appContext)
     }
 
     private fun ensureBackend(): VoiceAiBackend {
@@ -56,6 +57,9 @@ class OnDeviceAiFacade(
         vocabulary: List<AsrVocabularyTerm>
     ): Result<TranscriptionResult> {
         val backend = ensureBackend()
+        if (backend.profile.isCloud) {
+            return backend.transcribe(audioFile, vocabulary)
+        }
         if (vocabulary.isNotEmpty()) {
             return backend.transcribe(audioFile, vocabulary)
         }

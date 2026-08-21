@@ -30,7 +30,7 @@
 │ ・GATT / パケット解析│  │ ・PCM バッファ管理  │
 │ ・自動再接続        │  │ ・ストリーミング VAD │
 │ ・優先デバイス保存   │  │ ・Silero VAD / FFT  │
-└─────────────────────┘  │ ・On-device AI      │
+└─────────────────────┘  │ ・AI (local/Groq)  │
                          │ ・Android TTS      │
                          └────────────────────┘
 
@@ -108,8 +108,9 @@ Serviceの1つのcollectorが `VoiceProcessor.handleBleInput()` へ渡す。こ�
 防ぐ。
 
 Serviceは `VoiceProcessor` を先に生成してから `BleManager` を開始する。VoiceProcessorは
-音声処理パイプライン（ストリーミング無音監視 → 完全性検査 → VAD → オンデバイスAI → TTS）を実行し、結果を
+音声処理パイプライン（ストリーミング無音監視 → 完全性検査 → VAD → AI backend → TTS）を実行し、結果を
 companion objectの状態Flowへ書き込む。ViewModel / UIはその状態だけを観察する。
+AI backend は設定プロファイル（Gemma / Qwen+LFM / Groq）で切り替わる。
 
 ### バックグラウンド動作の仕組み
 
@@ -146,9 +147,9 @@ nRF52840                        Android
     │                               │   Silero VAD
     │                               │   FFT fallback / stuck 時のみ energy rescue
     │                               │   buildWavFile()
-    │                               │   Qwen3-ASR / Gemma ASR
-    │                               │   Qwen 3.5 / Gemma Chat
-    │                               │   TTS 読み上げ
+    │                               │   ASR: Gemma / Qwen3-ASR / Groq Whisper
+    │                               │   Chat: Gemma / LFM 2.5 / Groq Chat
+    │                               │   TTS 読み上げ or Z100
 ```
 
 録音開始はファームウェアのジェスチャー（TX `0x01`）が担う。停止はジェスチャー（TX `0x02`）に加え、Android が連続無音 5 秒を検出したとき RX `0x00` を送る。  
