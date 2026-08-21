@@ -51,6 +51,50 @@ class AsrVocabularyTest {
         assertTrue(section.contains("ハチワレ"))
         assertTrue(section.contains("うさぎ"))
         assertTrue(section.contains("similar-sounding"))
+        assertTrue(section.contains("Do not list unused vocabulary"))
+    }
+
+    @Test
+    fun firstPassOmitsChiikawaNames() {
+        val first = AsrVocabularyCatalog.firstPassTerms(AsrVocabularyCatalog.builtIn)
+        assertTrue(first.isEmpty())
+    }
+
+    @Test
+    fun retriesWhenAnimeIsHeardAndNamesAreMissing() {
+        assertTrue(
+            AsrVocabularyCatalog.shouldRetryWithTriggeredTerms(
+                "アニメのチカは八割",
+                AsrVocabularyCatalog.builtIn
+            )
+        )
+        assertTrue(
+            AsrVocabularyCatalog.shouldRetryWithTriggeredTerms(
+                "Tell me about that anime",
+                AsrVocabularyCatalog.builtIn
+            )
+        )
+        assertFalse(
+            AsrVocabularyCatalog.shouldRetryWithTriggeredTerms(
+                "こんにちは",
+                AsrVocabularyCatalog.builtIn
+            )
+        )
+        assertFalse(
+            AsrVocabularyCatalog.shouldRetryWithTriggeredTerms(
+                "アニメのちいかわについて",
+                AsrVocabularyCatalog.builtIn
+            )
+        )
+    }
+
+    @Test
+    fun retryTermsIncludesChiikawaCastAfterAnime() {
+        val retry = AsrVocabularyCatalog.retryTerms("アニメについて", AsrVocabularyCatalog.builtIn)
+        val forms = retry.map { it.writtenForm }
+        assertTrue(forms.contains("ちいかわ"))
+        assertTrue(forms.contains("ハチワレ"))
+        assertTrue(forms.contains("うさぎ"))
     }
 
     @Test

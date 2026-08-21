@@ -46,7 +46,10 @@ class QwenOnDeviceBackend(
         }
     }
 
-    override suspend fun transcribe(audioFile: File): Result<TranscriptionResult> = mutex.withLock {
+    override suspend fun transcribe(
+        audioFile: File,
+        vocabulary: List<AsrVocabularyTerm>
+    ): Result<TranscriptionResult> = mutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
                 check(chatEngine.isReady) { "Qwen profile is not ready" }
@@ -56,7 +59,6 @@ class QwenOnDeviceBackend(
                 val projector = ModelManager.resolveQwenAsrProjector(appContext)
                     ?: error("Qwen3-ASR projector is missing")
                 val baseLanguage = ModelManager.currentSpeechBaseLanguage(appContext)
-                val vocabulary = AsrVocabularyCatalog.all(appContext)
                 val asrPrompt = AsrPromptBuilder.build(baseLanguage, vocabulary)
                 val started = System.currentTimeMillis()
                 Log.d(TAG, "ASR baseLanguage=$baseLanguage vocabulary=${vocabulary.size}")

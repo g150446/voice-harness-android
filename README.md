@@ -112,12 +112,14 @@ Z100を利用する前にVuzix Connectでグラスをリンク・接続する。
 adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 ```
 
-### VAD 修正メモ
+### VAD / ASR 幻覚対策メモ
 
 - BLE 経路は `Silero VAD` を優先し、`maxProb` が異常に低い場合は FFT ベース解析に自動フォールバックする
 - FFT 側は無音フレームを除いた「アクティブフレーム」基準で判定する
 - Silero が stuck のときだけ、小声の実測振幅以上ならエネルギー救済する。無音ノイズは拒否する
 - 録音中に無音が 5 秒続くと Android が RX `0x00` で録音を止める
+- `ちいかわ` 系語彙は 1 パス目に載せない。転写に `アニメ` があるときだけ 2 パス目で Preferred spellings を付与する
+- `AsrTextFilter` が語彙エコー（アニメ無しの3語列挙）と儀礼句だけの幻覚（`はい、ありがとうございます` など）を破棄する
 
 ### 主要ファイル
 
@@ -127,6 +129,8 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 | `BleConnectionService.kt` | BLE をフォアグラウンドサービスとして管理 |
 | `VoiceProcessor.kt` | 録音制御・ストリーミング VAD・オンデバイスAI・TTS |
 | `SilenceEndpointTracker.kt` | 録音中の連続無音 5 秒判定 |
+| `AsrVocabulary.kt` | ASR Preferred spellings とトリガー語（アニメ） |
+| `AsrTextFilter.kt` | 語彙エコー・儀礼句など ASR 幻覚の破棄 |
 | `ModelManager.kt` | モデル探索、取り込み、状態管理 |
 | `QwenOnDeviceBackend.kt` | Qwen3-ASRとQwen 3.5の実行 |
 | `GemmaOnDeviceBackend.kt` | Gemma 4の実行 |

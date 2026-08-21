@@ -6,7 +6,7 @@ package com.g150446.voiceharness
 object AsrPromptBuilder {
     fun build(
         baseLanguage: SpeechBaseLanguage,
-        vocabulary: List<AsrVocabularyTerm> = AsrVocabularyCatalog.builtIn
+        vocabulary: List<AsrVocabularyTerm> = emptyList()
     ): String {
         val languageBlock = when (baseLanguage) {
             SpeechBaseLanguage.JAPANESE ->

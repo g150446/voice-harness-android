@@ -55,9 +55,14 @@ APKを更新インストールし、モデルをアプリ専用の`files/models/
 ## 実行フロー
 
 ```text
-BLE PCM → VAD → WAV → 選択中プロファイルのASR
-        → conversation history → Chat → reminder tool → Android TTS
+BLE PCM → VAD → WAV → ASR 1パス（トリガー付き語彙なし）
+        → （転写にアニメあり）→ ASR 2パス（ちいかわ等を付与）
+        → AsrTextFilter → conversation history → Chat → reminder tool → Android TTS
 ```
+
+`ちいかわ` / `ハチワレ` / `うさぎ` は通常の Preferred spellings には載せない。
+転写に `アニメ` があるときだけ 2 パス目で載せる。詳細は
+[`ondevice_gemma.md`](ondevice_gemma.md) と [`vad.md`](vad.md) を参照。
 
 QwenではASRごとにllama.cpp CLIを分離プロセスとして起動する。高速Chat用LiteRT-LM
 engineはGPU優先でbackendが保持し、GPU初期化に失敗した場合のみCPUへ切り替える。

@@ -69,14 +69,16 @@ class GemmaOnDeviceBackend(
         }
     }
 
-    override suspend fun transcribe(audioFile: File): Result<TranscriptionResult> = mutex.withLock {
+    override suspend fun transcribe(
+        audioFile: File,
+        vocabulary: List<AsrVocabularyTerm>
+    ): Result<TranscriptionResult> = mutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
                 val eng = engine ?: error("Gemma engine not ready")
                 if (!audioFile.isFile) error("Audio file missing: ${audioFile.absolutePath}")
                 val started = System.currentTimeMillis()
                 val baseLanguage = ModelManager.currentSpeechBaseLanguage(appContext)
-                val vocabulary = AsrVocabularyCatalog.all(appContext)
                 val asrPrompt = AsrPromptBuilder.build(baseLanguage, vocabulary)
                 Log.d(TAG, "ASR baseLanguage=$baseLanguage vocabulary=${vocabulary.size}")
                 eng.createConversation(

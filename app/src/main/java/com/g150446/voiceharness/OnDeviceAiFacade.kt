@@ -51,8 +51,38 @@ class OnDeviceAiFacade(
 
     override suspend fun ensureReady(): Result<Unit> = ensureBackend().ensureReady()
 
-    override suspend fun transcribe(audioFile: File): Result<TranscriptionResult> =
-        ensureBackend().transcribe(audioFile)
+    override suspend fun transcribe(
+        audioFile: File,
+        vocabulary: List<AsrVocabularyTerm>
+    ): Result<TranscriptionResult> {
+        val backend = ensureBackend()
+        if (vocabulary.isNotEmpty()) {
+            return backend.transcribe(audioFile, vocabulary)
+        }
+        val all = AsrVocabularyCatalog.all(appContext)
+        val firstPassVocab = AsrVocabularyCatalog.firstPassTerms(all)
+        val first = backend.transcribe(audioFile, firstPassVocab)
+        val firstResult = first.getOrNull() ?: return first
+        if (!AsrVocabularyCatalog.shouldRetryWithTriggeredTerms(firstResult.text, all)) {
+            return first
+        }
+        val retryVocab = AsrVocabularyCatalog.retryTerms(firstResult.text, all)
+        Log.d(
+            TAG,
+            "ASR retry with triggered vocabulary=${retryVocab.joinToString { it.writtenForm }}"
+        )
+        val second = backend.transcribe(audioFile, retryVocab)
+        val secondResult = second.getOrNull()
+        if (secondResult != null &&
+            !AsrTextFilter.isVocabularyEchoWithoutTrigger(secondResult.text, retryVocab)
+        ) {
+            return Result.success(
+                secondResult.copy(latencyMs = firstResult.latencyMs + secondResult.latencyMs)
+            )
+        }
+        Log.w(TAG, "ASR retry discarded — keeping first pass '${firstResult.text.take(80)}'")
+        return first
+    }
 
     override suspend fun chat(
         conversationHistory: List<ConversationTurn>,

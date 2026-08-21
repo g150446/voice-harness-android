@@ -18,12 +18,23 @@ class AsrPromptBuilderTest {
     }
 
     @Test
-    fun japanesePromptIncludesBuiltInVocabulary() {
+    fun japanesePromptOmitsGatedVocabularyByDefault() {
         val prompt = AsrPromptBuilder.build(SpeechBaseLanguage.JAPANESE)
+        assertFalse(prompt.contains("ちいかわ"))
+        assertFalse(prompt.contains("Preferred spellings"))
+    }
+
+    @Test
+    fun japanesePromptIncludesVocabularyWhenProvided() {
+        val prompt = AsrPromptBuilder.build(
+            SpeechBaseLanguage.JAPANESE,
+            AsrVocabularyCatalog.builtIn
+        )
         assertTrue(prompt.contains("Preferred spellings"))
         assertTrue(prompt.contains("ちいかわ"))
         assertTrue(prompt.contains("ハチワレ"))
         assertTrue(prompt.contains("うさぎ"))
+        assertTrue(prompt.contains("Do not list unused vocabulary"))
     }
 
     @Test
@@ -41,6 +52,6 @@ class AsrPromptBuilderTest {
         val prompt = AsrPromptBuilder.build(SpeechBaseLanguage.AUTO)
         assertTrue(prompt.contains("either Japanese or English"))
         assertTrue(prompt.contains("Do not translate between Japanese and English"))
-        assertTrue(prompt.contains("ちいかわ"))
+        assertFalse(prompt.contains("ちいかわ"))
     }
 }

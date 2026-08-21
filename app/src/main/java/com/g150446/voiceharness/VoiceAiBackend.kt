@@ -52,7 +52,10 @@ interface VoiceAiBackend {
     val name: String
     val profile: OnDeviceProfile
     suspend fun ensureReady(): Result<Unit>
-    suspend fun transcribe(audioFile: File): Result<TranscriptionResult>
+    suspend fun transcribe(
+        audioFile: File,
+        vocabulary: List<AsrVocabularyTerm> = emptyList()
+    ): Result<TranscriptionResult>
     suspend fun chat(
         conversationHistory: List<ConversationTurn>,
         languageCode: String?

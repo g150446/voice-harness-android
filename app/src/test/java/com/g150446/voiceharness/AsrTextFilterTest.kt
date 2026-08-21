@@ -43,4 +43,37 @@ class AsrTextFilterTest {
         assertTrue(AsrTextFilter.isGarbageOrEmpty("ok"))
         assertTrue(AsrTextFilter.isGarbageOrEmpty("hi"))
     }
+
+    @Test
+    fun rejectsChiikawaDumpWithoutAnime() {
+        assertTrue(AsrTextFilter.isGarbageOrEmpty("ちいかわ、ハチワレ、うさぎ"))
+        assertTrue(AsrTextFilter.isGarbageOrEmpty("ちいかわ ハチワレ"))
+        assertTrue(AsrTextFilter.isVocabularyEchoWithoutTrigger("ちいかわ、ハチワレ、うさぎ"))
+    }
+
+    @Test
+    fun keepsChiikawaWhenAnimeIsPresentOrSpeechHasMoreWords() {
+        assertFalse(AsrTextFilter.isGarbageOrEmpty("アニメのちいかわについて教えて"))
+        assertFalse(AsrTextFilter.isGarbageOrEmpty("ちいかわ"))
+        assertFalse(AsrTextFilter.isGarbageOrEmpty("ちいかわについて教えて"))
+        assertFalse(AsrTextFilter.isGarbageOrEmpty("ハチワレは何色？"))
+        assertFalse(AsrTextFilter.isVocabularyEchoWithoutTrigger("アニメのちいかわ、ハチワレ、うさぎ"))
+    }
+
+    @Test
+    fun rejectsJapaneseCourtesyDumpFromNoise() {
+        assertTrue(AsrTextFilter.isGarbageOrEmpty("はい、ありがとうございます"))
+        assertTrue(AsrTextFilter.isGarbageOrEmpty("はい。ありがとうございます。"))
+        assertTrue(AsrTextFilter.isGarbageOrEmpty("ありがとうございます"))
+        assertTrue(AsrTextFilter.isGarbageOrEmpty("ありがとうございました"))
+        assertTrue(AsrTextFilter.isPolitenessHallucination("はい、ありがとうございます"))
+    }
+
+    @Test
+    fun keepsRealThanksAndYesWithoutCourtesyDump() {
+        assertFalse(AsrTextFilter.isGarbageOrEmpty("はい"))
+        assertFalse(AsrTextFilter.isGarbageOrEmpty("うん"))
+        assertFalse(AsrTextFilter.isGarbageOrEmpty("ありがとう"))
+        assertFalse(AsrTextFilter.isGarbageOrEmpty("はい、今何時？"))
+    }
 }
