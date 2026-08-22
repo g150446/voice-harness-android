@@ -42,6 +42,14 @@ sealed class BleEvent {
     data object LightSleepWake : BleEvent()
     data object PeerConnected : BleEvent()
     data object PeerDisconnected : BleEvent()
+    /** Live milestone/reject sample (event 0x30). Not used for voice pipeline. */
+    data class GestureDiag(
+        val stage: Int,
+        val reason: Int,
+        val v1: Float,
+        val v2: Float,
+        val v3: Float,
+    ) : BleEvent()
 }
 
 sealed class BleVoiceInput {
@@ -565,6 +573,50 @@ class BleManager(
 
             0x55 -> {
                 if (data.size < 3) return
+                when (val code = data[2].toInt() and 0xFF) {
+                    0x30 -> {
+                        // [00 55 30 stage reason f32×3] = 17 bytes
+                        if (data.size >= 17) {
+                            val stage = data[3].toInt() and 0xFF
+                            val reason = data[4].toInt() and 0xFF
+                            val v1 = GestureDiagStore.parseFloatLe(data, 5)
+                            val v2 = GestureDiagStore.parseFloatLe(data, 9)
+                            val v3 = GestureDiagStore.parseFloatLe(data, 13)
+                            GestureDiagStore.onLiveDiag(stage, reason, v1, v2, v3)
+                        }
+                        return
+                    }
+                    0x33 -> {
+                        // history_begin: [count][session]
+                        if (data.size >= 5) {
+                            val count = data[3].toInt() and 0xFF
+                            val session = data[4].toInt() and 0xFF
+                            GestureDiagStore.onHistoryBegin(count, session)
+                        }
+                        return
+                    }
+                    0x34 -> {
+                        // history_entry: [u16 t_ms][stage][reason][f32×3] = 19
+                        if (data.size >= 19) {
+                            val tMs = GestureDiagStore.parseU16Le(data, 3)
+                            val stage = data[5].toInt() and 0xFF
+                            val reason = data[6].toInt() and 0xFF
+                            val v1 = GestureDiagStore.parseFloatLe(data, 7)
+                            val v2 = GestureDiagStore.parseFloatLe(data, 11)
+                            val v3 = GestureDiagStore.parseFloatLe(data, 15)
+                            GestureDiagStore.onHistoryEntry(tMs, stage, reason, v1, v2, v3)
+                        }
+                        return
+                    }
+                    0x35 -> {
+                        if (data.size >= 5) {
+                            val count = data[3].toInt() and 0xFF
+                            val session = data[4].toInt() and 0xFF
+                            GestureDiagStore.onHistoryEnd(count, session)
+                        }
+                        return
+                    }
+                }
                 val event = when (data[2].toInt() and 0xFF) {
                     0x01 -> {
                         // Avoid false PCM gap warnings across recording sessions.

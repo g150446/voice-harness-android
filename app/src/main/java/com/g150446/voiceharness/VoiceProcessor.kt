@@ -52,6 +52,10 @@ internal class VoiceProcessor(
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
     private var recordingStartedAtElapsedMs = 0L
+    /** Wall-clock start of the current BLE recording (for gesture diag correlation). */
+    private var recordingStartedAtWallMs = 0L
+    /** Gesture milestones captured at recording stop; attached to the next HistoryEntry. */
+    private var pendingGestureDiags: List<GestureDiagEntry> = emptyList()
     private val pipelineTiming = PipelineTimingTracker()
     private val silenceEndpoint = SilenceEndpointTracker()
     private val streamingFramePcm = ByteArray(SileroVad.FRAME_SIZE * 2)
@@ -116,6 +120,8 @@ internal class VoiceProcessor(
         pcmBuffer.reset()
         resetStreamingVad()
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
+        recordingStartedAtWallMs = System.currentTimeMillis()
+        pendingGestureDiags = emptyList()
         isCollectingPcm = true
         BleConnectionService.setBleMode(true)
         BleConnectionService.setTranscription("")
@@ -130,6 +136,33 @@ internal class VoiceProcessor(
         )
     }
 
+    private fun capturePendingGestureDiags() {
+        val start = recordingStartedAtWallMs
+        val stop = System.currentTimeMillis()
+        pendingGestureDiags = GestureDiagStore.snapshotForRecording(start, stop)
+        Log.d(TAG, "Captured ${pendingGestureDiags.size} gesture diags for history")
+    }
+
+    private fun saveHistoryEntry(
+        transcription: String,
+        response: String,
+        isSilent: Boolean,
+        errorMessage: String,
+    ) {
+        historyRepository.addEntry(
+            HistoryEntry(
+                id = UUID.randomUUID().toString(),
+                timestamp = System.currentTimeMillis(),
+                transcription = transcription,
+                response = response,
+                isSilent = isSilent,
+                errorMessage = errorMessage,
+                gestureDiags = pendingGestureDiags,
+            )
+        )
+        pendingGestureDiags = emptyList()
+    }
+
     private fun handleBleRecordingStopped(reason: String = "firmware") {
         if (BleConnectionService.voiceState.value != VoiceState.RECORDING ||
             !BleConnectionService.bleMode.value
@@ -139,6 +172,8 @@ internal class VoiceProcessor(
         val recordingDurationMs = (SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs)
             .coerceAtLeast(0L)
         recordingStartedAtElapsedMs = 0L
+        capturePendingGestureDiags()
+        recordingStartedAtWallMs = 0L
         val pcmData = pcmBuffer.toByteArray()
         val pcmDurationMs = pcmData.size * 1_000L /
             (PCM_SAMPLE_RATE * PCM_CHANNELS * (PCM_BITS_PER_SAMPLE / 8))
@@ -164,14 +199,12 @@ internal class VoiceProcessor(
                 "Incomplete BLE PCM capture ($completeness%): refusing ASR to prevent hallucination"
             )
             conversationSession.reset()
-            historyRepository.addEntry(HistoryEntry(
-                id = UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
+            saveHistoryEntry(
                 transcription = "",
                 response = "",
                 isSilent = true,
-                errorMessage = "音声データの受信が不完全でした"
-            ))
+                errorMessage = "音声データの受信が不完全でした",
+            )
             BleConnectionService.setTranscription("")
             BleConnectionService.setResponse("")
             BleConnectionService.setErrorMessage(
@@ -184,14 +217,12 @@ internal class VoiceProcessor(
         if (!hasSpeechInPcm(pcmData)) {
             Log.d(TAG, "VAD: no speech in BLE audio — skipping transcription")
             conversationSession.reset()
-            historyRepository.addEntry(HistoryEntry(
-                id = UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
+            saveHistoryEntry(
                 transcription = "",
                 response = "",
                 isSilent = true,
-                errorMessage = ""
-            ))
+                errorMessage = "",
+            )
             BleConnectionService.setTranscription("")
             BleConnectionService.setResponse("")
             BleConnectionService.setErrorMessage("無音のためスキップしました（もう一度話してください）")
@@ -248,14 +279,12 @@ internal class VoiceProcessor(
                 val errMsg = ready.exceptionOrNull()?.message ?: "モデル準備に失敗しました"
                 BleConnectionService.setErrorMessage(errMsg)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
-                historyRepository.addEntry(HistoryEntry(
-                    id = UUID.randomUUID().toString(),
-                    timestamp = System.currentTimeMillis(),
+                saveHistoryEntry(
                     transcription = "",
                     response = "",
                     isSilent = false,
-                    errorMessage = errMsg
-                ))
+                    errorMessage = errMsg,
+                )
                 return
             }
             if (coldStart) {
@@ -267,14 +296,12 @@ internal class VoiceProcessor(
                 val errMsg = "ASR error: ${asr.exceptionOrNull()?.message}"
                 BleConnectionService.setErrorMessage(errMsg)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
-                historyRepository.addEntry(HistoryEntry(
-                    id = UUID.randomUUID().toString(),
-                    timestamp = System.currentTimeMillis(),
+                saveHistoryEntry(
                     transcription = "",
                     response = "",
                     isSilent = false,
-                    errorMessage = errMsg
-                ))
+                    errorMessage = errMsg,
+                )
                 return
             }
 
@@ -287,14 +314,12 @@ internal class VoiceProcessor(
 
             if (AsrTextFilter.isGarbageOrEmpty(rawText)) {
                 Log.w(TAG, "ASR garbage/empty detected: '$rawText' — treating as silent")
-                historyRepository.addEntry(HistoryEntry(
-                    id = UUID.randomUUID().toString(),
-                    timestamp = System.currentTimeMillis(),
+                saveHistoryEntry(
                     transcription = "",
                     response = "",
                     isSilent = true,
-                    errorMessage = ""
-                ))
+                    errorMessage = "",
+                )
                 BleConnectionService.setTranscription("")
                 BleConnectionService.setResponse("")
                 BleConnectionService.setErrorMessage("発話として認識できませんでした（背景音の可能性）")
@@ -327,15 +352,11 @@ internal class VoiceProcessor(
                         remainingUserText = null
                     )
                     BleConnectionService.setResponse(confirmation)
-                    historyRepository.addEntry(
-                        HistoryEntry(
-                            id = UUID.randomUUID().toString(),
-                            timestamp = System.currentTimeMillis(),
-                            transcription = transcribed,
-                            response = confirmation,
-                            isSilent = false,
-                            errorMessage = ""
-                        )
+                    saveHistoryEntry(
+                        transcription = transcribed,
+                        response = confirmation,
+                        isSilent = false,
+                        errorMessage = "",
                     )
                     presentResponse(confirmation)
                     return
@@ -354,14 +375,12 @@ internal class VoiceProcessor(
                 val errMsg = "Chat error: ${chat.exceptionOrNull()?.message}"
                 BleConnectionService.setErrorMessage(errMsg)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
-                historyRepository.addEntry(HistoryEntry(
-                    id = UUID.randomUUID().toString(),
-                    timestamp = System.currentTimeMillis(),
+                saveHistoryEntry(
                     transcription = BleConnectionService.transcription.value,
                     response = "",
                     isSilent = false,
-                    errorMessage = errMsg
-                ))
+                    errorMessage = errMsg,
+                )
                 return
             }
 
@@ -380,14 +399,12 @@ internal class VoiceProcessor(
                 BleConnectionService.setResponse(finalResponse)
                 Log.d(TAG, "Response: $responseText")
                 conversationSession.addTurn("assistant", finalResponse)
-                historyRepository.addEntry(HistoryEntry(
-                    id = UUID.randomUUID().toString(),
-                    timestamp = System.currentTimeMillis(),
+                saveHistoryEntry(
                     transcription = BleConnectionService.transcription.value,
                     response = finalResponse,
                     isSilent = false,
-                    errorMessage = ""
-                ))
+                    errorMessage = "",
+                )
                 presentResponse(finalResponse)
             }
         } catch (e: Exception) {
@@ -395,14 +412,12 @@ internal class VoiceProcessor(
             val errMsg = "エラー: ${e.message}"
             BleConnectionService.setErrorMessage(errMsg)
             BleConnectionService.setVoiceState(VoiceState.ERROR)
-            historyRepository.addEntry(HistoryEntry(
-                id = UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
+            saveHistoryEntry(
                 transcription = BleConnectionService.transcription.value,
                 response = "",
                 isSilent = false,
-                errorMessage = errMsg
-            ))
+                errorMessage = errMsg,
+            )
         } finally {
             pipelineTiming.discardIfRunning()
             try { file.delete() } catch (_: Exception) {}
@@ -576,14 +591,12 @@ internal class VoiceProcessor(
             val errorMsg = "リマインダーの設定に必要な情報が足りませんでした。"
             BleConnectionService.setResponse(errorMsg)
             conversationSession.addTurn("assistant", errorMsg)
-            historyRepository.addEntry(HistoryEntry(
-                id = UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
+            saveHistoryEntry(
                 transcription = BleConnectionService.transcription.value,
                 response = errorMsg,
                 isSilent = false,
-                errorMessage = ""
-            ))
+                errorMessage = "",
+            )
             presentResponse(errorMsg)
             return
         }
@@ -593,14 +606,12 @@ internal class VoiceProcessor(
             val errorMsg = "日時の解析に失敗しました: $datetimeStr"
             BleConnectionService.setResponse(errorMsg)
             conversationSession.addTurn("assistant", errorMsg)
-            historyRepository.addEntry(HistoryEntry(
-                id = UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
+            saveHistoryEntry(
                 transcription = BleConnectionService.transcription.value,
                 response = errorMsg,
                 isSilent = false,
-                errorMessage = ""
-            ))
+                errorMessage = "",
+            )
             presentResponse(errorMsg)
             return
         }
@@ -616,14 +627,12 @@ internal class VoiceProcessor(
         val confirmation = buildReminderConfirmationText(title, datetimeStr, ttsEnabled)
         BleConnectionService.setResponse(confirmation)
         conversationSession.addTurn("assistant", confirmation)
-        historyRepository.addEntry(HistoryEntry(
-            id = UUID.randomUUID().toString(),
-            timestamp = System.currentTimeMillis(),
+        saveHistoryEntry(
             transcription = BleConnectionService.transcription.value,
             response = confirmation,
             isSilent = false,
-            errorMessage = ""
-        ))
+            errorMessage = "",
+        )
         conversationSession.reset()
         presentResponse(confirmation)
     }

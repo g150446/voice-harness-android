@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
-enum class AppScreen { HOME, HISTORY_LIST, HISTORY_DETAIL, REMINDER_LIST }
+enum class AppScreen { HOME, HISTORY_LIST, HISTORY_DETAIL, REMINDER_LIST, GESTURE_DIAG }
 
 class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -150,6 +150,14 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
         _currentScreen.value = AppScreen.REMINDER_LIST
     }
 
+    fun openGestureDiag() {
+        _currentScreen.value = AppScreen.GESTURE_DIAG
+    }
+
+    fun clearGestureDiag() {
+        GestureDiagStore.clear()
+    }
+
     fun deleteReminder(id: String) {
         reminderRepository.deleteEntry(id)
         ReminderAlarmScheduler.cancel(getApplication(), id)
@@ -161,6 +169,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
             AppScreen.HISTORY_DETAIL -> _currentScreen.value = AppScreen.HISTORY_LIST
             AppScreen.HISTORY_LIST -> _currentScreen.value = AppScreen.HOME
             AppScreen.REMINDER_LIST -> _currentScreen.value = AppScreen.HOME
+            AppScreen.GESTURE_DIAG -> _currentScreen.value = AppScreen.HOME
             AppScreen.HOME -> {}
         }
     }

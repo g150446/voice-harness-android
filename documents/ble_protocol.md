@@ -82,8 +82,43 @@ Byte 0  Byte 1  Byte 2      Bytes 3+
 | `0x11` | モーション収束 | float32×3 + uint32 + float32×3 (統計情報) |
 | `0x20` | ライトスリープ移行 | なし |
 | `0x21` | ライトスリープ復帰 | なし |
+| `0x30` | ジェスチャ診断（ライブ） | stage, reason, f32×3（17 B） |
+| `0x33` | ジェスチャ履歴 begin | count, session（5 B）。`GESTURE_DEBUG_HISTORY=1` のみ |
+| `0x34` | ジェスチャ履歴 entry | u16 t_ms, stage, reason, f32×3（19 B） |
+| `0x35` | ジェスチャ履歴 end | count, session（5 B） |
 
 **重要**: 録音トリガーは `0x01`/`0x02` のみ。`0x11` (motion_settled) はモーション状態の通知であり、録音ジェスチャーではない。
+
+### 0x30 ジェスチャ診断
+
+```
+17 bytes: [0x00][0x55][0x30][stage][reason][f32 v1][f32 v2][f32 v3]
+```
+
+stage 例: `0x01` outbound_start, `0x02` outbound_ready, `0x0F` outbound_gyro,
+`0x09` match, `0x0C` stop_palm_up, `0x0D` gyro_enabled, `0x0E` gyro_disabled,
+`0x22` hold_sample, `0x80` reset。
+詳細は harness-node `docs/flex_pronation_gesture.md`。
+
+**Android 側の扱い**
+
+- `BleManager` が `0x30` をパースし `GestureDiagStore` に蓄積する（音声パイプラインには載せない）
+- 録音停止時に `[start−8s, stop+1.5s]` をスライスし、`HistoryEntry.gestureDiags` に保存
+- 履歴詳細で文字起こしと並べて表示（ライブ確認はホーム「ジェスチャ診断」）
+- 本番 FW はライブ `0x30` のみで足りる（バッチ不要）
+
+### 0x33–0x35 ジェスチャ履歴バッチ
+
+録音終了（`0x02` の前後）またはシーケンス失敗後にまとめて送信。録音中の PCM とは競合しない。
+`GESTURE_DEBUG_HISTORY=1` のデバッグ OTA のみ。
+
+```
+5 bytes:  [0x00][0x55][0x33][count][session]
+19 bytes: [0x00][0x55][0x34][u16 t_ms LE][stage][reason][f32×3]
+5 bytes:  [0x00][0x55][0x35][count][session]
+```
+
+Android は `GestureDiagStore` に蓄積する。停止直後にバッチが届けば履歴スナップショットとして優先利用する。
 
 ### 0x10 モーション中パケット詳細
 

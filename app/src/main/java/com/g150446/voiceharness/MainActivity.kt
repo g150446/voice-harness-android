@@ -47,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -144,6 +145,7 @@ fun VoiceScreen(
             AppScreen.HISTORY_LIST -> HistoryListScreen(modifier = modifier, viewModel = viewModel)
             AppScreen.HISTORY_DETAIL -> HistoryDetailScreen(modifier = modifier, viewModel = viewModel)
             AppScreen.REMINDER_LIST -> ReminderListScreen(modifier = modifier, viewModel = viewModel)
+            AppScreen.GESTURE_DIAG -> GestureDiagScreen(modifier = modifier, viewModel = viewModel)
         }
     }
 }
@@ -598,6 +600,121 @@ fun HomeScreen(
         ) {
             Text("履歴")
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = { viewModel.openGestureDiag() },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("ジェスチャ診断")
+        }
+    }
+}
+
+@Composable
+fun GestureDiagScreen(
+    modifier: Modifier = Modifier,
+    viewModel: VoiceViewModel
+) {
+    BackHandler { viewModel.navigateBack() }
+
+    val live by GestureDiagStore.liveEntries.collectAsState()
+    val sessions by GestureDiagStore.sessions.collectAsState()
+    val status by GestureDiagStore.statusLine.collectAsState()
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(scrollState)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = { viewModel.navigateBack() }) {
+                Text("戻る")
+            }
+            Text(
+                text = "ジェスチャ診断",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { viewModel.clearGestureDiag() }) {
+                Text("クリア")
+            }
+        }
+
+        Text(
+            text = "FW の 0x30（ライブ）と 0x33–0x35（録音終了バッチ）。" +
+                "履歴バッチは GESTURE_DEBUG_HISTORY=1 の OTA のみ。",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        if (status.isNotEmpty()) {
+            Text(
+                text = status,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+        }
+
+        Text(
+            text = "バッチセッション (${sessions.size})",
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
+        if (sessions.isEmpty()) {
+            Text(
+                text = "（まだバッチなし）",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+        } else {
+            sessions.take(5).forEach { session ->
+                Text(
+                    text = "session=${session.sessionId} entries=${session.entries.size}" +
+                        if (session.complete) " OK" else " partial",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                session.entries.takeLast(12).forEach { e ->
+                    Text(
+                        text = e.summaryLine(),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+
+        Text(
+            text = "ライブ / 蓄積 (${live.size})",
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
+        live.takeLast(40).asReversed().forEach { e ->
+            Text(
+                text = e.summaryLine(),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 1.dp)
+            )
+        }
     }
 }
 
@@ -648,13 +765,18 @@ fun HistoryListScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 32.dp)
             )
-        } else {
+                } else {
             entries.forEach { entry ->
                 val previewText = when {
                     entry.isSilent -> "（無音）"
                     entry.errorMessage.isNotEmpty() -> "[エラー] ${entry.errorMessage.take(40)}"
                     entry.transcription.length > 60 -> entry.transcription.take(60) + "…"
                     else -> entry.transcription
+                }
+                val gestureBadge = if (entry.gestureDiags.isNotEmpty()) {
+                    " · ジェスチャ${entry.gestureDiags.size}"
+                } else {
+                    ""
                 }
                 val interactionSource = remember(entry.id) { MutableInteractionSource() }
                 Column(
@@ -667,7 +789,7 @@ fun HistoryListScreen(
                         .padding(vertical = 12.dp)
                 ) {
                     Text(
-                        text = dateFmt.format(Date(entry.timestamp)),
+                        text = dateFmt.format(Date(entry.timestamp)) + gestureBadge,
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -773,8 +895,43 @@ fun HistoryDetailScreen(
                 text = entry.errorMessage,
                 fontSize = 14.sp,
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
             )
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        Text(
+            text = "ジェスチャ判定",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
+        if (entry.gestureDiags.isEmpty()) {
+            Text(
+                text = "（診断データなし）",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                text = "${entry.gestureDiags.size} 件（実測と閾値）",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 6.dp)
+            )
+            entry.gestureDiags.forEach { diag ->
+                Text(
+                    text = diag.historyDetailLine(),
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp)
+                )
+            }
         }
     }
 }

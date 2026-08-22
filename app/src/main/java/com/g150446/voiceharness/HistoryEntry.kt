@@ -6,5 +6,7 @@ data class HistoryEntry(
     val transcription: String,
     val response: String,
     val isSilent: Boolean,
-    val errorMessage: String
+    val errorMessage: String,
+    /** Gesture milestones for this recording session (measured values from FW). */
+    val gestureDiags: List<GestureDiagEntry> = emptyList(),
 )

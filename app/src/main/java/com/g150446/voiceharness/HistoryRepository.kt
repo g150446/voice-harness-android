@@ -44,6 +44,7 @@ class HistoryRepository(context: Context) {
                 put("response", entry.response)
                 put("isSilent", entry.isSilent)
                 put("errorMessage", entry.errorMessage)
+                put("gestureDiags", GestureDiagEntry.listToJson(entry.gestureDiags))
             })
         }
         return array.toString()
@@ -55,6 +56,7 @@ class HistoryRepository(context: Context) {
         transcription = obj.optString("transcription", ""),
         response = obj.optString("response", ""),
         isSilent = obj.optBoolean("isSilent", false),
-        errorMessage = obj.optString("errorMessage", "")
+        errorMessage = obj.optString("errorMessage", ""),
+        gestureDiags = GestureDiagEntry.listFromJson(obj.optJSONArray("gestureDiags")),
     )
 }

@@ -88,8 +88,11 @@ adb connect 100.102.210.64:5555
 1. nRF52840 で録音ジェスチャーを行う
 2. 画面が **Recording (BLE)...** になり、PCM 音声を蓄積
 3. 再度ジェスチャーを行うか、無音が 5 秒続くと録音停止 → `Silero VAD` で音声判定し、必要に応じて FFT フォールバック / rescue 判定を行ってからテキスト化・AI 応答・読み上げ
+4. 結果は **履歴** に保存される。ジェスチャ時は FW 診断（`0x30` の実測値）も同じ履歴に付き、詳細で文字起こしと並べて確認できる
 
 AI が読み上げ中に再度ジェスチャーを行うと、読み上げを中断して新しい対話を開始できる。
+
+ライブの診断ストリームはホームの **ジェスチャ診断**、仕様は `documents/history_feature.md` / `documents/ble_protocol.md`。
 
 ### 電話マイク録音（手動）
 
@@ -163,7 +166,8 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 
 ## 詳細ドキュメント
 
-- [`documents/ble_protocol.md`](documents/ble_protocol.md) — BLE パケット仕様
+- [`documents/ble_protocol.md`](documents/ble_protocol.md) — BLE パケット仕様（ジェスチャ診断 `0x30` 含む）
+- [`documents/history_feature.md`](documents/history_feature.md) — 会話履歴とジェスチャ判定の保存・UI
 - [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
 - [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Vuzix Z100へのAI返答出力とフォールバック仕様
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
