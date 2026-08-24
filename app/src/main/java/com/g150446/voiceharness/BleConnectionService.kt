@@ -42,6 +42,10 @@ internal fun nextDoubleTapStatus(
 class BleConnectionService : Service() {
 
     companion object {
+        private const val ACTION_ASSISTANT_QUERY =
+            "com.g150446.voiceharness.action.ASSISTANT_QUERY"
+        private const val EXTRA_ASSISTANT_TEXT = "assistant_text"
+        private const val EXTRA_CONVERSATION_ID = "assistant_conversation_id"
         // BLE state flows — independent of Service lifecycle.
         private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
         val connectionState: StateFlow<BleConnectionState> = _connectionState.asStateFlow()
@@ -127,6 +131,31 @@ class BleConnectionService : Service() {
             instance?.voiceProcessor?.stopSpeaking()
         }
 
+        /** Headless entry point used by the system digital-assistant session. */
+        fun submitAssistantText(context: Context, text: String, conversationId: String) {
+            val intent = Intent(context, BleConnectionService::class.java).apply {
+                action = ACTION_ASSISTANT_QUERY
+                putExtra(EXTRA_ASSISTANT_TEXT, text)
+                putExtra(EXTRA_CONVERSATION_ID, conversationId)
+            }
+            if (Build.VERSION.SDK_INT >= 26) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        internal fun setPhonePlaybackActive(active: Boolean) {
+            instance?.apply {
+                setPlaybackActive(active)
+                if (!active) releaseProcessingWakeLock()
+            }
+        }
+
+        internal fun releaseAssistantProcessing() {
+            instance?.releaseProcessingWakeLock()
+        }
+
         fun initializeResponseOutputTarget(context: Context) {
             _responseOutputTarget.value = ResponseOutputPreferences(context).target()
         }
@@ -180,6 +209,8 @@ class BleConnectionService : Service() {
     private var voiceProcessor: VoiceProcessor? = null
     private var smartGlassesOutputManager: SmartGlassesOutputManager? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var processingWakeLock: PowerManager.WakeLock? = null
+    private var playbackActive = false
 
     override fun onCreate() {
         super.onCreate()
@@ -249,6 +280,14 @@ class BleConnectionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand")
+        if (intent?.action == ACTION_ASSISTANT_QUERY) {
+            val text = intent.getStringExtra(EXTRA_ASSISTANT_TEXT).orEmpty()
+            val conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID).orEmpty()
+            if (text.isNotBlank() && conversationId.isNotBlank()) {
+                acquireProcessingWakeLock()
+                voiceProcessor?.handleAssistantText(text, conversationId)
+            }
+        }
         return START_STICKY
     }
 
@@ -260,6 +299,7 @@ class BleConnectionService : Service() {
         smartGlassesOutputManager?.close()
         serviceScope.cancel()
         releaseWakeLock()
+        releaseProcessingWakeLock()
         _connectionState.value = BleConnectionState.DISCONNECTED
         _scannedDevices.value = emptyList()
         _batteryLevel.value = null
@@ -288,6 +328,20 @@ class BleConnectionService : Service() {
             Log.d(TAG, "WakeLock released")
         }
         wakeLock = null
+    }
+
+    private fun acquireProcessingWakeLock() {
+        if (processingWakeLock?.isHeld == true) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        processingWakeLock = pm.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "HarnessVoice:AssistantProcessingWakeLock",
+        ).apply { acquire(5 * 60 * 1000L) }
+    }
+
+    private fun releaseProcessingWakeLock() {
+        if (processingWakeLock?.isHeld == true) processingWakeLock?.release()
+        processingWakeLock = null
     }
 
     // --- Notification ---
@@ -320,11 +374,35 @@ class BleConnectionService : Service() {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                foregroundServiceTypes()
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    private fun setPlaybackActive(active: Boolean) {
+        if (playbackActive == active) return
+        playbackActive = active
+        startForegroundWithNotification(
+            if (active) "AI response playing" else connectionNotificationText()
+        )
+    }
+
+    private fun foregroundServiceTypes(): Int {
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (playbackActive && Build.VERSION.SDK_INT >= 29) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        }
+        return types
+    }
+
+    private fun connectionNotificationText(): String = when (_connectionState.value) {
+        BleConnectionState.SCANNING -> "BLE: Scanning..."
+        BleConnectionState.CONNECTING -> "BLE: Connecting..."
+        BleConnectionState.CONNECTED -> _batteryLevel.value?.let { "BLE: Connected  Battery: $it%" }
+            ?: "BLE: Connected"
+        BleConnectionState.DISCONNECTED -> "BLE: Disconnected"
     }
 
     private fun updateNotification(state: BleConnectionState, batteryLevel: Int?) {

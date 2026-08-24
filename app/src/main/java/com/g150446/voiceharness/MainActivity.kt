@@ -42,11 +42,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -57,6 +60,7 @@ import java.util.Locale
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.g150446.voiceharness.ui.theme.HarnessVoiceTheme
+import com.g150446.voiceharness.assistant.AssistantRoleManager
 
 private const val TAG = "MainActivity"
 
@@ -76,7 +80,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        if (hasBlePermissions()) {
+        if (hasRequiredPermissions()) {
             BleConnectionService.start(this)
         } else {
             requestAllPermissions()
@@ -103,6 +107,10 @@ class MainActivity : ComponentActivity() {
             PackageManager.PERMISSION_GRANTED
     }
 
+    private fun hasRequiredPermissions(): Boolean = hasBlePermissions() &&
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+        PackageManager.PERMISSION_GRANTED
+
     private fun requestBatteryOptimizationExemption() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         val pm = getSystemService(PowerManager::class.java)
@@ -123,7 +131,8 @@ class MainActivity : ComponentActivity() {
     private fun requestAllPermissions() {
         val permissions = mutableListOf(
             Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.RECORD_AUDIO,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions += Manifest.permission.POST_NOTIFICATIONS
@@ -173,7 +182,14 @@ fun HomeScreen(
     val modelStatus by viewModel.modelStatus.collectAsState()
     val lastPipelineMs by viewModel.lastPipelineMs.collectAsState()
     val context = LocalContext.current
+    val displayLocale = LocalConfiguration.current.locales[0]
     val scrollState = rememberScrollState()
+    var isAssistant by remember { mutableStateOf(AssistantRoleManager.isHeld(context)) }
+    val assistantRoleLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        isAssistant = AssistantRoleManager.isHeld(context)
+    }
 
     Column(
         modifier = modifier
@@ -189,6 +205,22 @@ fun HomeScreen(
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(top = 8.dp, bottom = 8.dp)
         )
+
+        if (!isAssistant) {
+            OutlinedButton(
+                onClick = {
+                    val intent = if (AssistantRoleManager.isAvailable(context)) {
+                        AssistantRoleManager.requestIntent(context)
+                    } else {
+                        AssistantRoleManager.fallbackSettingsIntent()
+                    }
+                    assistantRoleLauncher.launch(intent)
+                },
+                modifier = Modifier.padding(bottom = 8.dp),
+            ) {
+                Text("デフォルトの音声アシスタントに設定")
+            }
+        }
 
         val (dotColor, bleLabel) = when (bleConnectionState) {
             BleConnectionState.CONNECTED -> Color(0xFF43A047) to "BLE Connected"
@@ -213,7 +245,7 @@ fun HomeScreen(
         }
 
         doubleTapStatus.lastDetectedAtMillis?.let { detectedAtMillis ->
-            val detectedAt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+            val detectedAt = SimpleDateFormat("HH:mm:ss", displayLocale)
                 .format(Date(detectedAtMillis))
             Text(
                 text = "ダブルタップ受信: ${doubleTapStatus.count}回（$detectedAt）",
@@ -742,7 +774,8 @@ fun HistoryListScreen(
     BackHandler { viewModel.navigateBack() }
 
     val entries by viewModel.historyEntries.collectAsState()
-    val dateFmt = remember { SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault()) }
+    val historyLocale = LocalConfiguration.current.locales[0]
+    val dateFmt = remember(historyLocale) { SimpleDateFormat("yyyy/MM/dd HH:mm", historyLocale) }
     val scrollState = rememberScrollState()
 
     Column(
@@ -827,7 +860,8 @@ fun HistoryDetailScreen(
     BackHandler { viewModel.navigateBack() }
 
     val entry = viewModel.selectedHistoryEntry.collectAsState().value ?: return
-    val dateFmt = remember { SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.getDefault()) }
+    val historyLocale = LocalConfiguration.current.locales[0]
+    val dateFmt = remember(historyLocale) { SimpleDateFormat("yyyy/MM/dd HH:mm:ss", historyLocale) }
     val scrollState = rememberScrollState()
 
     Column(

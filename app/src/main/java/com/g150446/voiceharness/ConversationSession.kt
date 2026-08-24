@@ -1,8 +1,5 @@
 package com.g150446.voiceharness
 
-import android.util.Log
-
-private const val TAG = "ConversationSession"
 private const val SESSION_TIMEOUT_MS = 10 * 60 * 1000L // 10 minutes
 private const val MAX_INFERENCE_TURNS = 3
 
@@ -40,13 +37,9 @@ class ConversationSession {
     fun addTurn(role: String, content: String) {
         _turns.add(ConversationTurn(role = role, content = content))
         lastActivityAt = System.currentTimeMillis()
-        Log.d(TAG, "Added turn: role=$role, turns=${_turns.size}")
     }
 
     fun reset() {
-        if (_turns.isNotEmpty()) {
-            Log.d(TAG, "Resetting conversation session (had ${_turns.size} turns)")
-        }
         _turns.clear()
         lastActivityAt = 0L
     }
