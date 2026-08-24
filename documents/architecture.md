@@ -92,6 +92,7 @@ val scannedDevices: StateFlow<List<BleDeviceInfo>>
 val preferredDevice: StateFlow<BleDeviceInfo?>
 val batteryLevel: StateFlow<Int?>
 val isPrimary: StateFlow<Boolean>
+val doubleTapStatus: StateFlow<DoubleTapStatus>
 
 // 音声処理状態 (VoiceProcessor が書き込む)
 val voiceState: StateFlow<VoiceState>
@@ -111,6 +112,10 @@ Serviceは `VoiceProcessor` を先に生成してから `BleManager` を開始�
 音声処理パイプライン（ストリーミング無音監視 → 完全性検査 → VAD → AI backend → TTS）を実行し、結果を
 companion objectの状態Flowへ書き込む。ViewModel / UIはその状態だけを観察する。
 AI backend は設定プロファイル（Gemma / Qwen+LFM / Groq）で切り替わる。
+
+ダブルタップイベント `0x12` は同じ入力Channelで順序を保って受信し、Serviceが
+`DoubleTapStatus` の回数と最終受信時刻を更新する。ViewModel / UIはそのStateFlowを観察し、
+ホーム画面へ表示する。音声処理には渡されるが操作対象にはならず、録音開始・停止は行わない。
 
 ### バックグラウンド動作の仕組み
 

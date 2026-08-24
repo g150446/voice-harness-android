@@ -38,6 +38,7 @@ sealed class BleEvent {
     data object RecordingStopped : BleEvent()
     data class MotionActive(val ax: Float, val ay: Float, val az: Float) : BleEvent()
     data object GestureDetected : BleEvent()
+    data object DoubleTap : BleEvent()
     data object LightSleepEnter : BleEvent()
     data object LightSleepWake : BleEvent()
     data object PeerConnected : BleEvent()
@@ -50,6 +51,20 @@ sealed class BleEvent {
         val v2: Float,
         val v3: Float,
     ) : BleEvent()
+}
+
+/** Parses event packets whose decoding has no connection-management side effects. */
+internal fun parseSimpleBleEvent(data: ByteArray): BleEvent? {
+    if (data.size < 3 || (data[1].toInt() and 0xFF) != 0x55) return null
+
+    return when (data[2].toInt() and 0xFF) {
+        0x02 -> BleEvent.RecordingStopped
+        0x11 -> BleEvent.GestureDetected
+        0x12 -> BleEvent.DoubleTap
+        0x20 -> BleEvent.LightSleepEnter
+        0x21 -> BleEvent.LightSleepWake
+        else -> null
+    }
 }
 
 sealed class BleVoiceInput {
@@ -626,15 +641,18 @@ class BleManager(
                         }
                         BleEvent.RecordingStarted
                     }
-                    0x02 -> BleEvent.RecordingStopped
+                    0x02 -> parseSimpleBleEvent(data)
                     0x10 -> parseMotionActive(data)
                     0x11 -> {
                         Log.d(TAG, "Gesture detected (motion settled)")
-                        BleEvent.GestureDetected
+                        parseSimpleBleEvent(data)
                     }
-
-                    0x20 -> BleEvent.LightSleepEnter
-                    0x21 -> BleEvent.LightSleepWake
+                    0x12 -> {
+                        Log.i(TAG, "Double tap event received")
+                        parseSimpleBleEvent(data)
+                    }
+                    0x20 -> parseSimpleBleEvent(data)
+                    0x21 -> parseSimpleBleEvent(data)
                     0x31 -> {
                         // peer connected: negotiate role based on preference
                         val priority = preferences.connectionPriority()

@@ -26,6 +26,19 @@ private const val NOTIFICATION_ID = 1001
 private const val CHANNEL_ID = "ble_connection"
 private const val WAKE_LOCK_TAG = "HarnessVoice:BleConnectionWakeLock"
 
+data class DoubleTapStatus(
+    val count: Long = 0,
+    val lastDetectedAtMillis: Long? = null,
+)
+
+internal fun nextDoubleTapStatus(
+    current: DoubleTapStatus,
+    detectedAtMillis: Long,
+): DoubleTapStatus = DoubleTapStatus(
+    count = current.count + 1,
+    lastDetectedAtMillis = detectedAtMillis,
+)
+
 class BleConnectionService : Service() {
 
     companion object {
@@ -44,6 +57,9 @@ class BleConnectionService : Service() {
 
         private val _isPrimary = MutableStateFlow(true)
         val isPrimary: StateFlow<Boolean> = _isPrimary.asStateFlow()
+
+        private val _doubleTapStatus = MutableStateFlow(DoubleTapStatus())
+        val doubleTapStatus: StateFlow<DoubleTapStatus> = _doubleTapStatus.asStateFlow()
 
         // Voice processing state flows — written by VoiceProcessor, read by ViewModel for UI.
         private val _voiceState = MutableStateFlow(VoiceState.READY)
@@ -78,6 +94,10 @@ class BleConnectionService : Service() {
         internal fun setErrorMessage(text: String) { _errorMessage.value = text }
         internal fun setBleMode(mode: Boolean) { _bleMode.value = mode }
         internal fun setLastPipelineMs(ms: Long) { _lastPipelineMs.value = ms }
+
+        internal fun recordDoubleTap(detectedAtMillis: Long = System.currentTimeMillis()) {
+            _doubleTapStatus.value = nextDoubleTapStatus(_doubleTapStatus.value, detectedAtMillis)
+        }
 
         private var instance: BleConnectionService? = null
 
@@ -197,7 +217,13 @@ class BleConnectionService : Service() {
                 }
             }
             serviceScope.launch(Dispatchers.IO) {
-                mgr.voiceInputs.collect { voiceProcessor?.handleBleInput(it) }
+                mgr.voiceInputs.collect { input ->
+                    if (input is BleVoiceInput.Event && input.event is BleEvent.DoubleTap) {
+                        recordDoubleTap()
+                        Log.i(TAG, "Double tap published to UI")
+                    }
+                    voiceProcessor?.handleBleInput(input)
+                }
             }
             serviceScope.launch {
                 mgr.scannedDevices.collect { _scannedDevices.value = it }

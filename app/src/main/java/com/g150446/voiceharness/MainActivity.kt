@@ -166,6 +166,7 @@ fun HomeScreen(
     val preferredBleDevice by viewModel.preferredBleDevice.collectAsState()
     val batteryLevel by viewModel.batteryLevel.collectAsState()
     val isPrimary by viewModel.isPrimary.collectAsState()
+    val doubleTapStatus by viewModel.doubleTapStatus.collectAsState()
     val connectionPriority by viewModel.connectionPriority.collectAsState()
     val responseOutputTarget by viewModel.responseOutputTarget.collectAsState()
     val smartGlassesState by viewModel.smartGlassesState.collectAsState()
@@ -209,6 +210,19 @@ fun HomeScreen(
             if (bleMode && state == VoiceState.RECORDING) {
                 Text(text = "(nRF52840 recording)", fontSize = 11.sp, color = Color(0xFF9E9E9E))
             }
+        }
+
+        doubleTapStatus.lastDetectedAtMillis?.let { detectedAtMillis ->
+            val detectedAt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                .format(Date(detectedAtMillis))
+            Text(
+                text = "ダブルタップ受信: ${doubleTapStatus.count}回（$detectedAt）",
+                fontSize = 12.sp,
+                color = Color(0xFF43A047),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+            )
         }
 
         preferredBleDevice?.let { device ->
