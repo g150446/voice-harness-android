@@ -50,3 +50,18 @@ one another.
 - Verify local TTS, Bluetooth audio, and smart-glasses routing.
 - Kill and restart the process, reconnect harness-node, and invoke again.
 - Confirm protected device actions request unlock rather than attempting to bypass the keyguard.
+
+### 2026-08-24 result
+
+Validated on a Motorola razr 50s running Android 16 / API 36:
+
+- Android accepted Voice Harness as `ROLE_ASSISTANT` and bound its interaction and recognition services.
+- Keyguard launch capability was reported as enabled after reloading the role metadata.
+- In forced deep idle, HarnessNode remained connected and delivered recording events and PCM.
+- The utterance "入力テスト" completed Groq Whisper, chat, and local Android TTS in 1.856 seconds.
+- The BLE service changed foreground types from `connectedDevice` (16) to
+  `connectedDevice|mediaPlayback` (18) only during TTS, then returned to 16.
+- No process crash or foreground-service security exception occurred.
+
+The device's original OpenDroid assistant role and simulated battery/idle state were restored after
+the test.
