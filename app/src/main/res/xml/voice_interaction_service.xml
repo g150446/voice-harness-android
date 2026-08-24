@@ -3,4 +3,5 @@
     android:recognitionService="com.g150446.voiceharness.assistant.HarnessRecognitionService"
     android:sessionService="com.g150446.voiceharness.assistant.HarnessVoiceInteractionSessionService"
     android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true"
     android:supportsLocalInteraction="true" />

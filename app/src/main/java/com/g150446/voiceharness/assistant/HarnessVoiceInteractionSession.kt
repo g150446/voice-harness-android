@@ -9,6 +9,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.service.voice.VoiceInteractionSession
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.g150446.voiceharness.BleConnectionService
 import java.util.UUID
@@ -25,6 +26,7 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        Log.i(TAG, "Headless assistant session shown flags=$showFlags")
         setKeepAwake(true)
         startListening()
     }
@@ -33,11 +35,13 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
+            Log.w(TAG, "RECORD_AUDIO is not granted")
             finishHeadlessSession()
             return
         }
         val component = SpeechRecognizerResolver.resolveExternal(context)
         if (component == null) {
+            Log.e(TAG, "No external RecognitionService is available")
             finishHeadlessSession()
             return
         }
@@ -51,13 +55,17 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
                 override fun onEndOfSpeech() = Unit
                 override fun onPartialResults(partialResults: Bundle?) = Unit
                 override fun onEvent(eventType: Int, params: Bundle?) = Unit
-                override fun onError(error: Int) = finishHeadlessSession()
+                override fun onError(error: Int) {
+                    Log.w(TAG, "Speech recognition failed error=$error")
+                    finishHeadlessSession()
+                }
                 override fun onResults(results: Bundle?) {
                     val query = results
                         ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         ?.firstOrNull()
                         .orEmpty()
                     if (query.isNotBlank()) {
+                        Log.i(TAG, "Submitting recognized assistant query length=${query.length}")
                         BleConnectionService.submitAssistantText(context, query, conversationId)
                     }
                     finishHeadlessSession()
@@ -83,5 +91,9 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
         recognizer?.destroy()
         recognizer = null
         super.onDestroy()
+    }
+
+    private companion object {
+        const val TAG = "HarnessVoiceSession"
     }
 }
