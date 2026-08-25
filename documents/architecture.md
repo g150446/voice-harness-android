@@ -109,7 +109,7 @@ Serviceの1つのcollectorが `VoiceProcessor.handleBleInput()` へ渡す。こ�
 防ぐ。
 
 Serviceは `VoiceProcessor` を先に生成してから `BleManager` を開始する。VoiceProcessorは
-音声処理パイプライン（ストリーミング無音監視 → 完全性検査 → VAD → AI backend → TTS）を実行し、結果を
+ 音声処理パイプライン（完全性検査 → 停止後 VAD → AI backend → TTS）を実行し、結果を
 companion objectの状態Flowへ書き込む。ViewModel / UIはその状態だけを観察する。
 AI backend は ASR（`SttBackendId`）と LLM（`LlmBackendId`）を独立選択する。
 同一ローカルモデルは `BackendRegistry` で共有し二重ロードしない。OpenRouter は LLM のみ。
@@ -160,11 +160,9 @@ nRF52840                        Android
     │                               │   cue → built-in speaker
     │── [audio packets] ────────────▶│
     │                               │   pcmBuffer.write(packet.pcmData)
-    │                               │   ストリーミング Silero（無音 5 秒監視）
     │                               │
-    │◀─ RX 0x00 (無音 5 秒時のみ) ──│
     │── 0x02 (RecordingStopped) ───▶│
-    │                               │ handleBleRecordingStopped()
+    │                               │ handleBleRecordingStopped("firmware")
     │                               │   PCM completeness check
     │                               │   Silero VAD
     │                               │   FFT fallback / stuck 時のみ energy rescue
@@ -174,7 +172,8 @@ nRF52840                        Android
     │                               │   TTS 読み上げ or Z100
 ```
 
-録音開始はファームウェアのジェスチャー（TX `0x01`）が担う。停止はジェスチャー（TX `0x02`）に加え、Android が連続無音 5 秒を検出したとき RX `0x00` を送る。  
+録音開始はファームウェアのジェスチャー（TX `0x01`）が担う。停止もジェスチャー（TX `0x02`）のみ。  
+Android は無音検出で RX `0x00` を送らない。  
 Android アプリ側の UI は BLE デバイスのスキャン・選択・接続・切断だけを担当する。  
 スキャン結果はアプリ内で単一選択リストとして表示し、ユーザーは対象デバイスを選んで `Connect` する。
 
@@ -187,7 +186,7 @@ VADより前に評価する。Bluetoothヘッドセットとの併用を含む�
 
 BLE 音声は `VoiceProcessor` が担当し、次の順で判定する。
 
-1. 録音中: `SilenceEndpointTracker` が 512 サンプルごとに Silero 確率を見て、連続無音 5 秒で RX `0x00` を送る
+1. 録音中: PCM を蓄積するのみ（ホスト無音自動停止なし）
 2. 録音後: `hasSpeechInPcm()` がクリップ全体を `SileroVad.kt` で 512 サンプルごとに推論する
 3. Silero が異常に低い確率へ張り付く場合だけでなく、通常推論でも音声比率が閾値未満だった場合は `BleSpeechDetector.kt` の FFT 判定で再評価する
 4. Silero が stuck のときだけ、`peakAfterDC` / `rmsAfterDC` が小声の実測値以上ならエネルギー救済する。通常の非音声判定を振幅だけで上書きしない

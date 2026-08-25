@@ -107,39 +107,36 @@ FFT（512 点、Cooley-Tukey）
 - `BLE_ENERGY_RESCUE_*`: Silero が stuck のときだけ使う。無音（peak≈0.005 / rms≈0.0012）は拒否し、小声実測（peak=0.0215 / rms=0.0138）は通す
 - `BLE_RESCUE_*`: Silero が stuck ではなく、スペクトル比と振幅が十分なら救済する
 - `SILERO_MAX_GAIN`: 無音ピークを 100 倍して Silero に渡さない
-- `BLE_SILENCE_STOP_MS`: 録音中に無音が 5 秒続くと Android が RX `0x00` で停止する
+- `BLE_SILENCE_STOP_MS` / `SilenceEndpointTracker`: かつては無音 5 秒で RX `0x00` していたが、
+  現行は **停止を FW ジェスチャ（TX `0x02`）のみ** とし、ホストは RX 停止を送らない
 
 ### 実装メモ
 
 - Silero ラッパー: `app/src/main/java/com/g150446/voiceharness/SileroVad.kt`
 - FFT フォールバック: `app/src/main/java/com/g150446/voiceharness/BleSpeechDetector.kt`
-- 無音エンドポイント: `app/src/main/java/com/g150446/voiceharness/SilenceEndpointTracker.kt`
 - 外部ライブラリなし、Kotlin 純実装の Cooley-Tukey 基数2 FFT (`fftInPlace` 関数)
 
 - フレームサイズ: 512（2の累乗必須）
 - Hann 窓でスペクトルリーケージを低減
-- 録音中は 512 サンプルごとにストリーミング Silero で無音 5 秒を監視する
+- 録音中は PCM を蓄積するのみ（ホスト側の無音自動停止なし）
 - 録音終了後にクリップ全体へ Silero + スペクトル VAD を一括実行する
 
-### 録音中の無音エンドポイント
+### 録音停止
 
 ```
-PCM パケット到着
+FW 停止ジェスチャ
     │
     ▼
-512 サンプルに組み立て
+TX 0x02 (RecordingStopped)
     │
     ▼
-DC 除去 + gain cap + Silero predict
+handleBleRecordingStopped("firmware")
     │
-    ├─ prob > 0.5 → 連続無音カウンタをリセット
-    │
-    └─ 非音声が連続 5 秒（157 フレーム） → RX 0x00 で録音停止
-                                           後続の TX 0x02 は無視
+    ▼
+クリップ全体 VAD → 無音なら ASR スキップ
 ```
 
-- 録音開始直後の無音も同じ 5 秒で止める
-- 発話のあとの無音 5 秒でも止める
+- Android は録音中に RX `0x00` を送らない
 - 停止後は通常どおりクリップ全体の VAD を実行し、無音なら ASR をスキップする
 
 ### ASR 語彙とプロンプトエコー
@@ -171,4 +168,5 @@ Spectrum VAD fallback: reason=Silero output stuck near zero, speechFrames=12/31 
 ## 補足
 
 以前は電話マイク経路に対して振幅ベースの簡易 VAD を持っていたが、現在は削除済み。  
-録音開始はファームウェアのジェスチャー（`0x01`）が担う。停止はジェスチャー（`0x02`）に加え、Android が無音 5 秒を検出したとき RX `0x00` で要求する。
+録音開始はファームウェアのジェスチャー（TX `0x01`）が担う。停止もファームウェアの
+ジェスチャー（TX `0x02`）のみ。Android は無音検出で RX `0x00` を送らない。

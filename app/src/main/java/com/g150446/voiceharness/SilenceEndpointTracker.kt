@@ -3,6 +3,9 @@ package com.g150446.voiceharness
 /**
  * Counts consecutive silent Silero frames and reports when silence has lasted
  * [silenceDurationMs] (default 5 seconds). Any speech frame resets the counter.
+ *
+ * No longer used to drive RX 0x00 auto-stop; recording stop is firmware gesture only.
+ * Kept for unit tests and possible future UI-side endpointing without device writes.
  */
 internal class SilenceEndpointTracker(
     private val sampleRate: Int = 16_000,

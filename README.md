@@ -8,8 +8,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 [nRF52840 ジェスチャー検知]
         │ BLE 0x01 (録音開始通知)
         ▼
-[Android: PCM 蓄積 + ストリーミング VAD]
-        │ BLE 0x02 または 無音5秒 → RX 0x00
+[Android: PCM 蓄積]
+        │ BLE TX 0x02（FW 停止ジェスチャ）
         ▼
 [Silero VAD + FFT fallback]
         │ 音声あり
@@ -142,12 +142,31 @@ Z100を利用する前にVuzix Connectでグラスをリンク・接続する。
 adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 ```
 
+### ADB（USB / Tailscale）
+
+```bash
+# 初回または再起動後: USB を挿した状態で TCP 5555 を有効化し Tailscale 接続
+./scripts/adb-tailscale.sh enable-usb
+
+# USB を抜いたあと / 別 Mac から: Tailscale IP で再接続のみ
+./scripts/adb-tailscale.sh connect
+
+./scripts/adb-tailscale.sh status
+./scripts/adb-tailscale.sh disconnect
+```
+
+- 既定ホスト名: `motorola-razr-50s`（`TS_HOST=...` で変更可）
+- 既定ポート: `5555`
+- 同一 LAN / テザリングのみなら従来どおり `./scripts/adb-wireless.sh`
+- Tailscale 上で端末が online であること（`tailscale status`）
+
+
 ### VAD / ASR 幻覚対策メモ
 
 - BLE 経路は `Silero VAD` を優先し、`maxProb` が異常に低い場合は FFT ベース解析に自動フォールバックする
 - FFT 側は無音フレームを除いた「アクティブフレーム」基準で判定する
 - Silero が stuck のときだけ、小声の実測振幅以上ならエネルギー救済する。無音ノイズは拒否する
-- 録音中に無音が 5 秒続くと Android が RX `0x00` で録音を止める
+- 録音停止はファームウェアの停止ジェスチャ（TX `0x02`）のみ。Android は無音で RX `0x00` を送らない
 - `ちいかわ` 系語彙は 1 パス目に載せない。転写に `アニメ` があるときだけ 2 パス目で Preferred spellings を付与する
 - `AsrTextFilter` が語彙エコー（アニメ無しの3語列挙）と儀礼句だけの幻覚（`はい、ありがとうございます` など）を破棄する
 
@@ -157,8 +176,8 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 |---|---|
 | `BleManager.kt` | BLE スキャン・接続・パケット解析 |
 | `BleConnectionService.kt` | BLE をフォアグラウンドサービスとして管理 |
-| `VoiceProcessor.kt` | 録音制御・ストリーミング VAD・AI・TTS |
-| `SilenceEndpointTracker.kt` | 録音中の連続無音 5 秒判定 |
+| `VoiceProcessor.kt` | 録音制御・停止後 VAD・AI・TTS |
+| `SilenceEndpointTracker.kt` | （未使用）連続無音カウンタ。停止は FW ジェスチャのみ |
 | `AsrVocabulary.kt` | ASR Preferred spellings とトリガー語（アニメ） |
 | `AsrTextFilter.kt` | 語彙エコー・儀礼句など ASR 幻覚の破棄 |
 | `ModelManager.kt` | モデル探索、取り込み、ASR/LLM 独立設定 |

@@ -57,9 +57,6 @@ internal class VoiceProcessor(
     /** Gesture milestones captured at recording stop; attached to the next HistoryEntry. */
     private var pendingGestureDiags: List<GestureDiagEntry> = emptyList()
     private val pipelineTiming = PipelineTimingTracker()
-    private val silenceEndpoint = SilenceEndpointTracker()
-    private val streamingFramePcm = ByteArray(SileroVad.FRAME_SIZE * 2)
-    private var streamingFrameOffset = 0
 
     private val sileroVad: SileroVad? = try {
         SileroVad(appContext)
@@ -89,7 +86,6 @@ internal class VoiceProcessor(
             is BleVoiceInput.Audio -> {
                 if (isCollectingPcm) {
                     pcmBuffer.write(input.packet.pcmData)
-                    feedStreamingVad(input.packet.pcmData)
                 }
             }
             is BleVoiceInput.Event -> when (input.event) {
@@ -118,7 +114,7 @@ internal class VoiceProcessor(
         // displaying, stopDisplay() clears it; when idle it skips Z100 BLE traffic.
         smartGlassesOutput.stopDisplay()
         pcmBuffer.reset()
-        resetStreamingVad()
+        sileroVad?.reset()
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
         recordingStartedAtWallMs = System.currentTimeMillis()
         pendingGestureDiags = emptyList()
@@ -168,7 +164,7 @@ internal class VoiceProcessor(
             !BleConnectionService.bleMode.value
         ) return
         isCollectingPcm = false
-        resetStreamingVad()
+        sileroVad?.reset()
         val recordingDurationMs = (SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs)
             .coerceAtLeast(0L)
         recordingStartedAtElapsedMs = 0L
@@ -581,48 +577,7 @@ internal class VoiceProcessor(
         )
     }
 
-    // --- VAD helpers ---
-
-    private fun resetStreamingVad() {
-        silenceEndpoint.reset()
-        streamingFrameOffset = 0
-        sileroVad?.reset()
-    }
-
-    private fun feedStreamingVad(pcmData: ByteArray) {
-        if (!isCollectingPcm || pcmData.isEmpty()) return
-        var offset = 0
-        while (offset < pcmData.size) {
-            val copy = minOf(streamingFramePcm.size - streamingFrameOffset, pcmData.size - offset)
-            System.arraycopy(pcmData, offset, streamingFramePcm, streamingFrameOffset, copy)
-            streamingFrameOffset += copy
-            offset += copy
-            if (streamingFrameOffset < streamingFramePcm.size) return
-            streamingFrameOffset = 0
-            val isSpeech = try {
-                frameLooksLikeSpeech(streamingFramePcm)
-            } catch (e: Exception) {
-                Log.w(TAG, "Streaming VAD frame failed — treating as silence", e)
-                false
-            }
-            if (silenceEndpoint.onFrame(isSpeech)) {
-                Log.d(TAG, "Silence endpoint: ${BLE_SILENCE_STOP_MS}ms silence, stopping recording")
-                BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
-                handleBleRecordingStopped("silence-timeout")
-                return
-            }
-        }
-    }
-
-    private fun frameLooksLikeSpeech(pcmFrame: ByteArray): Boolean {
-        val analysis = BleSpeechDetector.analyzeBlePcm(pcmFrame)
-        val vad = sileroVad ?: return analysis.rmsAfterDc >= BLE_ENERGY_RESCUE_RMS_THRESHOLD &&
-            analysis.peakAfterDc >= BLE_ENERGY_RESCUE_PEAK_THRESHOLD
-        val samples = FloatArray(analysis.samples.size) { i ->
-            analysis.samples[i] * analysis.gain
-        }
-        return vad.predict(samples) > SILERO_SPEECH_THRESHOLD
-    }
+    // --- VAD helpers (post-stop clip only; stop is firmware gesture TX 0x02) ---
 
     private fun hasSpeechInPcm(pcmData: ByteArray): Boolean {
         // ~0.15s at 16kHz mono 16-bit — drop click/glitch clips, keep short quiet phrases.
@@ -1007,7 +962,7 @@ internal class VoiceProcessor(
         smartGlassesOutput.stopDisplay()
         isCollectingPcm = false
         pcmBuffer.reset()
-        resetStreamingVad()
+        sileroVad?.reset()
         BleConnectionService.setBleMode(false)
         val currentState = BleConnectionService.voiceState.value
         if (currentState == VoiceState.RECORDING || currentState == VoiceState.SPEAKING) {
