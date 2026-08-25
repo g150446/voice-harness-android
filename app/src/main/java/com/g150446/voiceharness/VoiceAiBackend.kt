@@ -38,11 +38,10 @@ interface SttBackend {
 interface LlmBackend {
     val name: String
     suspend fun ensureReady(): Result<Unit>
-    suspend fun chat(
-        conversationHistory: List<ConversationTurn>,
-        languageCode: String?
-    ): Result<ChatResult>
+    suspend fun chat(request: ChatRequest): Result<ChatResult>
     fun release()
+    /** Cancel in-flight HTTP work when supported. Local engines may ignore. */
+    fun cancel() {}
 }
 
 /**
@@ -59,6 +58,14 @@ interface VoiceAiBackend {
     suspend fun chat(
         conversationHistory: List<ConversationTurn>,
         languageCode: String?
-    ): Result<ChatResult>
+    ): Result<ChatResult> = chat(
+        ChatRequest(
+            conversationHistory = conversationHistory,
+            languageCode = languageCode,
+        )
+    )
+
+    suspend fun chat(request: ChatRequest): Result<ChatResult>
     fun release()
+    fun cancel() {}
 }

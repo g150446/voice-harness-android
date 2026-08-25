@@ -39,7 +39,8 @@ object GroqChatRequestBuilder {
 
     fun buildRequestBodyWithFunctionCalling(
         conversationHistory: List<ConversationTurn>,
-        languageCode: String?
+        languageCode: String?,
+        screenContext: ScreenContext? = null,
     ): String {
         val currentTimeMillis = System.currentTimeMillis()
         return JSONObject().apply {
@@ -47,7 +48,10 @@ object GroqChatRequestBuilder {
             put("messages", JSONArray().apply {
                 put(JSONObject().apply {
                     put("role", "system")
-                    put("content", buildSystemPromptWithReminders(languageCode, currentTimeMillis))
+                    put(
+                        "content",
+                        buildSystemPromptWithReminders(languageCode, currentTimeMillis, screenContext),
+                    )
                 })
                 conversationHistory.forEach { turn ->
                     put(JSONObject().apply {
@@ -90,6 +94,13 @@ object GroqChatRequestBuilder {
         }.toString()
     }
 
+    /** Exposed for OpenRouter system prompt reuse (text screen context only). */
+    fun buildSystemPromptForOpenRouter(
+        languageCode: String?,
+        currentTimeMillis: Long,
+        screenContext: ScreenContext?,
+    ): String = buildSystemPromptWithReminders(languageCode, currentTimeMillis, screenContext)
+
     private fun buildSystemPrompt(languageCode: String?): String {
         val normalizedCode = languageCode
             ?.trim()
@@ -113,7 +124,11 @@ object GroqChatRequestBuilder {
             CONCISE_RESPONSE_INSTRUCTION
     }
 
-    private fun buildSystemPromptWithReminders(languageCode: String?, currentTimeMillis: Long): String {
+    private fun buildSystemPromptWithReminders(
+        languageCode: String?,
+        currentTimeMillis: Long,
+        screenContext: ScreenContext? = null,
+    ): String {
         val basePrompt = buildSystemPrompt(languageCode)
         val currentTimeStr = formatCurrentTimeJst(currentTimeMillis)
         val reminderInstructions = "You can set reminders for the user by calling the set_reminder function. " +
@@ -126,7 +141,8 @@ object GroqChatRequestBuilder {
             "If the time is ambiguous (e.g., just '3時' without AM/PM context), use your best judgment based on common usage. " +
             "If the user says something like '読み上げして', 'speak it aloud', 'notify with voice', or similar, set tts_enabled to true. " +
             "If critical information like the title or exact time is missing, ask the user for clarification in a natural way."
-        return "$basePrompt $reminderInstructions"
+        return "$basePrompt $reminderInstructions" +
+            ScreenContextPrompt.systemAppendix(screenContext?.withoutImage())
     }
 
     private fun formatCurrentTimeJst(millis: Long): String {

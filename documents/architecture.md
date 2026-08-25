@@ -111,7 +111,24 @@ Serviceの1つのcollectorが `VoiceProcessor.handleBleInput()` へ渡す。こ�
 Serviceは `VoiceProcessor` を先に生成してから `BleManager` を開始する。VoiceProcessorは
 音声処理パイプライン（ストリーミング無音監視 → 完全性検査 → VAD → AI backend → TTS）を実行し、結果を
 companion objectの状態Flowへ書き込む。ViewModel / UIはその状態だけを観察する。
-AI backend は設定プロファイル（Gemma / Qwen+LFM / Groq）で切り替わる。
+AI backend は ASR（`SttBackendId`）と LLM（`LlmBackendId`）を独立選択する。
+同一ローカルモデルは `BackendRegistry` で共有し二重ロードしない。OpenRouter は LLM のみ。
+
+### デジタルアシスタント
+
+```
+ROLE_ASSISTANT
+  → HarnessVoiceInteractionSession（setUiEnabled(false)、自動 ASR なし）
+  → HarnessAssistantActivity（透明全画面 + 下部シート）
+  → AssistantSessionController（会話 ID・画面コンテキスト・UI StateFlow）
+  → BleConnectionService.submitAssistantRequest
+  → VoiceProcessor / BackendAssistantGateway
+  → LlmBackend.chat(ChatRequest + optional ScreenContext)
+```
+
+- 画面テキスト/JPEG は呼び出し中だけ保持。履歴には入れない。
+- HarnessNode 経路は画面情報なしのまま。
+- 詳細は [`opendroid-integration.md`](opendroid-integration.md)。
 
 ダブルタップイベント `0x12` は同じ入力Channelで順序を保って受信し、Serviceが
 `DoubleTapStatus` の回数と最終受信時刻を更新する。ViewModel / UIはそのStateFlowを観察し、
@@ -153,7 +170,7 @@ nRF52840                        Android
     │                               │   FFT fallback / stuck 時のみ energy rescue
     │                               │   buildWavFile()
     │                               │   ASR: Gemma / Qwen3-ASR / Groq Whisper
-    │                               │   Chat: Gemma / LFM 2.5 / Groq Chat
+    │                               │   Chat: Gemma / LFM 2.5 / Groq / OpenRouter
     │                               │   TTS 読み上げ or Z100
 ```
 

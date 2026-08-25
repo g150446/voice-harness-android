@@ -424,21 +424,55 @@ internal class VoiceProcessor(
         }
     }
 
-    /** Processes a query invoked by Android's digital-assistant role without opening an Activity. */
+    private val cancelledAssistantRequests = mutableSetOf<String>()
+    private var activeAssistantRequestId: String? = null
+
+    /** Legacy headless entry (Harness path / simple voice). */
     internal fun handleAssistantText(text: String, conversationId: String) {
+        handleAssistantRequest(
+            text = text,
+            conversationId = conversationId,
+            requestId = null,
+            speakResponse = true,
+            screenToken = null,
+            origin = QueryOrigin.DIGITAL_ASSISTANT_VOICE,
+        )
+    }
+
+    internal fun handleAssistantRequest(
+        text: String,
+        conversationId: String,
+        requestId: String?,
+        speakResponse: Boolean,
+        screenToken: String?,
+        origin: QueryOrigin,
+    ) {
         val query = text.trim()
         if (query.isEmpty()) return
+        activeAssistantRequestId = requestId
         scope.launch(Dispatchers.IO) {
+            val screenContext = com.g150446.voiceharness.assistant.ScreenContextStore.take(screenToken)
             BleConnectionService.setTranscription(query)
             BleConnectionService.setResponse("")
             BleConnectionService.setErrorMessage("")
             BleConnectionService.setVoiceState(VoiceState.RESPONDING)
             val ready = aiBackend.ensureReady()
             if (ready.isFailure) {
-                BleConnectionService.setErrorMessage(
-                    ready.exceptionOrNull()?.message ?: "モデル準備に失敗しました"
-                )
+                val err = ready.exceptionOrNull()?.message ?: "モデル準備に失敗しました"
+                BleConnectionService.setErrorMessage(err)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
+                BleConnectionService.releaseAssistantProcessing()
+                notifyAssistantUi(
+                    requestId = requestId,
+                    conversationId = conversationId,
+                    text = "",
+                    success = false,
+                    errorMessage = err,
+                    speaking = false,
+                )
+                return@launch
+            }
+            if (isAssistantCancelled(requestId)) {
                 BleConnectionService.releaseAssistantProcessing()
                 return@launch
             }
@@ -450,23 +484,101 @@ internal class VoiceProcessor(
             val result = assistantGateway.submit(
                 AssistantRequest(
                     text = query,
-                    origin = QueryOrigin.DIGITAL_ASSISTANT_VOICE,
+                    origin = origin,
+                    requestId = requestId,
                     conversationId = conversationId,
-                    speakResponse = true,
+                    speakResponse = speakResponse,
+                    screenContext = screenContext,
                     languageCode = language,
                 )
             )
+            if (isAssistantCancelled(requestId)) {
+                BleConnectionService.releaseAssistantProcessing()
+                return@launch
+            }
             result.onSuccess { reply ->
+                val reminderCall = reply.toolCalls.firstOrNull { it.name == "set_reminder" }
+                if (reminderCall != null) {
+                    handleReminderToolCall(reminderCall.argumentsJson)
+                    notifyAssistantUi(
+                        requestId = requestId,
+                        conversationId = conversationId,
+                        text = reply.text.ifBlank { "リマインダーを設定しました" },
+                        success = true,
+                        speaking = speakResponse,
+                    )
+                    if (speakResponse) {
+                        presentResponse(reply.text.ifBlank { "リマインダーを設定しました" }, requestId)
+                    } else {
+                        BleConnectionService.setVoiceState(VoiceState.READY)
+                        BleConnectionService.releaseAssistantProcessing()
+                    }
+                    return@onSuccess
+                }
                 val response = reply.text.ifBlank { "(返答なし)" }
                 BleConnectionService.setResponse(response)
                 saveHistoryEntry(query, response, isSilent = false, errorMessage = "")
-                presentResponse(response)
+                notifyAssistantUi(
+                    requestId = requestId,
+                    conversationId = conversationId,
+                    text = response,
+                    success = true,
+                    speaking = speakResponse,
+                )
+                if (speakResponse) {
+                    presentResponse(response, requestId)
+                } else {
+                    BleConnectionService.setVoiceState(VoiceState.READY)
+                    BleConnectionService.releaseAssistantProcessing()
+                }
             }.onFailure { error ->
-                BleConnectionService.setErrorMessage("Chat error: ${error.message}")
+                val err = "Chat error: ${error.message}"
+                BleConnectionService.setErrorMessage(err)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 BleConnectionService.releaseAssistantProcessing()
+                notifyAssistantUi(
+                    requestId = requestId,
+                    conversationId = conversationId,
+                    text = "",
+                    success = false,
+                    errorMessage = err,
+                    speaking = false,
+                )
             }
         }
+    }
+
+    internal fun cancelAssistantRequest(requestId: String?) {
+        if (!requestId.isNullOrBlank()) {
+            cancelledAssistantRequests += requestId
+        }
+        aiBackend.cancel()
+        stopSpeaking()
+        BleConnectionService.releaseAssistantProcessing()
+        Log.d(TAG, "Cancelled assistant request id=$requestId")
+    }
+
+    private fun isAssistantCancelled(requestId: String?): Boolean {
+        if (requestId.isNullOrBlank()) return false
+        return requestId in cancelledAssistantRequests
+    }
+
+    private fun notifyAssistantUi(
+        requestId: String?,
+        conversationId: String,
+        text: String,
+        success: Boolean,
+        errorMessage: String? = null,
+        speaking: Boolean = false,
+    ) {
+        com.g150446.voiceharness.assistant.AssistantSessionController.onAssistantResult(
+            requestId = requestId,
+            conversationId = conversationId,
+            text = text,
+            success = success,
+            errorMessage = errorMessage,
+            speaking = speaking,
+        )
     }
 
     // --- VAD helpers ---
@@ -754,7 +866,11 @@ internal class VoiceProcessor(
 
     // --- TTS ---
 
-    private suspend fun presentResponse(text: String) {
+    private suspend fun presentResponse(text: String, requestId: String? = null) {
+        if (isAssistantCancelled(requestId)) {
+            BleConnectionService.releaseAssistantProcessing()
+            return
+        }
         commitPipelineTiming()
         val target = BleConnectionService.responseOutputTarget.value
         val glassesResult = if (target == ResponseOutputTarget.SMART_GLASSES) {
@@ -767,6 +883,8 @@ internal class VoiceProcessor(
             tts?.stop()
             BleConnectionService.setPhonePlaybackActive(false)
             BleConnectionService.setVoiceState(VoiceState.READY)
+            BleConnectionService.releaseAssistantProcessing()
+            com.g150446.voiceharness.assistant.AssistantSessionController.onSpeakingFinished(requestId)
             Log.d(TAG, "Response routed to Z100")
             return
         }
@@ -775,10 +893,14 @@ internal class VoiceProcessor(
             val failure = glassesResult as? SmartGlassesDisplayResult.Failed
             Log.w(TAG, "$it: ${failure?.message}", failure?.cause)
         }
-        speakResponse(text)
+        speakResponse(text, requestId)
     }
 
-    private fun speakResponse(text: String) {
+    private fun speakResponse(text: String, requestId: String? = null) {
+        if (isAssistantCancelled(requestId)) {
+            BleConnectionService.releaseAssistantProcessing()
+            return
+        }
         BleConnectionService.setVoiceState(VoiceState.SPEAKING)
         if (ttsReady && text.isNotBlank()) {
             BleConnectionService.setPhonePlaybackActive(true)
@@ -789,6 +911,8 @@ internal class VoiceProcessor(
             )
             if (chunks.isEmpty()) {
                 BleConnectionService.setVoiceState(VoiceState.READY)
+                BleConnectionService.releaseAssistantProcessing()
+                com.g150446.voiceharness.assistant.AssistantSessionController.onSpeakingFinished(requestId)
                 return
             }
             val finalUtteranceId = "${utterancePrefix}_${chunks.lastIndex}"
@@ -800,6 +924,9 @@ internal class VoiceProcessor(
                     ) {
                         BleConnectionService.setVoiceState(VoiceState.READY)
                         BleConnectionService.setPhonePlaybackActive(false)
+                        BleConnectionService.releaseAssistantProcessing()
+                        com.g150446.voiceharness.assistant.AssistantSessionController
+                            .onSpeakingFinished(requestId)
                     }
                 }
                 @Deprecated("Deprecated in Java")
@@ -807,6 +934,9 @@ internal class VoiceProcessor(
                     if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) {
                         BleConnectionService.setVoiceState(VoiceState.READY)
                         BleConnectionService.setPhonePlaybackActive(false)
+                        BleConnectionService.releaseAssistantProcessing()
+                        com.g150446.voiceharness.assistant.AssistantSessionController
+                            .onSpeakingFinished(requestId)
                     }
                 }
             })
@@ -815,10 +945,15 @@ internal class VoiceProcessor(
                 BleConnectionService.setErrorMessage("音声の読み上げに失敗しました")
                 BleConnectionService.setVoiceState(VoiceState.READY)
                 BleConnectionService.setPhonePlaybackActive(false)
+                BleConnectionService.releaseAssistantProcessing()
+                com.g150446.voiceharness.assistant.AssistantSessionController
+                    .onSpeakingFinished(requestId)
             }
         } else {
             BleConnectionService.setVoiceState(VoiceState.READY)
             BleConnectionService.setPhonePlaybackActive(false)
+            BleConnectionService.releaseAssistantProcessing()
+            com.g150446.voiceharness.assistant.AssistantSessionController.onSpeakingFinished(requestId)
         }
     }
 
@@ -845,6 +980,24 @@ internal class VoiceProcessor(
         scope.launch(Dispatchers.IO) {
             aiBackend.ensureReady()
                 .onFailure { Log.w(TAG, "Profile warm-up failed for $profile: ${it.message}") }
+        }
+    }
+
+    fun switchSttBackend(backend: SttBackendId) {
+        aiFacade.switchSttBackend(backend)
+        Log.d(TAG, "Switched STT backend to $backend")
+        scope.launch(Dispatchers.IO) {
+            aiBackend.ensureReady()
+                .onFailure { Log.w(TAG, "STT warm-up failed for $backend: ${it.message}") }
+        }
+    }
+
+    fun switchLlmBackend(backend: LlmBackendId) {
+        aiFacade.switchLlmBackend(backend)
+        Log.d(TAG, "Switched LLM backend to $backend")
+        scope.launch(Dispatchers.IO) {
+            aiBackend.ensureReady()
+                .onFailure { Log.w(TAG, "LLM warm-up failed for $backend: ${it.message}") }
         }
     }
 

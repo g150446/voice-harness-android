@@ -113,7 +113,10 @@ internal object LitertLlmSupport {
         return resultRef.get() ?: error("On-device generation produced no response")
     }
 
-    fun buildSystemPrompt(languageCode: String?): String {
+    fun buildSystemPrompt(
+        languageCode: String?,
+        screenContext: ScreenContext? = null,
+    ): String {
         val currentTimeStr = java.text.SimpleDateFormat(
             "yyyy-MM-dd'T'HH:mm:ssXXX",
             Locale.US
@@ -130,7 +133,8 @@ internal object LitertLlmSupport {
             "Use natural speech without markdown. ${GroqChatRequestBuilder.CONCISE_RESPONSE_INSTRUCTION} " +
             "For reminder requests, call set_reminder. Current time: $currentTimeStr Asia/Tokyo. " +
             "Resolve relative times from it; a time without a date means today. " +
-            "Set tts_enabled only when spoken notification is requested."
+            "Set tts_enabled only when spoken notification is requested." +
+            ScreenContextPrompt.systemAppendix(screenContext?.withoutImage())
     }
 
     @OptIn(ExperimentalApi::class)
@@ -211,10 +215,11 @@ internal object LitertLlmSupport {
         languageCode: String?,
         pendingReminder: AtomicReference<ReminderToolArgs?>,
         temperature: Double,
-        tag: String
+        tag: String,
+        screenContext: ScreenContext? = null,
     ): ChatResult {
         pendingReminder.set(null)
-        val systemPrompt = buildSystemPrompt(languageCode)
+        val systemPrompt = buildSystemPrompt(languageCode, screenContext)
         val started = System.currentTimeMillis()
 
         val history = conversationHistory.toList()

@@ -2,4 +2,14 @@
 <resources>
 
     <style name="Theme.HarnessVoice" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.HarnessVoice.Assistant" parent="Theme.HarnessVoice">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>

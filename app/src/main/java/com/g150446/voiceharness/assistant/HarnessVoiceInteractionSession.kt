@@ -1,23 +1,20 @@
 package com.g150446.voiceharness.assistant
 
-import android.Manifest
+import android.app.assist.AssistContent
+import android.app.assist.AssistStructure
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.service.voice.VoiceInteractionSession
 import android.util.Log
-import androidx.core.content.ContextCompat
-import com.g150446.voiceharness.BleConnectionService
-import java.util.UUID
 
-/** Voice-only assistant surface. It never launches an Activity, including while locked. */
+/**
+ * System assistant session: disables default UI and launches [HarnessAssistantActivity].
+ * Does not auto-start speech recognition.
+ */
 class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
-    private val conversationId = "digital-assistant-${UUID.randomUUID()}"
-    private var recognizer: SpeechRecognizer? = null
 
     override fun onPrepareShow(args: Bundle?, showFlags: Int) {
         setUiEnabled(false)
@@ -26,71 +23,75 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        Log.i(TAG, "Headless assistant session shown flags=$showFlags")
+        Log.i(TAG, "Assistant session shown flags=$showFlags")
         setKeepAwake(true)
-        startListening()
+        AssistantSessionController.beginSession(context) {
+            finishSession()
+        }
+        startAssistantActivity()
     }
 
-    private fun startListening() {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.w(TAG, "RECORD_AUDIO is not granted")
-            finishHeadlessSession()
-            return
-        }
-        val component = SpeechRecognizerResolver.resolveExternal(context)
-        if (component == null) {
-            Log.e(TAG, "No external RecognitionService is available")
-            finishHeadlessSession()
-            return
-        }
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context, component).also { speech ->
-            speech.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) = Unit
-                override fun onBeginningOfSpeech() = Unit
-                override fun onRmsChanged(rmsdB: Float) = Unit
-                override fun onBufferReceived(buffer: ByteArray?) = Unit
-                override fun onEndOfSpeech() = Unit
-                override fun onPartialResults(partialResults: Bundle?) = Unit
-                override fun onEvent(eventType: Int, params: Bundle?) = Unit
-                override fun onError(error: Int) {
-                    Log.w(TAG, "Speech recognition failed error=$error")
-                    finishHeadlessSession()
-                }
-                override fun onResults(results: Bundle?) {
-                    val query = results
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        .orEmpty()
-                    if (query.isNotBlank()) {
-                        Log.i(TAG, "Submitting recognized assistant query length=${query.length}")
-                        BleConnectionService.submitAssistantText(context, query, conversationId)
-                    }
-                    finishHeadlessSession()
-                }
-            })
-            speech.startListening(
-                Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-                }
+    override fun onHandleAssist(state: AssistState) {
+        super.onHandleAssist(state)
+        if (Build.VERSION.SDK_INT >= 29) {
+            AssistantSessionController.onHandleAssist(
+                data = state.assistData,
+                structure = state.assistStructure,
+                interaction = state.assistContent,
             )
         }
     }
 
-    private fun finishHeadlessSession() {
-        recognizer?.destroy()
-        recognizer = null
-        setKeepAwake(false)
-        hide()
+    @Deprecated("Deprecated in Java")
+    override fun onHandleAssist(
+        data: Bundle?,
+        structure: AssistStructure?,
+        content: AssistContent?,
+    ) {
+        @Suppress("DEPRECATION")
+        super.onHandleAssist(data, structure, content)
+        if (Build.VERSION.SDK_INT < 29) {
+            AssistantSessionController.onHandleAssist(data, structure, content)
+        }
+    }
+
+    override fun onHandleScreenshot(screenshot: Bitmap?) {
+        super.onHandleScreenshot(screenshot)
+        AssistantSessionController.onHandleScreenshot(screenshot)
+    }
+
+    override fun onHide() {
+        Log.i(TAG, "Assistant session hide")
+        super.onHide()
     }
 
     override fun onDestroy() {
-        recognizer?.destroy()
-        recognizer = null
+        AssistantSessionController.onSessionDestroyed(context.applicationContext)
+        setKeepAwake(false)
         super.onDestroy()
+    }
+
+    private fun startAssistantActivity() {
+        val intent = Intent(context, HarnessAssistantActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or
+                    Intent.FLAG_ACTIVITY_NO_HISTORY,
+            )
+        }
+        try {
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start assistant activity", e)
+            finishSession()
+        }
+    }
+
+    private fun finishSession() {
+        setKeepAwake(false)
+        hide()
     }
 
     private companion object {

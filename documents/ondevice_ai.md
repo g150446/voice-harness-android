@@ -2,21 +2,27 @@
 
 ## 構成
 
-音声認識と応答生成は、設定画面のプロファイルで切り替える。
+音声認識（ASR）と応答生成（LLM）は **独立に選択** する。  
+旧「プロファイル」（Gemma / Qwen / Groq のセット）は初回起動時に ASR・LLM 双方へ冪等コピーされ、以降は独立キーが正本。
 
-| プロファイル | ASR | Chat | 用途 |
-|---|---|---|---|
-| Gemma（デフォルト） | Gemma 4 E2B LiteRT-LM audio | 同一 Gemma engine | 高品質・オフライン |
-| Qwen | Qwen3-ASR-0.6B Q8_0 GGUF | LFM 2.5 2.6B（LEAP） | オフライン代替 |
-| Cloud (Groq) | Whisper `whisper-large-v3-turbo` | `openai/gpt-oss-120b` | クラウド・端末負荷なし |
+| 役割 | 選択肢 | 備考 |
+|---|---|---|
+| ASR | Gemma 4 E2B / Qwen3-ASR / Groq Whisper | |
+| LLM | Gemma 4 E2B / LFM 2.5 / Groq Chat / **OpenRouter** | OpenRouter は LLM のみ |
 
 TTS は Android `TextToSpeech`（または Vuzix Z100 表示）。  
-ローカルプロファイルはネットワーク不要。Groq はインターネットと API キーが必要。
+ローカルはネットワーク不要。Groq / OpenRouter はインターネットと API キーが必要。
+
+同じローカルモデルが ASR と LLM の両方で選ばれても、`BackendRegistry` が二重ロードしない。  
+設定変更で不要になったバックエンドだけ解放する（ASR 変更で進行中 LLM 会話を落とさない）。
 
 詳細:
 
 - ローカル Gemma: [`ondevice_gemma.md`](ondevice_gemma.md)
 - クラウド Groq: [`groq_cloud.md`](groq_cloud.md)
+- OpenRouter: [`openrouter.md`](openrouter.md)
+- デジタルアシスタント: [`opendroid-integration.md`](opendroid-integration.md)
+- 実装計画: [`voice-harness-android-openrouter-plan.md`](voice-harness-android-openrouter-plan.md)
 - Qwen ASR + LFM 検証: [`lfm25_qwen_asr_validation.md`](lfm25_qwen_asr_validation.md)
 
 ## 必須モデル（ローカルのみ）
@@ -31,7 +37,7 @@ models/
 └── LFM2.5-2.6B-Q4_K_M.gguf
 ```
 
-Groq のみ使う場合、上記モデルは不要。
+Groq / OpenRouter のみ使う場合、上記モデルは不要。
 
 ## ビルド
 
@@ -39,23 +45,9 @@ Qwen3-ASR 対応済みの公式 llama.cpp Android arm64 release `b9637` を使�
 
 ```bash
 ./scripts/prepare-qwen-asr-native.sh
-./gradlew testDebugUnitTest assembleDebug
+./gradlew :app:assembleDebug
+./gradlew :app:installDebug
 ```
-
-準備スクリプトは release archive を `.qwen-asr-native/` へ展開する。このディレクトリは
-Git 対象外。別の配置を使う場合は `-PqwenAsrNativeDir=/absolute/path` を指定できる。
-ネイティブランタイムは arm64-v8a のみで、x86_64 emulator では Qwen ASR を利用できない。
-
-## 端末への配置
-
-USB デバッグを有効にして端末を接続し、次を実行する。
-
-```bash
-./scripts/install-and-push.sh
-```
-
-APK を更新インストールし、モデルをアプリ専用の `files/models/` へコピーする。設定画面の
-ファイル選択から個別に取り込むこともできる。
 
 ### Tailscale 経由の ADB（例: razr 50s）
 
@@ -70,29 +62,44 @@ adb connect 100.102.210.64:5555   # motorola-razr-50s の Tailscale IP
 
 ## 実行フロー
 
+### HarnessNode（BLE）
+
 ```text
 BLE PCM → VAD → WAV
-        → VoiceAiBackend.transcribe
+        → SttBackend.transcribe
              （ローカル: ASR 1パス → 必要なら語彙2パス）
              （Groq: Whisper 1回）
         → AsrTextFilter → conversation history
-        → VoiceAiBackend.chat → reminder tool → TTS / Z100
+        → LlmBackend.chat(ChatRequest) → reminder tool → TTS / Z100
 ```
 
-`ちいかわ` / `ハチワレ` / `うさぎ` は通常の Preferred spellings には載せない。
+画面コンテキストは **送らない**（Gateway でも防御的に破棄）。
+
+### デジタルアシスタント（電源長押し）
+
+```text
+ROLE_ASSISTANT → VoiceInteractionSession（デフォルト UI 無効）
+              → HarnessAssistantActivity（下部シート）
+              → ユーザーがテキスト or マイクで送信
+              → 任意 ScreenContext（AssistStructure + JPEG）
+              → AssistantGateway → LlmBackend.chat
+              → マイク入力のみ TTS（テキスト入力は原則 TTS しない）
+```
+
+`ちいかわ` / `ハチワレ` / `うさぎ` は通常の Preferred spellings には載せない。  
 転写に `アニメ` があるときだけ 2 パス目で載せる（ローカル ASR のみ）。詳細は
 [`ondevice_gemma.md`](ondevice_gemma.md) と [`vad.md`](vad.md) を参照。
 
 Qwen では ASR ごとに llama.cpp CLI を分離プロセスとして起動し、Chat は LEAP の LFM 2.5。
-設定画面でプロファイルを切り替えると既存 engine を解放する（Groq は HTTP のみで no-op）。
 
 ## 状態とログ
 
-ホーム画面とモデル設定画面に各モデルの状態と Load/ASR/Chat 時間を表示する。
+モデル設定画面に ASR / LLM それぞれの選択と Load/ASR/Chat 時間を表示する。
 
 ```bash
 adb logcat -s VoiceProcessor:D QwenOnDeviceBackend:D QwenAsrCli:D \
-  GemmaOnDeviceBackend:D GroqVoiceAiBackend:D ModelManager:D OnDeviceAiFacade:D
+  GemmaOnDeviceBackend:D GroqVoiceAiBackend:D OpenRouterLlmBackend:D \
+  ModelManager:D OnDeviceAiFacade:D AssistantSessionCtrl:D HarnessVoiceSession:D
 ```
 
 ## razr 50s での確認結果（ローカル）
@@ -101,6 +108,7 @@ adb logcat -s VoiceProcessor:D QwenOnDeviceBackend:D QwenAsrCli:D \
 - APK 同梱ランタイムをアプリ UID で起動可能
 - BLE 取得済み日本語音声の認識完走
 - Gemma / LFM の詳細は各ドキュメント参照
+- デジタルアシスタント headless 経路の受け入れ結果は [`opendroid-integration.md`](opendroid-integration.md)
 
 方式選定と旧 encoder-only TFLite の扱いは
 [`qwen_asr_encoder_issue.md`](qwen_asr_encoder_issue.md) を参照。

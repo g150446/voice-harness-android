@@ -26,15 +26,20 @@ internal class BackendAssistantGateway(
                 if (session.isExpired()) session.reset()
 
                 session.addTurn("user", query)
+                val screenContext = sanitizeScreenContext(request)
                 val result = backend.chat(
-                    conversationHistory = session.turnsForInference(),
-                    languageCode = request.languageCode,
+                    ChatRequest(
+                        conversationHistory = session.turnsForInference(),
+                        languageCode = request.languageCode,
+                        screenContext = screenContext,
+                    )
                 ).getOrThrow()
                 if (result.text.isNotBlank()) session.addTurn("assistant", result.text)
 
                 AssistantResult(
                     text = result.text,
                     conversationId = conversationId,
+                    requestId = request.requestId,
                     toolCalls = result.toolCalls,
                     latencyMs = result.latencyMs,
                 )
@@ -43,5 +48,12 @@ internal class BackendAssistantGateway(
 
     override fun resetConversation(conversationId: String) {
         sessions.remove(conversationId)?.reset()
+    }
+
+    private fun sanitizeScreenContext(request: AssistantRequest): ScreenContext? {
+        // HarnessNode path never receives screen information.
+        if (request.origin == QueryOrigin.HARNESS_NODE_VOICE) return null
+        val screen = request.screenContext ?: return null
+        return if (screen.isEmpty) null else screen
     }
 }

@@ -3,61 +3,79 @@ package com.g150446.voiceharness
 import android.content.Context
 import android.util.Log
 import java.io.File
-import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Profile-aware facade. Default is GEMMA; Qwen remains selectable.
+ * Routes STT and LLM independently while sharing loaded local backends.
  */
 class OnDeviceAiFacade(
     private val appContext: Context
 ) : VoiceAiBackend {
 
-    private val active = AtomicReference<VoiceAiBackend?>(null)
+    private val registry = BackendRegistry(appContext)
 
     override val profile: OnDeviceProfile
         get() = ModelManager.currentProfile(appContext)
 
     override val name: String
-        get() = active.get()?.name ?: "OnDeviceAiFacade(${profile.name})"
-
-    private fun backendFor(profile: OnDeviceProfile): VoiceAiBackend = when (profile) {
-        OnDeviceProfile.QWEN -> QwenOnDeviceBackend(appContext)
-        OnDeviceProfile.GEMMA -> GemmaOnDeviceBackend(appContext)
-        OnDeviceProfile.GROQ -> GroqVoiceAiBackend(appContext)
-    }
-
-    private fun ensureBackend(): VoiceAiBackend {
-        val desired = ModelManager.currentProfile(appContext)
-        val current = active.get()
-        if (current != null && current.profile == desired) return current
-        synchronized(this) {
-            val again = active.get()
-            if (again != null && again.profile == desired) return again
-            again?.release()
-            val created = backendFor(desired)
-            active.set(created)
-            Log.d(TAG, "Switched backend to ${created.name} profile=$desired")
-            return created
+        get() {
+            val stt = ModelManager.currentSttBackend(appContext)
+            val llm = ModelManager.currentLlmBackend(appContext)
+            return "Facade(stt=${stt.name},llm=${llm.name})"
         }
-    }
 
     fun switchProfile(profile: OnDeviceProfile) {
         ModelManager.setProfile(appContext, profile)
-        synchronized(this) {
-            active.getAndSet(null)?.release()
-        }
+        registry.releaseUnused(
+            ModelManager.currentSttBackend(appContext),
+            ModelManager.currentLlmBackend(appContext),
+        )
         ModelManager.refresh(appContext)
-        Log.d(TAG, "Profile set to $profile (backend will load on next use)")
+        Log.d(TAG, "Profile set to $profile")
     }
 
-    override suspend fun ensureReady(): Result<Unit> = ensureBackend().ensureReady()
+    fun switchSttBackend(backend: SttBackendId) {
+        ModelManager.setSttBackend(appContext, backend)
+        registry.releaseUnused(
+            ModelManager.currentSttBackend(appContext),
+            ModelManager.currentLlmBackend(appContext),
+        )
+        ModelManager.refresh(appContext)
+        Log.d(TAG, "STT backend set to $backend")
+    }
+
+    fun switchLlmBackend(backend: LlmBackendId) {
+        ModelManager.setLlmBackend(appContext, backend)
+        registry.releaseUnused(
+            ModelManager.currentSttBackend(appContext),
+            ModelManager.currentLlmBackend(appContext),
+        )
+        ModelManager.refresh(appContext)
+        Log.d(TAG, "LLM backend set to $backend")
+    }
+
+    private fun sttBackend(): VoiceAiBackend = when (ModelManager.currentSttBackend(appContext)) {
+        SttBackendId.GEMMA -> registry.obtainGemma()
+        SttBackendId.QWEN -> registry.obtainQwen()
+        SttBackendId.GROQ -> registry.obtainGroq()
+    }
+
+    override suspend fun ensureReady(): Result<Unit> {
+        val sttReady = sttBackend().ensureReady()
+        if (sttReady.isFailure) return sttReady
+        return when (ModelManager.currentLlmBackend(appContext)) {
+            LlmBackendId.GEMMA -> registry.obtainGemma().ensureReady()
+            LlmBackendId.QWEN -> registry.obtainQwen().ensureReady()
+            LlmBackendId.GROQ -> registry.obtainGroq().ensureReady()
+            LlmBackendId.OPENROUTER -> registry.obtainOpenRouter().ensureReady()
+        }
+    }
 
     override suspend fun transcribe(
         audioFile: File,
         vocabulary: List<AsrVocabularyTerm>
     ): Result<TranscriptionResult> {
-        val backend = ensureBackend()
-        if (backend.profile.isCloud) {
+        val backend = sttBackend()
+        if (ModelManager.currentSttBackend(appContext).isCloud) {
             return backend.transcribe(audioFile, vocabulary)
         }
         if (vocabulary.isNotEmpty()) {
@@ -88,15 +106,20 @@ class OnDeviceAiFacade(
         return first
     }
 
-    override suspend fun chat(
-        conversationHistory: List<ConversationTurn>,
-        languageCode: String?
-    ): Result<ChatResult> = ensureBackend().chat(conversationHistory, languageCode)
+    override suspend fun chat(request: ChatRequest): Result<ChatResult> =
+        when (ModelManager.currentLlmBackend(appContext)) {
+            LlmBackendId.GEMMA -> registry.obtainGemma().chat(request)
+            LlmBackendId.QWEN -> registry.obtainQwen().chat(request)
+            LlmBackendId.GROQ -> registry.obtainGroq().chat(request)
+            LlmBackendId.OPENROUTER -> registry.obtainOpenRouter().chat(request)
+        }
+
+    override fun cancel() {
+        registry.cancelOpenRouter()
+    }
 
     override fun release() {
-        synchronized(this) {
-            active.getAndSet(null)?.release()
-        }
+        registry.releaseAll()
     }
 
     private companion object {

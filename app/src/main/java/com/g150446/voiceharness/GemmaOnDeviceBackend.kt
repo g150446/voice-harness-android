@@ -115,20 +115,18 @@ class GemmaOnDeviceBackend(
         }
     }
 
-    override suspend fun chat(
-        conversationHistory: List<ConversationTurn>,
-        languageCode: String?
-    ): Result<ChatResult> = mutex.withLock {
+    override suspend fun chat(request: ChatRequest): Result<ChatResult> = mutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
                 val eng = engine ?: error("Gemma engine not ready")
                 LitertLlmSupport.runChat(
                     engine = eng,
-                    conversationHistory = conversationHistory,
-                    languageCode = languageCode,
+                    conversationHistory = request.conversationHistory,
+                    languageCode = request.languageCode,
                     pendingReminder = pendingReminder,
                     temperature = 0.7,
-                    tag = TAG
+                    tag = TAG,
+                    screenContext = request.screenContext,
                 )
             }.onFailure { e ->
                 Log.e(TAG, "chat failed", e)

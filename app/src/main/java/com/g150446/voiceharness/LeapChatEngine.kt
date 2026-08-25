@@ -75,7 +75,8 @@ internal class LeapChatEngine(
 
     fun chat(
         conversationHistory: List<ConversationTurn>,
-        languageCode: String?
+        languageCode: String?,
+        screenContext: ScreenContext? = null,
     ): ChatResult {
         val currentRunner = runner ?: error("LFM Chat engine is not ready")
         pendingReminder.set(null)
@@ -84,7 +85,7 @@ internal class LeapChatEngine(
         val last = history.last()
         require(last.role == "user") { "last turn must be user" }
 
-        val systemPrompt = LitertLlmSupport.buildSystemPrompt(languageCode)
+        val systemPrompt = LitertLlmSupport.buildSystemPrompt(languageCode, screenContext)
         val conversation = currentRunner.createConversation(systemPrompt)
         try {
             conversation.registerFunction(setReminderFunction())

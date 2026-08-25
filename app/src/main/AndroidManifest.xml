@@ -66,6 +66,17 @@
             android:label="Model Settings"
             android:theme="@style/Theme.HarnessVoice" />
 
+        <activity
+            android:name=".assistant.HarnessAssistantActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:noHistory="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.HarnessVoice.Assistant"
+            android:taskAffinity="" />
+
 
         <receiver
             android:name=".BootReceiver"

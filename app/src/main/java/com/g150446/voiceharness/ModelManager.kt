@@ -69,6 +69,9 @@ object ModelManager {
     private const val TAG = "ModelManager"
     private const val PREFS = "model_prefs"
     private const val KEY_PROFILE = "on_device_profile"
+    private const val KEY_STT_BACKEND = "stt_backend_id"
+    private const val KEY_LLM_BACKEND = "llm_backend_id"
+    private const val KEY_BACKEND_SPLIT_MIGRATED = "backend_split_migrated_v1"
     private const val KEY_SPEECH_BASE_LANGUAGE = "speech_base_language"
     private const val KEY_SPECULATIVE_DECODING = "speculative_decoding"
     private const val KEY_DEBUG_PIPELINE_TIMING = "debug_pipeline_timing"
@@ -95,15 +98,24 @@ object ModelManager {
         File(context.filesDir, "models").also { it.mkdirs() }
 
     fun currentProfile(context: Context): OnDeviceProfile {
+        migrateBackendSplitIfNeeded(context)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // One-shot: restore Gemma as default after Qwen-first rollout so BLE voice works
         // without requiring a reinstall when Qwen ASR assets are missing.
         if (!prefs.getBoolean(KEY_GEMMA_DEFAULT_MIGRATED, false)) {
             prefs.edit()
                 .putString(KEY_PROFILE, OnDeviceProfile.GEMMA.name)
+                .putString(KEY_STT_BACKEND, SttBackendId.GEMMA.name)
+                .putString(KEY_LLM_BACKEND, LlmBackendId.GEMMA.name)
                 .putBoolean(KEY_GEMMA_DEFAULT_MIGRATED, true)
+                .putBoolean(KEY_BACKEND_SPLIT_MIGRATED, true)
                 .apply()
             return OnDeviceProfile.GEMMA
+        }
+        val stt = currentSttBackend(context)
+        val llm = currentLlmBackend(context)
+        if (stt.name == llm.name) {
+            return OnDeviceProfile.entries.firstOrNull { it.name == stt.name } ?: OnDeviceProfile.GEMMA
         }
         return OnDeviceProfile.fromStorage(prefs.getString(KEY_PROFILE, OnDeviceProfile.GEMMA.name))
     }
@@ -112,7 +124,64 @@ object ModelManager {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_PROFILE, profile.name)
+            .putString(KEY_STT_BACKEND, SttBackendId.fromProfile(profile).name)
+            .putString(KEY_LLM_BACKEND, LlmBackendId.fromProfile(profile).name)
+            .putBoolean(KEY_BACKEND_SPLIT_MIGRATED, true)
             .apply()
+        refresh(context)
+    }
+
+    /** Idempotent: copy legacy single profile into independent STT/LLM keys once. */
+    fun migrateBackendSplitIfNeeded(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_BACKEND_SPLIT_MIGRATED, false)) return
+        val profile = OnDeviceProfile.fromStorage(
+            prefs.getString(KEY_PROFILE, OnDeviceProfile.GEMMA.name)
+        )
+        prefs.edit()
+            .putString(KEY_STT_BACKEND, SttBackendId.fromProfile(profile).name)
+            .putString(KEY_LLM_BACKEND, LlmBackendId.fromProfile(profile).name)
+            .putBoolean(KEY_BACKEND_SPLIT_MIGRATED, true)
+            .apply()
+    }
+
+    fun currentSttBackend(context: Context): SttBackendId {
+        migrateBackendSplitIfNeeded(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return SttBackendId.fromStorage(prefs.getString(KEY_STT_BACKEND, SttBackendId.GEMMA.name))
+    }
+
+    fun currentLlmBackend(context: Context): LlmBackendId {
+        migrateBackendSplitIfNeeded(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return LlmBackendId.fromStorage(prefs.getString(KEY_LLM_BACKEND, LlmBackendId.GEMMA.name))
+    }
+
+    fun setSttBackend(context: Context, backend: SttBackendId) {
+        migrateBackendSplitIfNeeded(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val llm = LlmBackendId.fromStorage(prefs.getString(KEY_LLM_BACKEND, LlmBackendId.GEMMA.name))
+        val editor = prefs.edit().putString(KEY_STT_BACKEND, backend.name)
+        if (backend.name == llm.name) {
+            OnDeviceProfile.entries.firstOrNull { it.name == backend.name }?.let {
+                editor.putString(KEY_PROFILE, it.name)
+            }
+        }
+        editor.apply()
+        refresh(context)
+    }
+
+    fun setLlmBackend(context: Context, backend: LlmBackendId) {
+        migrateBackendSplitIfNeeded(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val stt = SttBackendId.fromStorage(prefs.getString(KEY_STT_BACKEND, SttBackendId.GEMMA.name))
+        val editor = prefs.edit().putString(KEY_LLM_BACKEND, backend.name)
+        if (backend != LlmBackendId.OPENROUTER && backend.name == stt.name) {
+            OnDeviceProfile.entries.firstOrNull { it.name == backend.name }?.let {
+                editor.putString(KEY_PROFILE, it.name)
+            }
+        }
+        editor.apply()
         refresh(context)
     }
 

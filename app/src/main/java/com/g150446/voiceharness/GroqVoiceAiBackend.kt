@@ -88,16 +88,14 @@ class GroqVoiceAiBackend(
         }
     }
 
-    override suspend fun chat(
-        conversationHistory: List<ConversationTurn>,
-        languageCode: String?
-    ): Result<ChatResult> = withContext(Dispatchers.IO) {
+    override suspend fun chat(request: ChatRequest): Result<ChatResult> = withContext(Dispatchers.IO) {
         runCatching {
             val apiKey = requireApiKey()
             val started = System.currentTimeMillis()
             val chatJson = GroqChatRequestBuilder.buildRequestBodyWithFunctionCalling(
-                conversationHistory = conversationHistory,
-                languageCode = languageCode
+                conversationHistory = request.conversationHistory,
+                languageCode = request.languageCode,
+                screenContext = request.screenContext,
             )
             val response = httpClient.newCall(
                 Request.Builder()

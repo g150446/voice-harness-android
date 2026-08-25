@@ -44,8 +44,14 @@ class BleConnectionService : Service() {
     companion object {
         private const val ACTION_ASSISTANT_QUERY =
             "com.g150446.voiceharness.action.ASSISTANT_QUERY"
+        private const val ACTION_ASSISTANT_CANCEL =
+            "com.g150446.voiceharness.action.ASSISTANT_CANCEL"
         private const val EXTRA_ASSISTANT_TEXT = "assistant_text"
         private const val EXTRA_CONVERSATION_ID = "assistant_conversation_id"
+        private const val EXTRA_REQUEST_ID = "assistant_request_id"
+        private const val EXTRA_SPEAK_RESPONSE = "assistant_speak_response"
+        private const val EXTRA_SCREEN_TOKEN = "assistant_screen_token"
+        private const val EXTRA_ORIGIN = "assistant_origin"
         // BLE state flows — independent of Service lifecycle.
         private val _connectionState = MutableStateFlow(BleConnectionState.DISCONNECTED)
         val connectionState: StateFlow<BleConnectionState> = _connectionState.asStateFlow()
@@ -133,10 +139,46 @@ class BleConnectionService : Service() {
 
         /** Headless entry point used by the system digital-assistant session. */
         fun submitAssistantText(context: Context, text: String, conversationId: String) {
+            submitAssistantRequest(
+                context = context,
+                text = text,
+                conversationId = conversationId,
+                requestId = null,
+                speakResponse = true,
+                screenToken = null,
+                origin = QueryOrigin.DIGITAL_ASSISTANT_VOICE,
+            )
+        }
+
+        fun submitAssistantRequest(
+            context: Context,
+            text: String,
+            conversationId: String,
+            requestId: String?,
+            speakResponse: Boolean,
+            screenToken: String?,
+            origin: QueryOrigin,
+        ) {
             val intent = Intent(context, BleConnectionService::class.java).apply {
                 action = ACTION_ASSISTANT_QUERY
                 putExtra(EXTRA_ASSISTANT_TEXT, text)
                 putExtra(EXTRA_CONVERSATION_ID, conversationId)
+                putExtra(EXTRA_REQUEST_ID, requestId)
+                putExtra(EXTRA_SPEAK_RESPONSE, speakResponse)
+                putExtra(EXTRA_SCREEN_TOKEN, screenToken)
+                putExtra(EXTRA_ORIGIN, origin.name)
+            }
+            if (Build.VERSION.SDK_INT >= 26) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun cancelAssistantRequest(context: Context, requestId: String?) {
+            val intent = Intent(context, BleConnectionService::class.java).apply {
+                action = ACTION_ASSISTANT_CANCEL
+                putExtra(EXTRA_REQUEST_ID, requestId)
             }
             if (Build.VERSION.SDK_INT >= 26) {
                 context.startForegroundService(intent)
@@ -178,6 +220,24 @@ class BleConnectionService : Service() {
                 svc.voiceProcessor?.switchProfile(profile)
             } else {
                 ModelManager.setProfile(context.applicationContext, profile)
+            }
+        }
+
+        fun switchSttBackend(context: Context, backend: SttBackendId) {
+            val svc = instance
+            if (svc?.voiceProcessor != null) {
+                svc.voiceProcessor?.switchSttBackend(backend)
+            } else {
+                ModelManager.setSttBackend(context.applicationContext, backend)
+            }
+        }
+
+        fun switchLlmBackend(context: Context, backend: LlmBackendId) {
+            val svc = instance
+            if (svc?.voiceProcessor != null) {
+                svc.voiceProcessor?.switchLlmBackend(backend)
+            } else {
+                ModelManager.setLlmBackend(context.applicationContext, backend)
             }
         }
 
@@ -243,7 +303,6 @@ class BleConnectionService : Service() {
                         BleConnectionState.CONNECTED -> acquireWakeLock()
                         BleConnectionState.SCANNING, BleConnectionState.CONNECTING -> acquireWakeLock()
                         BleConnectionState.DISCONNECTED -> releaseWakeLock()
-                        else -> {}
                     }
                 }
             }
@@ -280,12 +339,34 @@ class BleConnectionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand")
-        if (intent?.action == ACTION_ASSISTANT_QUERY) {
-            val text = intent.getStringExtra(EXTRA_ASSISTANT_TEXT).orEmpty()
-            val conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID).orEmpty()
-            if (text.isNotBlank() && conversationId.isNotBlank()) {
-                acquireProcessingWakeLock()
-                voiceProcessor?.handleAssistantText(text, conversationId)
+        when (intent?.action) {
+            ACTION_ASSISTANT_QUERY -> {
+                val text = intent.getStringExtra(EXTRA_ASSISTANT_TEXT).orEmpty()
+                val conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID).orEmpty()
+                val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)
+                val speakResponse = intent.getBooleanExtra(EXTRA_SPEAK_RESPONSE, true)
+                val screenToken = intent.getStringExtra(EXTRA_SCREEN_TOKEN)
+                val origin = runCatching {
+                    QueryOrigin.valueOf(
+                        intent.getStringExtra(EXTRA_ORIGIN)
+                            ?: QueryOrigin.DIGITAL_ASSISTANT_VOICE.name
+                    )
+                }.getOrDefault(QueryOrigin.DIGITAL_ASSISTANT_VOICE)
+                if (text.isNotBlank() && conversationId.isNotBlank()) {
+                    acquireProcessingWakeLock()
+                    voiceProcessor?.handleAssistantRequest(
+                        text = text,
+                        conversationId = conversationId,
+                        requestId = requestId,
+                        speakResponse = speakResponse,
+                        screenToken = screenToken,
+                        origin = origin,
+                    )
+                }
+            }
+            ACTION_ASSISTANT_CANCEL -> {
+                val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)
+                voiceProcessor?.cancelAssistantRequest(requestId)
             }
         }
         return START_STICKY

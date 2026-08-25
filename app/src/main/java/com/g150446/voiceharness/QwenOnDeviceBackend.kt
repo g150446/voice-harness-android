@@ -71,13 +71,14 @@ class QwenOnDeviceBackend(
         }
     }
 
-    override suspend fun chat(
-        conversationHistory: List<ConversationTurn>,
-        languageCode: String?
-    ): Result<ChatResult> = mutex.withLock {
+    override suspend fun chat(request: ChatRequest): Result<ChatResult> = mutex.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
-                chatEngine.chat(conversationHistory, languageCode)
+                chatEngine.chat(
+                    conversationHistory = request.conversationHistory,
+                    languageCode = request.languageCode,
+                    screenContext = request.screenContext,
+                )
             }.onFailure { e ->
                 Log.e(TAG, "chat failed", e)
                 if (e is GenerationTimedOutException) releaseLocked()

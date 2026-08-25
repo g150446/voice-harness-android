@@ -3,6 +3,7 @@ package com.g150446.voiceharness
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -43,6 +44,37 @@ class BackendAssistantGatewayTest {
         assertTrue(backend.histories.isEmpty())
     }
 
+    @Test
+    fun `harness node origin strips screen context`() = runBlocking {
+        val backend = RecordingBackend()
+        val gateway = BackendAssistantGateway(backend)
+        gateway.submit(
+            AssistantRequest(
+                text = "look",
+                origin = QueryOrigin.HARNESS_NODE_VOICE,
+                conversationId = "h",
+                screenContext = ScreenContext(assistText = "secret"),
+            )
+        ).getOrThrow()
+        assertNull(backend.screenContexts[0])
+    }
+
+    @Test
+    fun `digital assistant passes screen context`() = runBlocking {
+        val backend = RecordingBackend()
+        val gateway = BackendAssistantGateway(backend)
+        val screen = ScreenContext(assistText = "visible")
+        gateway.submit(
+            AssistantRequest(
+                text = "look",
+                origin = QueryOrigin.DIGITAL_ASSISTANT_TEXT,
+                conversationId = "d",
+                screenContext = screen,
+            )
+        ).getOrThrow()
+        assertEquals("visible", backend.screenContexts[0]?.assistText)
+    }
+
     private fun request(text: String, id: String) = AssistantRequest(
         text = text,
         origin = QueryOrigin.HARNESS_NODE_VOICE,
@@ -51,17 +83,16 @@ class BackendAssistantGatewayTest {
 
     private class RecordingBackend : VoiceAiBackend {
         val histories = mutableListOf<List<String>>()
+        val screenContexts = mutableListOf<ScreenContext?>()
         override val name = "fake"
         override val profile = OnDeviceProfile.GEMMA
         override suspend fun ensureReady() = Result.success(Unit)
         override suspend fun transcribe(audioFile: File, vocabulary: List<AsrVocabularyTerm>) =
             Result.success(TranscriptionResult("unused"))
 
-        override suspend fun chat(
-            conversationHistory: List<ConversationTurn>,
-            languageCode: String?,
-        ): Result<ChatResult> {
-            histories += conversationHistory.map { "${it.role}:${it.content}" }
+        override suspend fun chat(request: ChatRequest): Result<ChatResult> {
+            histories += request.conversationHistory.map { "${it.role}:${it.content}" }
+            screenContexts += request.screenContext
             return Result.success(ChatResult("reply-${histories.size}"))
         }
 

@@ -1,6 +1,6 @@
 # Voice Harness
 
-Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして使い、オンデバイスまたは Groq API で音声認識・AI応答を行い、Android TTS（または Vuzix Z100）で出力する。
+Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして使い、オンデバイス / Groq / OpenRouter で音声認識・AI応答を行い、Android TTS（または Vuzix Z100）で出力する。電源長押しのデジタルアシスタント（下部シート UI）にも対応する。
 
 ## 概要
 
@@ -17,19 +17,26 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 [ASR: Gemma / Qwen3-ASR / Groq Whisper] → 文字起こし
         │
         ▼
-[Chat: Gemma / LFM 2.5 / Groq Chat] → AI 応答
+[Chat: Gemma / LFM 2.5 / Groq / OpenRouter] → AI 応答
         │
         ▼
 [Android TTS or Z100] → 出力
+
+[電源長押し ROLE_ASSISTANT]
+        → 下部シート UI（自動録音なし）
+        → テキスト or マイク送信
+        → 任意で画面テキスト / スクリーンショットを添付
+        → 同じ AssistantGateway → LLM
 ```
 
-プロファイルは **モデル設定** で切替:
+**モデル設定** で ASR と LLM を独立に選択する（旧プロファイルは初回のみ双方へコピー）:
 
-| プロファイル | ASR | Chat |
-|---|---|---|
-| 高品質 (Gemma 4 E2B) | Gemma | Gemma |
-| Qwen ASR + LFM 2.5 | Qwen3-ASR | LFM 2.5 |
-| Cloud (Groq) | Whisper | gpt-oss-120b |
+| 役割 | 選択肢 |
+|---|---|
+| 音声認識 (ASR) | Gemma 4 E2B / Qwen3-ASR / Groq Whisper |
+| 応答モデル (LLM) | Gemma 4 E2B / LFM 2.5 / Groq Chat / **OpenRouter** |
+
+OpenRouter は明示オプトイン（API キー + モデル選択が必須）。既定 ASR/LLM は変更しない。
 
 電話マイクでの録音も可能（BLE 未接続時のフォールバック）。
 
@@ -42,7 +49,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 - Android 12 以上 (API 31+)
 - XIAO nRF52840 Sense（`harness-node/nordic-main` ファームウェア書き込み済み）
 - ローカル利用時: Qwen / Gemma / LFM のオンデバイスモデル（詳細は下記ドキュメント参照）
-- クラウド利用時: Groq API キー（モデルファイル不要）
+- クラウド利用時: Groq API キー、および/または OpenRouter API キー（モデルファイル不要）
+- デジタルアシスタント利用時: 設定アプリで Voice Harness をデフォルトのデジタルアシスタントに指定
 - （任意）Vuzix Z100とVuzix Connect（AI返答をスマートグラスへ表示する場合）
 
 ### アプリのインストール
@@ -64,9 +72,11 @@ adb connect 100.102.210.64:5555
 ### 初期設定
 
 1. アプリを起動し、要求された権限（Bluetooth・マイク・通知）を許可する
-2. 画面下部の **モデル設定** でプロファイルを選ぶ
+2. 画面下部の **モデル設定** で ASR と LLM をそれぞれ選ぶ
    - **ローカル**: `models/` を配置し `./scripts/push-all-models.sh`、または画面から取り込み → モデルを読み込む
    - **Cloud (Groq)**: API キーを入力して保存
+   - **OpenRouter（LLM のみ）**: API キー保存 → モデル一覧更新 → モデルを明示選択
+3. （任意）デジタルアシスタント: システム設定で Voice Harness をアシスタントに設定し、電源長押しで下部シートを開く
 
 ### nRF52840 との接続
 
@@ -151,16 +161,18 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 | `SilenceEndpointTracker.kt` | 録音中の連続無音 5 秒判定 |
 | `AsrVocabulary.kt` | ASR Preferred spellings とトリガー語（アニメ） |
 | `AsrTextFilter.kt` | 語彙エコー・儀礼句など ASR 幻覚の破棄 |
-| `ModelManager.kt` | モデル探索、取り込み、状態管理 |
-| `OnDeviceAiFacade.kt` | プロファイル切替（Gemma / Qwen / Groq） |
+| `ModelManager.kt` | モデル探索、取り込み、ASR/LLM 独立設定 |
+| `OnDeviceAiFacade.kt` | ASR/LLM 独立ルーティング + 共有 BackendRegistry |
 | `QwenOnDeviceBackend.kt` | Qwen3-ASR + LFM 2.5（LEAP） |
 | `GemmaOnDeviceBackend.kt` | Gemma 4 の実行 |
 | `GroqVoiceAiBackend.kt` | Groq Whisper + Chat Completions |
-| `GroqPrefs.kt` | Groq API キー保存 |
+| `OpenRouterLlmBackend.kt` | OpenRouter Chat Completions（LLM のみ） |
+| `GroqPrefs.kt` / `OpenRouterPrefs.kt` | API キー保存（OpenRouter は Keystore 暗号化） |
+| `assistant/*` | デジタルアシスタント Session / Activity / 画面コンテキスト |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
 | `SmartGlassesOutputManager.kt` | Vuzix Z100の状態監視、制御取得、返答全文表示 |
 | `MainActivity.kt` | UI（Jetpack Compose） |
-| `GroqSettingsActivity.kt` | モデル設定画面（ローカル + Groq） |
+| `GroqSettingsActivity.kt` | モデル設定画面（ASR/LLM 独立 + OpenRouter） |
 
 ---
 
@@ -172,7 +184,10 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 - [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Vuzix Z100へのAI返答出力とフォールバック仕様
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
 - [`documents/architecture.md`](documents/architecture.md) — アーキテクチャ詳細
-- [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — AIバックエンド（ローカル / Groq）の準備・運用
-- [`documents/groq_cloud.md`](documents/groq_cloud.md) — Cloud (Groq) プロファイル
+- [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — AIバックエンド（ローカル / Groq / OpenRouter）の準備・運用
+- [`documents/groq_cloud.md`](documents/groq_cloud.md) — Cloud (Groq)
+- [`documents/openrouter.md`](documents/openrouter.md) — OpenRouter LLM
+- [`documents/opendroid-integration.md`](documents/opendroid-integration.md) — デジタルアシスタント統合
+- [`documents/voice-harness-android-openrouter-plan.md`](documents/voice-harness-android-openrouter-plan.md) — OpenRouter・画面コンテキスト・対話 UI 実装計画（正本）
 - [`documents/ondevice_gemma.md`](documents/ondevice_gemma.md) — Gemma 4 統合メモ
 - [`documents/qwen_asr_encoder_issue.md`](documents/qwen_asr_encoder_issue.md) — Qwen3-ASR方式の調査・端末検証結果
