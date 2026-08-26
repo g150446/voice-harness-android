@@ -36,12 +36,31 @@ data class HistoryEntry(
 
 1. BLE `0x01`（録音開始）で wall-clock 開始時刻を記録
 2. ライブ `0x30` は常に `GestureDiagStore` に蓄積（開始ジェスチャは `0x01` より前に届く）
-3. BLE `0x02`（録音停止）で  
-   `[start − 8s, stop + 1.5s]` をスライス（`final_sample` は除外、最大 40 件）
+3. BLE `0x02`（録音停止）で時間窓をスライス:
+   - 窓: `[start − 8s, stop + 1.5s]`
+   - 開始点: 窓内で録音開始以前の **最後の `outbound_start`**（前セッション混入を抑制）
+   - `final_sample(0x21)` は除外
+   - マイルストーン（match / match_detail / motion_complete / palm_down_gate / reset 等）は優先保持
+   - 上限 **60** 件（hold_sample 等から間引き）
 4. デバッグ FW の `0x33–0x35` バッチが停止直後にあればそちらを優先
 5. 直後の `HistoryEntry` 保存（成功・無音・エラーいずれも）に `gestureDiags` を付与
 
 本番 FW（`GESTURE_DEBUG_HISTORY=0`）でもマイルストーン `0x30` だけで動作する。
+
+### 認識してほしい stage / reason（FW 0.0.68）
+
+| stage | 名前 |
+|------:|------|
+| `0x09` | match |
+| `0x0A` | match_detail（xy / lift_imp / roll_at_lift、reason bit=before_flip\|xy_waive） |
+| `0x23` | motion_complete |
+| `0x24` | palm_down_gate |
+
+| reason | 名前 |
+|------:|------|
+| `0x24`–`0x28` | motion_too_slow / palm_down_gravity_low / gyro_angle_low / xy_ratio_low / gate_failed |
+
+詳細行（`historyDetailLine`）の閾値注釈は FW 0.0.68（+imp≥0.30、hold≥500 ms、XY 免除条件）に合わせる。
 
 ## 永続化
 

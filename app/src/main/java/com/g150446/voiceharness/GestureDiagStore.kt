@@ -34,30 +34,40 @@ data class GestureDiagEntry(
             .format(Locale.US, v1, v2, v3)
     }
 
-    /** Human-readable line with measured values and key thresholds. */
+    /** Human-readable line with measured values and key thresholds (FW 0.0.68). */
     fun historyDetailLine(): String {
         val t = "+${tMs}ms"
         val body = when (stage) {
-            0x01 -> // outbound_start
-                "シェイク 実測 ptp=%.2f Z=%.2f mean=%.2f | 閾値 ptp≥5.0 Z≥0.80 |mean|<0.4×ptp"
-                    .format(Locale.US, v1, v2, v3)
-            0x02 -> // outbound_ready
-                "掌上 実測 phi=%.1f° 3D=%.1f° Δz=%.2f | 閾値 phi≥12 3D≥20 Δz≥0.35 または gyro"
-                    .format(Locale.US, v1, v2, v3)
-            0x0F -> // outbound_gyro
-                "gyro_y 実測 ∫ωy=%+.1f° peak=%.1f dps | 閾値 |∫|≥25 または peak≥35"
+            0x01 -> // outbound_start: z_ratio, 0, linear_accel
+                "掌上候補 実測 Z比=%.2f lin=%.2f | 閾値 |Z|≥0.75 rms≤4"
+                    .format(Locale.US, v1, v3)
+            0x02 -> // outbound_ready: dwell_ms, z_ratio, linear
+                "掌上成立 実測 dwell=%.0fms Z比=%.2f | 閾値 dwell≥500 |Z|≥0.75"
+                    .format(Locale.US, v1, v2)
+            0x0F -> // outbound_gyro (stop path)
+                "停止gyro 実測 ∫ωy=%+.1f° peak=%.1f dps | 閾値 |∫|≥45 peak≥30"
                     .format(Locale.US, v1, v2)
             0x07 ->
-                "hold開始 実測 +imp=%.3f -imp=%.3f tilt=%.1f° | 閾値 +imp≥0.04 tilt≤15"
+                "hold開始 実測 +imp=%.3f -imp=%.3f tilt=%.1f° | 閾値 +imp≥0.30 tilt≤15"
                     .format(Locale.US, v1, v2, v3)
             0x08 ->
-                "hold完了 実測 +imp=%.3f hold=%.0f ms tilt=%.1f° | 閾値 hold≥400 tilt≤15"
+                "hold完了 実測 +imp=%.3f hold=%.0f ms tilt=%.1f° | 閾値 hold≥500 tilt≤15"
                     .format(Locale.US, v1, v2, v3)
             0x09 ->
                 "match 実測 phi=%.1f° +imp=%.3f hold=%.0f ms"
                     .format(Locale.US, v1, v2, v3)
+            0x0A -> {
+                val before = (reason and 0x01) != 0
+                val waived = (reason and 0x02) != 0
+                "match詳細 xy=%.2f lift_imp=%.3f roll_at_lift=%.1f° before_flip=%s xy_waive=%s | 免除: before∧imp≥0.30 または xy≥0.42"
+                    .format(
+                        Locale.US, v1, v2, v3,
+                        if (before) "Y" else "N",
+                        if (waived) "Y" else "N",
+                    )
+            }
             0x0C ->
-                "停止掌上 実測 phi=%.1f° 3D=%.1f° Δz=%.2f | 閾値 重力または gyro"
+                "停止掌上 実測 phi=%.1f° 3D=%.1f° Δz=%.2f | 閾値 phi≥20+(Δz≥0.50|符号) または gyro"
                     .format(Locale.US, v1, v2, v3)
             0x0D ->
                 "ジャイロON odr=%.0f Hz bias_y=%+.2f"
@@ -65,7 +75,13 @@ data class GestureDiagEntry(
             0x0E ->
                 "ジャイロOFF"
             0x22 ->
-                "hold中 実測 RMS=%.2f tilt=%.1f° |gy|=%.1f | 閾値 RMS≤3.0 tilt≤15"
+                "hold中 実測 RMS=%.2f tilt=%.1f° |gy|=%.1f | 閾値 進入RMS≤3.0 中断>3.5×2 tilt≤15"
+                    .format(Locale.US, v1, v2, v3)
+            0x23 ->
+                "動作完了 実測 elapsed=%.0fms gyPeak=%.0f ∫ωy=%.1f° | 期限<4500ms"
+                    .format(Locale.US, v1, v2, v3)
+            0x24 ->
+                "掌下ゲート $reasonName  v1=%.2f v2=%.2f v3=%.2f"
                     .format(Locale.US, v1, v2, v3)
             0x10 ->
                 "reject $reasonName  v1=%.2f v2=%.2f v3=%.2f"
@@ -97,6 +113,7 @@ data class GestureDiagEntry(
             0x07 to "final_hold_start",
             0x08 to "final_ready",
             0x09 to "match",
+            0x0A to "match_detail",
             0x0C to "stop_palm_up",
             0x0D to "gyro_enabled",
             0x0E to "gyro_disabled",
@@ -104,6 +121,8 @@ data class GestureDiagEntry(
             0x10 to "wait_reject",
             0x21 to "final_sample",
             0x22 to "hold_sample",
+            0x23 to "motion_complete",
+            0x24 to "palm_down_gate",
             0x80 to "reset",
         )
         val REASON_NAMES = mapOf(
@@ -123,10 +142,21 @@ data class GestureDiagEntry(
             0x21 to "final_pulse_duration_invalid",
             0x22 to "shake_not_oscillatory",
             0x23 to "lift_palm_still_up",
+            0x24 to "motion_too_slow",
+            0x25 to "palm_down_gravity_low",
+            0x26 to "palm_down_gyro_angle_low",
+            0x27 to "palm_down_xy_ratio_low",
+            0x28 to "palm_down_gate_failed",
         )
 
         /** High-rate samples omitted from voice-history storage. */
         private val SKIP_STAGES_FOR_HISTORY = setOf(0x21)
+
+        /** Always keep these when capping history size. */
+        private val MILESTONE_STAGES = setOf(
+            0x01, 0x02, 0x07, 0x08, 0x09, 0x0A, 0x0C, 0x0D, 0x0E, 0x0F,
+            0x23, 0x24, 0x80,
+        )
 
         fun fromJson(obj: JSONObject): GestureDiagEntry = GestureDiagEntry(
             tMs = obj.optInt("tMs", 0),
@@ -151,8 +181,9 @@ data class GestureDiagEntry(
         }
 
         /**
-         * Slice live diags for one recording: pre-roll before 0x01 through post-stop.
-         * Drops noisy final_sample; caps count.
+         * Slice live diags for one recording.
+         * Starts at the latest outbound_start inside the pre-roll window (avoids
+         * previous-session contamination), drops final_sample, keeps milestones.
          */
         fun sliceForRecording(
             live: List<GestureDiagEntry>,
@@ -160,30 +191,40 @@ data class GestureDiagEntry(
             recordingStopMs: Long,
             preRollMs: Long = 8_000L,
             postRollMs: Long = 1_500L,
-            maxEntries: Int = 40,
+            maxEntries: Int = 60,
         ): List<GestureDiagEntry> {
             if (recordingStartMs <= 0L) return emptyList()
-            val from = recordingStartMs - preRollMs
-            val to = if (recordingStopMs > 0L) recordingStopMs + postRollMs else recordingStartMs + 30_000L
-            val filtered = live.filter { e ->
-                e.receivedAtMs in from..to && e.stage !in SKIP_STAGES_FOR_HISTORY
+            val windowFrom = recordingStartMs - preRollMs
+            val to = if (recordingStopMs > 0L) {
+                recordingStopMs + postRollMs
+            } else {
+                recordingStartMs + 30_000L
             }
+            val inWindow = live.filter { e ->
+                e.receivedAtMs in windowFrom..to && e.stage !in SKIP_STAGES_FOR_HISTORY
+            }
+            if (inWindow.isEmpty()) return emptyList()
+
+            // Prefer sequence start at last outbound_start before recording start.
+            val lastOutbound = inWindow
+                .filter { it.stage == 0x01 && it.receivedAtMs <= recordingStartMs }
+                .maxByOrNull { it.receivedAtMs }
+            val fromMs = lastOutbound?.receivedAtMs ?: inWindow.first().receivedAtMs
+            val filtered = inWindow.filter { it.receivedAtMs >= fromMs }
             if (filtered.isEmpty()) return emptyList()
+
             val t0 = filtered.first().receivedAtMs
             val renumbered = filtered.map { e ->
                 val rel = (e.receivedAtMs - t0).coerceIn(0L, 65535L).toInt()
                 e.copy(tMs = rel, fromHistoryBatch = true)
             }
-            return if (renumbered.size <= maxEntries) {
-                renumbered
-            } else {
-                // Keep milestones; drop middle hold_samples first.
-                val milestones = renumbered.filter { it.stage != 0x22 && it.stage != 0x10 }
-                val holds = renumbered.filter { it.stage == 0x22 || it.stage == 0x10 }
-                val room = (maxEntries - milestones.size).coerceAtLeast(0)
-                val keptHolds = if (room == 0) emptyList() else holds.takeLast(room)
-                (milestones + keptHolds).sortedBy { it.tMs }.takeLast(maxEntries)
-            }
+            if (renumbered.size <= maxEntries) return renumbered
+
+            val milestones = renumbered.filter { it.stage in MILESTONE_STAGES }
+            val others = renumbered.filter { it.stage !in MILESTONE_STAGES }
+            val room = (maxEntries - milestones.size).coerceAtLeast(0)
+            val keptOthers = if (room == 0) emptyList() else others.takeLast(room)
+            return (milestones + keptOthers).sortedBy { it.tMs }.takeLast(maxEntries)
         }
     }
 }

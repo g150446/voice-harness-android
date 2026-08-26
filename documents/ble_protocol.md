@@ -101,15 +101,17 @@ IMU の INT1 出力を nRF52840 の GPIO 割り込みで受けたファームウ
 17 bytes: [0x00][0x55][0x30][stage][reason][f32 v1][f32 v2][f32 v3]
 ```
 
-stage 例: `0x01` outbound_start, `0x02` outbound_ready, `0x0F` outbound_gyro,
-`0x09` match, `0x0C` stop_palm_up, `0x0D` gyro_enabled, `0x0E` gyro_disabled,
-`0x22` hold_sample, `0x80` reset。
+stage 例（FW 0.0.68）: `0x01` outbound_start, `0x02` outbound_ready,
+`0x07/08` hold start/ready, `0x09` match, `0x0A` match_detail,
+`0x0C` stop_palm_up, `0x0D/0E` gyro on/off, `0x0F` outbound_gyro,
+`0x22` hold_sample, `0x23` motion_complete, `0x24` palm_down_gate, `0x80` reset。
+`match_detail` v1=xy, v2=lift入口+imp, v3=roll_at_lift。reason bit0=before_flip, bit1=xy_waive。
 詳細は harness-node `docs/flex_pronation_gesture.md`。
 
 **Android 側の扱い**
 
 - `BleManager` が `0x30` をパースし `GestureDiagStore` に蓄積する（音声パイプラインには載せない）
-- 録音停止時に `[start−8s, stop+1.5s]` をスライスし、`HistoryEntry.gestureDiags` に保存
+- 録音停止時に時間窓をスライスし、`HistoryEntry.gestureDiags` に保存（最新 `outbound_start` 起点・マイルストーン優先・最大60件）
 - 履歴詳細で文字起こしと並べて表示（ライブ確認はホーム「ジェスチャ診断」）
 - 本番 FW はライブ `0x30` のみで足りる（バッチ不要）
 
