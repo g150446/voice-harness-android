@@ -44,8 +44,8 @@ data class GestureDiagEntry(
             0x02 -> // outbound_ready: dwell_ms, z_ratio, linear
                 "掌上成立 実測 dwell=%.0fms Z比=%.2f | 閾値 dwell≥500 |Z|≥0.75"
                     .format(Locale.US, v1, v2)
-            0x0F -> // outbound_gyro (stop path)
-                "停止gyro 実測 ∫ωy=%+.1f° peak=%.1f dps | 閾値 |∫|≥45 peak≥30"
+            0x0F -> // outbound_gyro (legacy stop path; unused for stop since 0.0.69)
+                "gyro 実測 ∫ωy=%+.1f° peak=%.1f dps"
                     .format(Locale.US, v1, v2)
             0x07 ->
                 "hold開始 実測 +imp=%.3f -imp=%.3f tilt=%.1f° | 閾値 +imp≥0.30 tilt≤15"
@@ -67,7 +67,8 @@ data class GestureDiagEntry(
                     )
             }
             0x0C ->
-                "停止掌上 実測 phi=%.1f° 3D=%.1f° Δz=%.2f | 閾値 phi≥20+(Δz≥0.50|符号) または gyro"
+                // 0.0.69+: hand-lower reverse-lift pulse (opp_imp, peak, pulse_ms)
+                "停止手下ろし 実測 opp_imp=%.3f peak=%.2f pulse=%.0fms | 閾値 imp≥0.10 peak≥0.25 pulse60–2000 settle80ms"
                     .format(Locale.US, v1, v2, v3)
             0x0D ->
                 "ジャイロON odr=%.0f Hz bias_y=%+.2f"
@@ -114,7 +115,7 @@ data class GestureDiagEntry(
             0x08 to "final_ready",
             0x09 to "match",
             0x0A to "match_detail",
-            0x0C to "stop_palm_up",
+            0x0C to "stop_hand_lower",
             0x0D to "gyro_enabled",
             0x0E to "gyro_disabled",
             0x0F to "outbound_gyro",
