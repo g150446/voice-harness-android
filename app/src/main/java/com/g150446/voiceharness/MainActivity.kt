@@ -185,10 +185,29 @@ fun HomeScreen(
     val displayLocale = LocalConfiguration.current.locales[0]
     val scrollState = rememberScrollState()
     var isAssistant by remember { mutableStateOf(AssistantRoleManager.isHeld(context)) }
+    var canDrawOverlay by remember {
+        mutableStateOf(Settings.canDrawOverlays(context))
+    }
     val assistantRoleLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
         isAssistant = AssistantRoleManager.isHeld(context)
+    }
+    val overlayPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        canDrawOverlay = Settings.canDrawOverlays(context)
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                isAssistant = AssistantRoleManager.isHeld(context)
+                canDrawOverlay = Settings.canDrawOverlays(context)
+            }
+        }
+        val owner = context as? androidx.lifecycle.LifecycleOwner
+        owner?.lifecycle?.addObserver(observer)
+        onDispose { owner?.lifecycle?.removeObserver(observer) }
     }
 
     Column(
@@ -220,6 +239,27 @@ fun HomeScreen(
             ) {
                 Text("デフォルトの音声アシスタントに設定")
             }
+        }
+
+        if (!canDrawOverlay) {
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:${context.packageName}"),
+                    )
+                    overlayPermissionLauncher.launch(intent)
+                },
+                modifier = Modifier.padding(bottom = 8.dp),
+            ) {
+                Text("録音中アイコンの表示を許可")
+            }
+            Text(
+                text = "他アプリ表示中に録音状態を画面に出すために必要です",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
         }
 
         val (dotColor, bleLabel) = when (bleConnectionState) {

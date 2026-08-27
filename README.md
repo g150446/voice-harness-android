@@ -9,6 +9,9 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
         │ BLE 0x01 (録音開始通知)
         ▼
 [Android: PCM 蓄積]
+  ・開始/終了キュー音（MEDIA 経路）
+  ・他アプリ上の録音オーバーレイ（要 SYSTEM_ALERT_WINDOW）
+  ・ROLE_ASSISTANT 時はヘッドレス Assist で画面テキスト/スクショ取得
         │ BLE TX 0x02（FW 停止ジェスチャ）
         ▼
 [Silero VAD + FFT fallback]
@@ -18,6 +21,7 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
         │
         ▼
 [Chat: Gemma / LFM 2.5 / Groq / OpenRouter] → AI 応答
+  （取得できた ScreenContext を添付。自アプリ/ロック/画面オフは除外）
         │
         ▼
 [Android TTS or Z100] → 出力
@@ -76,7 +80,11 @@ adb connect 100.102.210.64:5555
    - **ローカル**: `models/` を配置し `./scripts/push-all-models.sh`、または画面から取り込み → モデルを読み込む
    - **Cloud (Groq)**: API キーを入力して保存
    - **OpenRouter（LLM のみ）**: API キー保存 → モデル一覧更新 → モデルを明示選択
-3. （任意）デジタルアシスタント: システム設定で Voice Harness をアシスタントに設定し、電源長押しで下部シートを開く
+3. （推奨）デジタルアシスタント: システム設定で Voice Harness をアシスタントに設定
+   - 電源長押しで下部シート
+   - HarnessNode ジェスチャー時の **画面テキスト／スクショ自動添付** にも必要
+4. （推奨）**録音中アイコンの表示を許可**（他のアプリの上に表示）
+   - 他アプリ表示中に赤いマイクオーバーレイで録音中を示す
 
 ### nRF52840 との接続
 
@@ -96,11 +104,18 @@ adb connect 100.102.210.64:5555
 ### BLE 録音（nRF52840 ジェスチャー）
 
 1. nRF52840 で録音ジェスチャーを行う
-2. 画面が **Recording (BLE)...** になり、PCM 音声を蓄積
-3. 再度ジェスチャーを行うか、無音が 5 秒続くと録音停止 → `Silero VAD` で音声判定し、必要に応じて FFT フォールバック / rescue 判定を行ってからテキスト化・AI 応答・読み上げ
-4. 結果は **履歴** に保存される。ジェスチャ時は FW 診断（`0x30` の実測値）も同じ履歴に付き、詳細で文字起こしと並べて確認できる
+2. **開始キュー音**（上昇2音）が鳴り、PCM を蓄積
+   - 他アプリ上では赤いマイク **オーバーレイ**（許可時）と通知「録音中…」
+   - 自アプリ UI では **Recording (BLE)...**
+3. 停止ジェスチャーで **終了キュー音**（下降2音）→ `Silero VAD` で音声判定し、必要に応じて FFT フォールバック / rescue → テキスト化・AI 応答・読み上げ
+4. デフォルトアシスタント設定時、録音開始時点の **他アプリ画面**（Assist テキスト + スクショ）を LLM に添付
+   - 自アプリ画面・ロック・画面オフでは添付しない
+   - JPEG は OpenRouter の画像対応モデルのみ。他バックエンドは画面テキストのみ
+5. 結果は **履歴** に保存される。ジェスチャ時は FW 診断（`0x30`）も同じ履歴に付く
 
 AI が読み上げ中に再度ジェスチャーを行うと、読み上げを中断して新しい対話を開始できる。
+
+キュー音は **メディア音量**（TTS と同じ経路）。マナーモードで通知音が消えていても聞こえる。
 
 ライブの診断ストリームはホームの **ジェスチャ診断**、仕様は `documents/history_feature.md` / `documents/ble_protocol.md`。
 
@@ -138,8 +153,9 @@ Z100を利用する前にVuzix Connectでグラスをリンク・接続する。
 # デバイスへインストール
 ./gradlew :app:installDebug
 
-# ログ確認（VAD・BLE）
-adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
+# ログ確認（VAD・BLE・録音 UI / キュー音）
+adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
+  RecordingCuePlayer RecordingOverlay HeadlessScreenCapture HarnessVoiceSession
 ```
 
 ### ADB（USB / Tailscale）
@@ -188,6 +204,9 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService
 | `OpenRouterLlmBackend.kt` | OpenRouter Chat Completions（LLM のみ） |
 | `GroqPrefs.kt` / `OpenRouterPrefs.kt` | API キー保存（OpenRouter は Keystore 暗号化） |
 | `assistant/*` | デジタルアシスタント Session / Activity / 画面コンテキスト |
+| `assistant/HeadlessScreenCapture.kt` | HarnessNode 用ヘッドレス Assist + スクショ取得 |
+| `RecordingOverlayController.kt` | 他アプリ上の録音中オーバーレイ |
+| `RecordingCuePlayer.kt` | 録音開始/終了キュー音（USAGE_MEDIA） |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
 | `SmartGlassesOutputManager.kt` | Vuzix Z100の状態監視、制御取得、返答全文表示 |
 | `MainActivity.kt` | UI（Jetpack Compose） |

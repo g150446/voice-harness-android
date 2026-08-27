@@ -8,10 +8,17 @@ shipping two application modules.
 
 ```text
 harness-node PCM -> VoiceProcessor -> AssistantGateway -> VoiceAiBackend
-                                                   |-> local/cloud LLM
-                                                   `-> shared TTS output
+   |                      |                 |-> local/cloud LLM
+   |                      |                 `-> shared TTS output
+   |                      |
+   |   optional ScreenContext (headless Assist at BLE 0x01)
+   |   recording overlay + start/stop cue tones (MEDIA stream)
+   |
+Android ROLE_ASSISTANT (required for headless capture)
+  -> VoiceInteractionService.showSession(ASSIST|SCREENSHOT)  [headless, no Activity]
+  -> HeadlessScreenCapture -> ScreenContext on AssistantRequest
 
-Android ROLE_ASSISTANT
+Android ROLE_ASSISTANT (power long-press)
   -> VoiceInteractionSession (UI disabled)
   -> HarnessAssistantActivity (bottom sheet)
   -> AssistantSessionController
@@ -21,7 +28,8 @@ Android ROLE_ASSISTANT
 ```
 
 `AssistantGateway` owns headless conversation state for both HarnessNode and the digital assistant.
-HarnessNode never receives screen context. The assistant sheet keeps multi-turn memory only while
+HarnessNode may attach `ScreenContext` when ROLE_ASSISTANT is held and capture succeeds; own-app UI,
+keyguard lock, and screen-off skip attachment. The assistant sheet keeps multi-turn memory only while
 open; closing discards in-memory history and screen snapshots.
 
 STT and LLM backends are selected independently (`SttBackendId` / `LlmBackendId`). OpenRouter is
@@ -47,9 +55,11 @@ See [`voice-harness-android-openrouter-plan.md`](./voice-harness-android-openrou
 - Power-button long-press opens the bottom sheet without auto-listening.
 - Mic input speaks responses; text input does not TTS by default.
 - Screen context chip works only when AssistStructure/screenshot arrived; OFF strips context.
-- HarnessNode path stays headless with no screen context.
+- HarnessNode path stays without assistant UI; may attach screen context via headless capture.
+- Own-app foreground, locked keyguard, and non-interactive display skip HarnessNode screen attach.
 - Cancel/close drops late results and cancels OpenRouter HTTP calls.
 - Locked keyguard does not show prior conversation or screen content.
+- Recording overlay (SYSTEM_ALERT_WINDOW) and MEDIA-stream cue tones confirm BLE recording state.
 
 ### 2026-08-24 result (headless baseline)
 

@@ -44,12 +44,19 @@ Vuzix Z100 は Vuzix Connect 経由の別 BLE 接続であり、AI 返答の表�
 音声フレームを最大4通知へ分割し、約200 notifications/sで送る。A2DPとの同時利用は
 端末のBluetoothコントローラ、スケジューリング、無線時間の競合要因になる。
 
-現行実装は `RecordingCuePlayer` が `AudioTrack` と
-`AudioDeviceInfo.TYPE_BUILTIN_SPEAKER` を使う。内蔵スピーカーを選択できない場合は、
-Bluetoothへフォールバックせずキュー音を省略する。
+現行実装は `RecordingCuePlayer` が `AudioTrack`（`USAGE_MEDIA`）と
+`setPreferredDevice(TYPE_BUILTIN_SPEAKER)` を使う。
+
+- **音量経路**: `USAGE_ASSISTANCE_SONIFICATION` は SYSTEM/NOTIFICATION にマップされ、
+  マナーモードで volume 0 になり無音だった。TTS と同様 `USAGE_MEDIA` に載せ、
+  メディア音量で聞こえるようにした。
+- **出力デバイス**: まず内蔵スピーカーを preferred にする。失敗時のみデフォルト経路
+  （A2DP 含む）へフォールバックする。完全スキップはしない（無音になるより優先）。
+- ヘッドセット併用で BLE 欠落が出る場合は、キュー音の A2DP 起動有無を logcat
+  `RecordingCuePlayer` / `dumpsys audio` で確認する。
 
 TTSによるAI応答は通常の音声経路を使うため、録音終了後にBluetoothヘッドセットから
-再生してよい。分離対象は録音開始・停止のキュー音である。
+再生してよい。
 
 ### 2. ファームウェアが Notify の失敗を送達済みとして扱っていた
 

@@ -11,20 +11,32 @@ import android.service.voice.VoiceInteractionSession
 import android.util.Log
 
 /**
- * System assistant session: disables default UI and launches [HarnessAssistantActivity].
- * Does not auto-start speech recognition.
+ * System assistant session.
+ * - Interactive (power long-press): launches [HarnessAssistantActivity].
+ * - Headless (HarnessNode voice): collects assist/screenshot only, no UI.
  */
 class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
 
+    private var headless = false
+
     override fun onPrepareShow(args: Bundle?, showFlags: Int) {
         setUiEnabled(false)
+        headless = args?.getBoolean(HeadlessScreenCapture.ARG_HEADLESS, false) == true
         super.onPrepareShow(args, showFlags)
     }
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        Log.i(TAG, "Assistant session shown flags=$showFlags")
+        headless = headless ||
+            args?.getBoolean(HeadlessScreenCapture.ARG_HEADLESS, false) == true
+        Log.i(TAG, "Assistant session shown flags=$showFlags headless=$headless")
         setKeepAwake(true)
+        if (headless) {
+            HeadlessScreenCapture.onSessionShown {
+                finishHeadless()
+            }
+            return
+        }
         AssistantSessionController.beginSession(context) {
             finishSession()
         }
@@ -34,11 +46,18 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
     override fun onHandleAssist(state: AssistState) {
         super.onHandleAssist(state)
         if (Build.VERSION.SDK_INT >= 29) {
-            AssistantSessionController.onHandleAssist(
-                data = state.assistData,
-                structure = state.assistStructure,
-                interaction = state.assistContent,
-            )
+            if (headless) {
+                HeadlessScreenCapture.onHandleAssist(
+                    data = state.assistData,
+                    structure = state.assistStructure,
+                )
+            } else {
+                AssistantSessionController.onHandleAssist(
+                    data = state.assistData,
+                    structure = state.assistStructure,
+                    interaction = state.assistContent,
+                )
+            }
         }
     }
 
@@ -51,22 +70,34 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
         @Suppress("DEPRECATION")
         super.onHandleAssist(data, structure, content)
         if (Build.VERSION.SDK_INT < 29) {
-            AssistantSessionController.onHandleAssist(data, structure, content)
+            if (headless) {
+                HeadlessScreenCapture.onHandleAssist(data, structure)
+            } else {
+                AssistantSessionController.onHandleAssist(data, structure, content)
+            }
         }
     }
 
     override fun onHandleScreenshot(screenshot: Bitmap?) {
         super.onHandleScreenshot(screenshot)
-        AssistantSessionController.onHandleScreenshot(screenshot)
+        if (headless) {
+            HeadlessScreenCapture.onHandleScreenshot(screenshot)
+        } else {
+            AssistantSessionController.onHandleScreenshot(screenshot)
+        }
     }
 
     override fun onHide() {
-        Log.i(TAG, "Assistant session hide")
+        Log.i(TAG, "Assistant session hide headless=$headless")
         super.onHide()
     }
 
     override fun onDestroy() {
-        AssistantSessionController.onSessionDestroyed(context.applicationContext)
+        if (headless) {
+            HeadlessScreenCapture.onSessionDestroyed()
+        } else {
+            AssistantSessionController.onSessionDestroyed(context.applicationContext)
+        }
         setKeepAwake(false)
         super.onDestroy()
     }
@@ -90,6 +121,11 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
     }
 
     private fun finishSession() {
+        setKeepAwake(false)
+        hide()
+    }
+
+    private fun finishHeadless() {
         setKeepAwake(false)
         hide()
     }

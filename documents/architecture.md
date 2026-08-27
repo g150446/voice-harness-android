@@ -28,11 +28,16 @@
 │     BleManager      │  │   VoiceProcessor   │
 │ ・BLE スキャン・接続 │  │ ・BLE イベント収集  │
 │ ・GATT / パケット解析│  │ ・PCM バッファ管理  │
-│ ・自動再接続        │  │ ・ストリーミング VAD │
+│ ・自動再接続        │  │ ・RecordingCue 音  │
 │ ・優先デバイス保存   │  │ ・Silero VAD / FFT  │
 └─────────────────────┘  │ ・AI (local/Groq)  │
                          │ ・Android TTS      │
+                         │ ・ヘッドレス画面取得│
                          └────────────────────┘
+
+BleConnectionService 付帯:
+  RecordingOverlayController … RECORDING 中の他アプリ上インジケータ
+  HeadlessScreenCapture ……… ROLE_ASSISTANT 時の Assist/スクショ
 
 BleManager ── Channel<BleVoiceInput> ──▶ BleConnectionService ──▶ VoiceProcessor
              （PCMとイベントを同じ順序で配送）
@@ -65,11 +70,19 @@ READY ──── 録音開始 ──▶ RECORDING ──── 停止 ──�
 | 状態 | 説明 |
 |---|---|
 | `READY` | 待機中 |
-| `RECORDING` | 録音中（BLE デバイス） |
+| `RECORDING` | 録音中（BLE）。開始キュー音・オーバーレイ・通知「録音中…」 |
 | `TRANSCRIBING` | 選択中モデルで文字起こし中 |
 | `RESPONDING` | 選択中モデルで応答生成中 |
 | `SPEAKING` | TTS 読み上げ中 |
 | `ERROR` | エラー発生 |
+
+### 録音フィードバック
+
+| 要素 | 実装 | 備考 |
+|---|---|---|
+| 開始/終了音 | `RecordingCuePlayer` | `USAGE_MEDIA`（TTS と同じ）。SONIFICATION はマナーモードで無音になりやすい |
+| 画面オーバーレイ | `RecordingOverlayController` | `SYSTEM_ALERT_WINDOW`。未許可時は通知文言のみ |
+| 画面コンテキスト | `HeadlessScreenCapture` | 録音開始時。自アプリ/ロック/画面オフは破棄 |
 
 ### BleConnectionState
 

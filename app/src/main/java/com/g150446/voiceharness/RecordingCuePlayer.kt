@@ -13,9 +13,10 @@ import kotlin.math.PI
 import kotlin.math.sin
 
 /**
- * Plays recording cues on the phone speaker so they never start an A2DP stream while BLE audio
- * is being received. If the built-in speaker cannot be selected, the cue is skipped rather than
- * falling back to a Bluetooth output.
+ * Plays recording start/stop cues on the media stream (same path as TTS).
+ *
+ * Note: USAGE_ASSISTANCE_SONIFICATION maps to SYSTEM/NOTIFICATION, which are often
+ * muted in silent/vibrate mode — cues were "playing" but inaudible while TTS worked.
  */
 internal class RecordingCuePlayer(context: Context) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -24,11 +25,11 @@ internal class RecordingCuePlayer(context: Context) {
     private var isReleased = false
 
     fun playStarted() {
-        play(START_TONE_FREQUENCY_HZ, START_TONE_DURATION_MS)
+        playSequence(START_TONES)
     }
 
     fun playStopped() {
-        play(STOP_TONE_FREQUENCY_HZ, STOP_TONE_DURATION_MS)
+        playSequence(STOP_TONES)
     }
 
     fun release() {
@@ -37,24 +38,28 @@ internal class RecordingCuePlayer(context: Context) {
         activeTracks.toList().forEach(::releaseTrack)
     }
 
-    private fun play(frequencyHz: Double, durationMs: Int) {
+    private fun playSequence(tones: List<ToneSpec>) {
+        if (isReleased || tones.isEmpty()) return
+        val samples = createSequenceSamples(tones)
+        val durationMs = tones.sumOf { it.durationMs + it.gapMs } - tones.last().gapMs
+        playSamples(samples, durationMs.coerceAtLeast(1))
+    }
+
+    private fun playSamples(samples: ShortArray, durationMs: Int) {
         if (isReleased) return
 
         val speaker = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-        if (speaker == null) {
-            Log.w(TAG, "Built-in speaker unavailable; skipping recording cue")
-            return
-        }
 
-        val samples = createToneSamples(frequencyHz, durationMs)
         var track: AudioTrack? = null
         try {
+            // Match TTS routing (USAGE_MEDIA → STREAM_MUSIC). Sonification streams are
+            // frequently muted while media volume remains audible.
             track = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build()
                 )
                 .setAudioFormat(
@@ -64,40 +69,52 @@ internal class RecordingCuePlayer(context: Context) {
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build()
                 )
-                .setBufferSizeInBytes(samples.size * Short.SIZE_BYTES)
+                .setBufferSizeInBytes((samples.size * Short.SIZE_BYTES).coerceAtLeast(
+                    AudioTrack.getMinBufferSize(
+                        TONE_SAMPLE_RATE,
+                        AudioFormat.CHANNEL_OUT_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                    )
+                ))
                 .setTransferMode(AudioTrack.MODE_STATIC)
+                .setSessionId(AudioManager.AUDIO_SESSION_ID_GENERATE)
                 .build()
 
-            if (!track.setPreferredDevice(speaker)) {
-                Log.w(TAG, "Unable to route recording cue to built-in speaker; skipping")
-                track.release()
-                return
+            if (speaker != null) {
+                if (!track.setPreferredDevice(speaker)) {
+                    Log.w(TAG, "Preferred speaker failed; using default media route")
+                }
             }
+
+            track.setVolume(1.0f)
 
             val written = track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
             if (written != samples.size) {
-                Log.w(TAG, "Unable to write complete recording cue: $written/${samples.size}")
+                Log.w(TAG, "Incomplete cue write: $written/${samples.size}")
                 track.release()
                 return
             }
 
             activeTracks += track
-            track.play()
+            val playResult = track.play()
+            Log.i(
+                TAG,
+                "Cue play result=$playResult state=${track.playState} " +
+                    "frames=${track.bufferSizeInFrames} durationMs=$durationMs",
+            )
             val playingTrack = track
             handler.postDelayed(
                 { releaseTrack(playingTrack) },
                 durationMs + RELEASE_GRACE_MS
             )
         } catch (e: RuntimeException) {
-            Log.w(TAG, "Unable to play speaker-routed recording cue", e)
+            Log.w(TAG, "Unable to play recording cue", e)
             track?.let(::releaseTrack)
         }
     }
 
     private fun releaseTrack(track: AudioTrack) {
         if (!activeTracks.remove(track) && isReleased) {
-            // release() may race a delayed release callback; AudioTrack.release() is idempotent in
-            // practice, but avoid calling it twice.
             return
         }
         try {
@@ -105,6 +122,29 @@ internal class RecordingCuePlayer(context: Context) {
         } catch (_: IllegalStateException) {
         }
         track.release()
+    }
+
+    private fun createSequenceSamples(tones: List<ToneSpec>): ShortArray {
+        val totalSamples = tones.sumOf { tone ->
+            val toneSamples = TONE_SAMPLE_RATE * tone.durationMs / 1_000
+            val gapSamples = TONE_SAMPLE_RATE * tone.gapMs / 1_000
+            toneSamples + gapSamples
+        }.let { total ->
+            val lastGap = TONE_SAMPLE_RATE * tones.last().gapMs / 1_000
+            (total - lastGap).coerceAtLeast(1)
+        }
+
+        val out = ShortArray(totalSamples)
+        var offset = 0
+        tones.forEachIndexed { index, tone ->
+            val toneSamples = createToneSamples(tone.frequencyHz, tone.durationMs)
+            toneSamples.copyInto(out, destinationOffset = offset)
+            offset += toneSamples.size
+            if (index < tones.lastIndex && tone.gapMs > 0) {
+                offset += TONE_SAMPLE_RATE * tone.gapMs / 1_000
+            }
+        }
+        return out
     }
 
     private fun createToneSamples(frequencyHz: Double, durationMs: Int): ShortArray {
@@ -123,15 +163,28 @@ internal class RecordingCuePlayer(context: Context) {
         }
     }
 
+    private data class ToneSpec(
+        val frequencyHz: Double,
+        val durationMs: Int,
+        val gapMs: Int = 0,
+    )
+
     private companion object {
         private const val TAG = "RecordingCuePlayer"
-        private const val TONE_SAMPLE_RATE = 16_000
-        private const val TONE_AMPLITUDE = 0.35
-        private const val START_TONE_FREQUENCY_HZ = 880.0
-        private const val STOP_TONE_FREQUENCY_HZ = 660.0
-        private const val START_TONE_DURATION_MS = 150
-        private const val STOP_TONE_DURATION_MS = 200
+        // Match primary mixer rate on modern devices (TTS path uses ~48k).
+        private const val TONE_SAMPLE_RATE = 48_000
+        private const val TONE_AMPLITUDE = 0.65
         private const val FADE_DURATION_MS = 8
-        private const val RELEASE_GRACE_MS = 250L
+        private const val RELEASE_GRACE_MS = 300L
+
+        private val START_TONES = listOf(
+            ToneSpec(frequencyHz = 880.0, durationMs = 100, gapMs = 50),
+            ToneSpec(frequencyHz = 1175.0, durationMs = 130, gapMs = 0),
+        )
+
+        private val STOP_TONES = listOf(
+            ToneSpec(frequencyHz = 780.0, durationMs = 100, gapMs = 50),
+            ToneSpec(frequencyHz = 520.0, durationMs = 150, gapMs = 0),
+        )
     }
 }

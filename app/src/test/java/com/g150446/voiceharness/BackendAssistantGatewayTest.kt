@@ -45,7 +45,7 @@ class BackendAssistantGatewayTest {
     }
 
     @Test
-    fun `harness node origin strips screen context`() = runBlocking {
+    fun `harness node origin passes screen context`() = runBlocking {
         val backend = RecordingBackend()
         val gateway = BackendAssistantGateway(backend)
         gateway.submit(
@@ -53,7 +53,22 @@ class BackendAssistantGatewayTest {
                 text = "look",
                 origin = QueryOrigin.HARNESS_NODE_VOICE,
                 conversationId = "h",
-                screenContext = ScreenContext(assistText = "secret"),
+                screenContext = ScreenContext(assistText = "visible-from-node"),
+            )
+        ).getOrThrow()
+        assertEquals("visible-from-node", backend.screenContexts[0]?.assistText)
+    }
+
+    @Test
+    fun `empty screen context is stripped`() = runBlocking {
+        val backend = RecordingBackend()
+        val gateway = BackendAssistantGateway(backend)
+        gateway.submit(
+            AssistantRequest(
+                text = "look",
+                origin = QueryOrigin.HARNESS_NODE_VOICE,
+                conversationId = "h",
+                screenContext = ScreenContext(),
             )
         ).getOrThrow()
         assertNull(backend.screenContexts[0])

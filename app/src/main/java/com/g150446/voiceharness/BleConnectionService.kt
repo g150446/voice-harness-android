@@ -271,14 +271,17 @@ class BleConnectionService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var processingWakeLock: PowerManager.WakeLock? = null
     private var playbackActive = false
+    private var recordingOverlay: RecordingOverlayController? = null
 
     override fun onCreate() {
         super.onCreate()
         instance = this
         Log.d(TAG, "Service created")
+        com.g150446.voiceharness.assistant.OwnAppUiTracker.register(application)
 
         createNotificationChannel()
         startForegroundWithNotification("BLE: Scanning...")
+        recordingOverlay = RecordingOverlayController(applicationContext)
 
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         initializeResponseOutputTarget(applicationContext)
@@ -292,13 +295,18 @@ class BleConnectionService : Service() {
             serviceScope,
             requireNotNull(smartGlassesOutputManager)
         )
+        serviceScope.launch {
+            voiceState.collect { state ->
+                onVoiceStateChanged(state)
+            }
+        }
         bleManager = BleManager(applicationContext, serviceScope).also { mgr ->
             mgr.start(bluetoothManager)
 
             serviceScope.launch {
                 mgr.connectionState.collect { state ->
                     _connectionState.value = state
-                    updateNotification(state, _batteryLevel.value)
+                    refreshNotification()
                     when (state) {
                         BleConnectionState.CONNECTED -> acquireWakeLock()
                         BleConnectionState.SCANNING, BleConnectionState.CONNECTING -> acquireWakeLock()
@@ -324,7 +332,7 @@ class BleConnectionService : Service() {
             serviceScope.launch {
                 mgr.batteryLevel.collect { level ->
                     _batteryLevel.value = level
-                    updateNotification(_connectionState.value, level)
+                    refreshNotification()
                 }
             }
             serviceScope.launch {
@@ -375,6 +383,8 @@ class BleConnectionService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Service destroyed")
+        recordingOverlay?.hide()
+        recordingOverlay = null
         voiceProcessor?.shutdown()
         bleManager?.shutdown()
         smartGlassesOutputManager?.close()
@@ -388,6 +398,15 @@ class BleConnectionService : Service() {
         _bleMode.value = false
         _smartGlassesState.value = SmartGlassesState()
         instance = null
+    }
+
+    private fun onVoiceStateChanged(state: VoiceState) {
+        if (state == VoiceState.RECORDING) {
+            recordingOverlay?.show()
+        } else {
+            recordingOverlay?.hide()
+        }
+        refreshNotification()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -465,9 +484,7 @@ class BleConnectionService : Service() {
     private fun setPlaybackActive(active: Boolean) {
         if (playbackActive == active) return
         playbackActive = active
-        startForegroundWithNotification(
-            if (active) "AI response playing" else connectionNotificationText()
-        )
+        refreshNotification(forceForeground = true)
     }
 
     private fun foregroundServiceTypes(): Int {
@@ -478,20 +495,23 @@ class BleConnectionService : Service() {
         return types
     }
 
-    private fun connectionNotificationText(): String = when (_connectionState.value) {
-        BleConnectionState.SCANNING -> "BLE: Scanning..."
-        BleConnectionState.CONNECTING -> "BLE: Connecting..."
-        BleConnectionState.CONNECTED -> _batteryLevel.value?.let { "BLE: Connected  Battery: $it%" }
-            ?: "BLE: Connected"
-        BleConnectionState.DISCONNECTED -> "BLE: Disconnected"
-    }
-
-    private fun updateNotification(state: BleConnectionState, batteryLevel: Int?) {
-        val text = when (state) {
+    private fun notificationText(): String {
+        if (_voiceState.value == VoiceState.RECORDING) return "録音中…"
+        if (playbackActive) return "AI response playing"
+        return when (_connectionState.value) {
             BleConnectionState.SCANNING -> "BLE: Scanning..."
             BleConnectionState.CONNECTING -> "BLE: Connecting..."
-            BleConnectionState.CONNECTED -> batteryLevel?.let { "BLE: Connected  Battery: $it%" } ?: "BLE: Connected"
+            BleConnectionState.CONNECTED -> _batteryLevel.value?.let { "BLE: Connected  Battery: $it%" }
+                ?: "BLE: Connected"
             BleConnectionState.DISCONNECTED -> "BLE: Disconnected"
+        }
+    }
+
+    private fun refreshNotification(forceForeground: Boolean = false) {
+        val text = notificationText()
+        if (forceForeground) {
+            startForegroundWithNotification(text)
+            return
         }
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, buildNotification(text))

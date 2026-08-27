@@ -5,9 +5,13 @@ import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import com.g150446.voiceharness.assistant.HeadlessScreenCapture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -18,6 +22,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "VoiceProcessor"
 private const val PCM_SAMPLE_RATE = 16000
@@ -56,6 +61,9 @@ internal class VoiceProcessor(
     private var recordingStartedAtWallMs = 0L
     /** Gesture milestones captured at recording stop; attached to the next HistoryEntry. */
     private var pendingGestureDiags: List<GestureDiagEntry> = emptyList()
+    /** Screen snapshot captured at BLE recording start (HarnessNode path). */
+    private val pendingHarnessScreen = AtomicReference<ScreenContext?>(null)
+    private var harnessScreenCaptureJob: Job? = null
     private val pipelineTiming = PipelineTimingTracker()
 
     private val sileroVad: SileroVad? = try {
@@ -118,6 +126,7 @@ internal class VoiceProcessor(
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
         recordingStartedAtWallMs = System.currentTimeMillis()
         pendingGestureDiags = emptyList()
+        clearPendingHarnessScreen()
         isCollectingPcm = true
         BleConnectionService.setBleMode(true)
         BleConnectionService.setTranscription("")
@@ -126,10 +135,50 @@ internal class VoiceProcessor(
         if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) tts?.stop()
         BleConnectionService.setVoiceState(VoiceState.RECORDING)
         recordingCuePlayer.playStarted()
+        startHarnessScreenCapture()
         Log.d(
             TAG,
             "BLE recording started (firmware-initiated), glasses=${smartGlassesOutput.state.value}"
         )
+    }
+
+    private fun startHarnessScreenCapture() {
+        harnessScreenCaptureJob = scope.launch(Dispatchers.IO) {
+            val screen = runCatching { HeadlessScreenCapture.capture(appContext) }
+                .onFailure { Log.w(TAG, "Harness screen capture failed", it) }
+                .getOrNull()
+                ?: return@launch
+            if (!isActive) return@launch
+            val state = BleConnectionService.voiceState.value
+            val usable = isCollectingPcm ||
+                state == VoiceState.RECORDING ||
+                state == VoiceState.TRANSCRIBING ||
+                state == VoiceState.RESPONDING
+            if (!usable) {
+                Log.d(TAG, "Discard late harness screen capture")
+                return@launch
+            }
+            pendingHarnessScreen.set(screen)
+            Log.d(
+                TAG,
+                "Harness screen captured text=${screen.hasText} image=${screen.hasImage} " +
+                    "pkg=${screen.sourcePackage}",
+            )
+        }
+    }
+
+    private fun clearPendingHarnessScreen() {
+        harnessScreenCaptureJob?.cancel()
+        harnessScreenCaptureJob = null
+        pendingHarnessScreen.set(null)
+    }
+
+    private suspend fun takePendingHarnessScreen(): ScreenContext? {
+        withTimeoutOrNull(900L) {
+            harnessScreenCaptureJob?.join()
+        }
+        harnessScreenCaptureJob = null
+        return pendingHarnessScreen.getAndSet(null)
     }
 
     private fun capturePendingGestureDiags() {
@@ -194,6 +243,7 @@ internal class VoiceProcessor(
                 TAG,
                 "Incomplete BLE PCM capture ($completeness%): refusing ASR to prevent hallucination"
             )
+            clearPendingHarnessScreen()
             assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
             saveHistoryEntry(
                 transcription = "",
@@ -212,6 +262,7 @@ internal class VoiceProcessor(
 
         if (!hasSpeechInPcm(pcmData)) {
             Log.d(TAG, "VAD: no speech in BLE audio — skipping transcription")
+            clearPendingHarnessScreen()
             assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
             saveHistoryEntry(
                 transcription = "",
@@ -247,6 +298,7 @@ internal class VoiceProcessor(
             }
             val wavFile = buildWavFile(trimmedPcm) ?: run {
                 pipelineTiming.discard()
+                clearPendingHarnessScreen()
                 BleConnectionService.setErrorMessage("WAV ファイルの作成に失敗しました")
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 return@launch
@@ -359,6 +411,7 @@ internal class VoiceProcessor(
             val query = resetParse.remainingUserText?.trim()
                 ?.takeIf { resetParse.shouldReset && it.isNotEmpty() }
                 ?: transcribed
+            val screenContext = takePendingHarnessScreen()
             val chat = assistantGateway.submit(
                 AssistantRequest(
                     text = query,
@@ -366,6 +419,7 @@ internal class VoiceProcessor(
                     conversationId = HARNESS_CONVERSATION_ID,
                     speakResponse = true,
                     languageCode = responseLanguageCode,
+                    screenContext = screenContext,
                 )
             )
             if (chat.isFailure) {
@@ -415,6 +469,7 @@ internal class VoiceProcessor(
                 errorMessage = errMsg,
             )
         } finally {
+            clearPendingHarnessScreen()
             pipelineTiming.discardIfRunning()
             try { file.delete() } catch (_: Exception) {}
         }

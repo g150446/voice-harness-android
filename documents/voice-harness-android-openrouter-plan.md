@@ -7,7 +7,7 @@
 - 電源ボタン長押しで、OpenDroid相当の半透明な下部アシスタント画面を表示する。
 - 呼び出し直後には自動録音せず、テキスト入力またはマイクボタンから送信する。
 - Androidが提供した画面テキストとスクリーンショットを、その呼び出し中だけ任意で回答に利用する。
-- HarnessNode経路は従来どおり画面非表示・画面情報なしの音声処理を維持する。
+- HarnessNode経路は画面UIを出さず音声処理する。デフォルトアシスタント時は録音開始時にヘッドレス VoiceInteraction で画面テキスト／スクショを取得し、自アプリ画面・ロック・画面オフでは添付しない。
 - AgentLoop、Accessibilityによるタップ・スクロール、操作計画・承認UIは今回含めない。
 
 ## Implementation Changes
@@ -73,7 +73,13 @@
 - JPEGをIntentへ入れず、UUIDトークンを使うプロセス内ストアでサービスへ渡す。保存物は一回消費または30秒で失効し、キャンセル・セッション終了・送信失敗時にも削除する。
 - ロック中は画面情報をすべて破棄する。`FLAG_SECURE`やOS制限でスクリーンショットが得られなければ画面テキストだけ、どちらもなければ通常質問として処理する。
 - Groq・Qwen・Gemmaへは画面テキストだけを一時プロンプトとして渡し、JPEGは画像対応が確認できるOpenRouterモデルだけへ送る。
-- `HARNESS_NODE_VOICE`由来の画面情報はGatewayでも防御的に破棄する。
+- `HARNESS_NODE_VOICE`も取得できた `ScreenContext` をGatewayへ通す（空のみ破棄）。自アプリ除外はキャプチャ側で行う。
+- HarnessNode は `VoiceInteractionService.showSession(SHOW_WITH_ASSIST|SHOW_WITH_SCREENSHOT)` のヘッドレスセッションで取得する（Activity なし）。`ROLE_ASSISTANT` 未保持・画面オフ・自アプリ UI ではスキップ。
+
+### 録音フィードバック（HarnessNode）
+
+- 開始/終了キュー音は `RecordingCuePlayer`。`USAGE_MEDIA` で TTS と同じストリームに載せ、マナーモードでも聞こえるようにする（旧 `USAGE_ASSISTANCE_SONIFICATION` は SYSTEM/NOTIFICATION ミュートで無音だった）。
+- 他アプリ上の録音インジケータは `RecordingOverlayController`（`TYPE_APPLICATION_OVERLAY`）。`SYSTEM_ALERT_WINDOW` が必要。未許可時は FGS 通知を「録音中…」にする。
 
 ## Test Plan
 
@@ -83,7 +89,7 @@
 - OpenRouterモデル解析、無料・画像・tools判定、検索、24時間キャッシュ、失敗時キャッシュ維持、廃止モデル検出をテストする。
 - MockWebServerでテキスト、画像、ツール、ツール非対応、HTTPエラー、キャンセル、APIキー非漏洩を検証する。
 - AssistStructure抽出、24,000文字制限、コールバック結合、500ms待機、画面利用OFF、一回消費、30秒失効、IntentにJPEGがないことをテストする。
-- HarnessNode経路が画面を開かず、画面情報を送らず、従来どおりTTS・履歴・リマインダーを処理することを回帰テストする。
+- HarnessNode経路がアシスタントUIを開かず、条件付きで画面情報を添付し、従来どおりTTS・履歴・リマインダーを処理することを回帰テストする。
 - `./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug`を完走させる。
 - Android 16実機で、通常画面、IME表示、マイク権限拒否、画像非対応モデル、`FLAG_SECURE`、ロック画面、画面オフ、プロセス再起動、HarnessNode同時接続を受け入れ確認する。
 

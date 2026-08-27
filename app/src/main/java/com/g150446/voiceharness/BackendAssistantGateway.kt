@@ -51,8 +51,6 @@ internal class BackendAssistantGateway(
     }
 
     private fun sanitizeScreenContext(request: AssistantRequest): ScreenContext? {
-        // HarnessNode path never receives screen information.
-        if (request.origin == QueryOrigin.HARNESS_NODE_VOICE) return null
         val screen = request.screenContext ?: return null
         return if (screen.isEmpty) null else screen
     }
