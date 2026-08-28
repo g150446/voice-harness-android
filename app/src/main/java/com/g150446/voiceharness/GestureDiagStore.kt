@@ -115,6 +115,7 @@ data class GestureDiagEntry(
             0x08 to "final_ready",
             0x09 to "match",
             0x0A to "match_detail",
+            0x0B to "stop_near_miss",
             0x0C to "stop_hand_lower",
             0x0D to "gyro_enabled",
             0x0E to "gyro_disabled",
@@ -124,6 +125,7 @@ data class GestureDiagEntry(
             0x22 to "hold_sample",
             0x23 to "motion_complete",
             0x24 to "palm_down_gate",
+            0x25 to "lift_near_miss",
             0x80 to "reset",
         )
         val REASON_NAMES = mapOf(
@@ -148,6 +150,15 @@ data class GestureDiagEntry(
             0x26 to "palm_down_gyro_angle_low",
             0x27 to "palm_down_xy_ratio_low",
             0x28 to "palm_down_gate_failed",
+            0x29 to "match_lift_impulse_low",
+            0x2A to "match_pronation_low",
+            0x2B to "match_gate_failed",
+            0x2C to "stop_impulse_low",
+            0x2D to "stop_peak_low",
+            0x2E to "stop_pulse_short",
+            0x2F to "stop_pulse_long",
+            0x30 to "lift_pulse_weak",
+            0x31 to "lift_start_timeout",
         )
 
         /** High-rate samples omitted from voice-history storage. */
@@ -155,8 +166,8 @@ data class GestureDiagEntry(
 
         /** Always keep these when capping history size. */
         private val MILESTONE_STAGES = setOf(
-            0x01, 0x02, 0x07, 0x08, 0x09, 0x0A, 0x0C, 0x0D, 0x0E, 0x0F,
-            0x23, 0x24, 0x80,
+            0x01, 0x02, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+            0x23, 0x24, 0x25, 0x80,
         )
 
         fun fromJson(obj: JSONObject): GestureDiagEntry = GestureDiagEntry(
