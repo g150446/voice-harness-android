@@ -49,6 +49,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     val bleMode: StateFlow<Boolean> = BleConnectionService.bleMode
     val isPrimary: StateFlow<Boolean> = BleConnectionService.isPrimary
     val doubleTapStatus: StateFlow<DoubleTapStatus> = BleConnectionService.doubleTapStatus
+    val singleTapStatus: StateFlow<SingleTapStatus> = BleConnectionService.singleTapStatus
     val drivingMode: StateFlow<DrivingMode> = BleConnectionService.drivingMode
     val responseOutputTarget: StateFlow<ResponseOutputTarget> =
         BleConnectionService.responseOutputTarget

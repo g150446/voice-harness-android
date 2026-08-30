@@ -590,7 +590,20 @@ class BleManager(
 
             0x55 -> {
                 if (data.size < 3) return
-                when (val code = data[2].toInt() and 0xFF) {
+                val eventCode = data[2].toInt() and 0xFF
+                if (eventCode != 0x10 && eventCode != 0x30 && eventCode != 0x34) {
+                    // Skip high-rate motion/diag samples; log control/tap events.
+                    Log.i(
+                        TAG,
+                        "TX event 0x%02X (%s)".format(
+                            eventCode,
+                            data.take(minOf(data.size, 8)).joinToString(" ") {
+                                "%02X".format(it.toInt() and 0xFF)
+                            },
+                        ),
+                    )
+                }
+                when (val code = eventCode) {
                     0x30 -> {
                         // [00 55 30 stage reason f32×3] = 17 bytes
                         if (data.size >= 17) {
@@ -665,11 +678,15 @@ class BleManager(
                         if (priority == ConnectionPriority.MAC_HANDY) {
                             sendToRxWithRetry(0x03.toByte()) // yield to Mac Handy
                             _isPrimary.value = false
+                            Log.i(TAG, "Peer connected — yielded primary (MAC_HANDY)")
                         }
                         BleEvent.PeerConnected
                     }
                     0x32 -> {
+                        // Peer left: reclaim primary so FW keeps delivering events/audio here.
                         _isPrimary.value = true
+                        sendToRxWithRetry(0x02.toByte())
+                        Log.i(TAG, "Peer disconnected — reclaimed primary")
                         BleEvent.PeerDisconnected
                     }
                     else -> null

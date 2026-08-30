@@ -32,10 +32,23 @@ data class DoubleTapStatus(
     val lastDetectedAtMillis: Long? = null,
 )
 
+data class SingleTapStatus(
+    val count: Long = 0,
+    val lastDetectedAtMillis: Long? = null,
+)
+
 internal fun nextDoubleTapStatus(
     current: DoubleTapStatus,
     detectedAtMillis: Long,
 ): DoubleTapStatus = DoubleTapStatus(
+    count = current.count + 1,
+    lastDetectedAtMillis = detectedAtMillis,
+)
+
+internal fun nextSingleTapStatus(
+    current: SingleTapStatus,
+    detectedAtMillis: Long,
+): SingleTapStatus = SingleTapStatus(
     count = current.count + 1,
     lastDetectedAtMillis = detectedAtMillis,
 )
@@ -71,6 +84,8 @@ class BleConnectionService : Service() {
 
         private val _doubleTapStatus = MutableStateFlow(DoubleTapStatus())
         val doubleTapStatus: StateFlow<DoubleTapStatus> = _doubleTapStatus.asStateFlow()
+        private val _singleTapStatus = MutableStateFlow(SingleTapStatus())
+        val singleTapStatus: StateFlow<SingleTapStatus> = _singleTapStatus.asStateFlow()
         private val _drivingMode = MutableStateFlow(DrivingMode.NORMAL)
         val drivingMode: StateFlow<DrivingMode> = _drivingMode.asStateFlow()
 
@@ -114,6 +129,10 @@ class BleConnectionService : Service() {
 
         internal fun recordDoubleTap(detectedAtMillis: Long = System.currentTimeMillis()) {
             _doubleTapStatus.value = nextDoubleTapStatus(_doubleTapStatus.value, detectedAtMillis)
+        }
+
+        internal fun recordSingleTap(detectedAtMillis: Long = System.currentTimeMillis()) {
+            _singleTapStatus.value = nextSingleTapStatus(_singleTapStatus.value, detectedAtMillis)
         }
 
         private var instance: BleConnectionService? = null
@@ -385,7 +404,8 @@ class BleConnectionService : Service() {
                         Log.i(TAG, "Double tap published to UI")
                         voiceProcessor?.handleDoubleTap()
                     } else if (input is BleVoiceInput.Event && input.event is BleEvent.SingleTap) {
-                        Log.i(TAG, "Single tap received (diagnostic only)")
+                        recordSingleTap()
+                        Log.i(TAG, "Single tap published to UI")
                     }
                     voiceProcessor?.handleBleInput(input)
                 }

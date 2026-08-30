@@ -43,4 +43,14 @@ class BleDoubleTapTest {
         assertEquals(3L, updated.count)
         assertEquals(456L, updated.lastDetectedAtMillis)
     }
+
+    @Test
+    fun `single tap status increments and records detection time`() {
+        val updated = nextSingleTapStatus(
+            current = SingleTapStatus(count = 1, lastDetectedAtMillis = 200),
+            detectedAtMillis = 789,
+        )
+        assertEquals(2L, updated.count)
+        assertEquals(789L, updated.lastDetectedAtMillis)
+    }
 }

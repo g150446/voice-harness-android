@@ -179,6 +179,7 @@ fun HomeScreen(
     val batteryLevel by viewModel.batteryLevel.collectAsState()
     val isPrimary by viewModel.isPrimary.collectAsState()
     val doubleTapStatus by viewModel.doubleTapStatus.collectAsState()
+    val singleTapStatus by viewModel.singleTapStatus.collectAsState()
     val drivingMode by viewModel.drivingMode.collectAsState()
     val connectionPriority by viewModel.connectionPriority.collectAsState()
     val responseOutputTarget by viewModel.responseOutputTarget.collectAsState()
@@ -294,18 +295,19 @@ fun HomeScreen(
             )
         }
 
-        doubleTapStatus.lastDetectedAtMillis?.let { detectedAtMillis ->
-            val detectedAt = SimpleDateFormat("HH:mm:ss", displayLocale)
-                .format(Date(detectedAtMillis))
-            Text(
-                text = "ダブルタップ受信: ${doubleTapStatus.count}回（$detectedAt）",
-                fontSize = 12.sp,
-                color = Color(0xFF43A047),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp)
-            )
-        }
+        TapStatusLine(
+            label = "シングルタップ",
+            count = singleTapStatus.count,
+            lastDetectedAtMillis = singleTapStatus.lastDetectedAtMillis,
+            displayLocale = displayLocale,
+        )
+        TapStatusLine(
+            label = "ダブルタップ",
+            count = doubleTapStatus.count,
+            lastDetectedAtMillis = doubleTapStatus.lastDetectedAtMillis,
+            displayLocale = displayLocale,
+            modifier = Modifier.padding(bottom = 12.dp),
+        )
 
         preferredBleDevice?.let { device ->
             Text(
@@ -1069,4 +1071,29 @@ fun HistoryDetailScreen(
             }
         }
     }
+}
+
+@Composable
+private fun TapStatusLine(
+    label: String,
+    count: Long,
+    lastDetectedAtMillis: Long?,
+    displayLocale: Locale,
+    modifier: Modifier = Modifier,
+) {
+    val detail = lastDetectedAtMillis?.let { detectedAtMillis ->
+        val detectedAt = SimpleDateFormat("HH:mm:ss", displayLocale)
+            .format(Date(detectedAtMillis))
+        "${count}回（$detectedAt）"
+    } ?: "0回（未受信）"
+    Text(
+        text = "$label: $detail",
+        fontSize = 12.sp,
+        color = if (lastDetectedAtMillis != null) {
+            Color(0xFF43A047)
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        modifier = modifier.fillMaxWidth(),
+    )
 }
