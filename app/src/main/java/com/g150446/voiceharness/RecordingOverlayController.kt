@@ -2,6 +2,7 @@ package com.g150446.voiceharness
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
@@ -13,9 +14,36 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.TextView
+
+internal sealed interface HarnessOverlayStatus {
+    data object Recording : HarnessOverlayStatus
+    data class ReadingPassthrough(
+        val page: Int,
+        val pageCount: Int,
+        val loading: Boolean = false,
+    ) : HarnessOverlayStatus
+}
+
+internal fun overlayStatusFor(
+    voiceState: VoiceState,
+    glassesState: SmartGlassesState,
+): HarnessOverlayStatus? = when {
+    voiceState == VoiceState.RECORDING -> HarnessOverlayStatus.Recording
+    glassesState.readingPassthroughActive && glassesState.readingPageCount > 0 ->
+        HarnessOverlayStatus.ReadingPassthrough(
+            page = glassesState.readingPage.coerceIn(1, glassesState.readingPageCount),
+            pageCount = glassesState.readingPageCount,
+            loading = glassesState.readingPageLoading,
+        )
+    else -> null
+}
+
+internal fun readingPassthroughOverlayLabel(page: Int, pageCount: Int): String =
+    "パススルー $page/$pageCount"
 
 /**
- * Floating on-screen recording indicator over other apps.
+ * Floating recording / reading-passthrough indicator over other apps.
  * Requires [Settings.canDrawOverlays]. Does not intercept touches.
  */
 class RecordingOverlayController(context: Context) {
@@ -26,65 +54,55 @@ class RecordingOverlayController(context: Context) {
 
     private var rootView: View? = null
     private var pulseRunnable: Runnable? = null
-    private var visible = false
+    private var visibleStatus: HarnessOverlayStatus? = null
 
+    /** Retained compatibility entry point for the existing recording state. */
     fun show() {
+        show(HarnessOverlayStatus.Recording)
+    }
+
+    internal fun show(status: HarnessOverlayStatus?) {
         mainHandler.post {
-            if (visible) return@post
+            if (status == null) {
+                runCatching { detach() }
+                    .onFailure { Log.w(TAG, "Failed to hide status overlay", it) }
+                return@post
+            }
+            if (visibleStatus == status && rootView != null) return@post
             if (!canDrawOverlays()) {
                 Log.d(TAG, "Overlay skipped: no SYSTEM_ALERT_WINDOW permission")
                 return@post
             }
-            runCatching { attach() }
-                .onFailure { Log.e(TAG, "Failed to show recording overlay", it) }
+            runCatching {
+                detach()
+                attach(status)
+            }.onFailure { Log.e(TAG, "Failed to show status overlay", it) }
         }
     }
 
     fun hide() {
-        mainHandler.post {
-            runCatching { detach() }
-                .onFailure { Log.w(TAG, "Failed to hide recording overlay", it) }
-        }
+        show(null)
     }
 
     fun canDrawOverlays(): Boolean =
         Settings.canDrawOverlays(appContext)
 
-    private fun attach() {
-        if (rootView != null) {
-            visible = true
-            return
-        }
+    private fun attach(status: HarnessOverlayStatus) {
         val density = appContext.resources.displayMetrics.density
-        val sizePx = (56f * density).toInt()
         val topMarginPx = (28f * density).toInt()
-        val iconSizePx = (28f * density).toInt()
-
-        val circle = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(0xE6E53935.toInt())
+        val view = when (status) {
+            HarnessOverlayStatus.Recording -> createRecordingView(density)
+            is HarnessOverlayStatus.ReadingPassthrough -> createReadingView(status, density)
         }
-
-        val icon = ImageView(appContext).apply {
-            setImageResource(R.drawable.ic_recording_mic)
-            scaleType = ImageView.ScaleType.CENTER_INSIDE
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-
-        val container = FrameLayout(appContext).apply {
-            background = circle
-            addView(
-                icon,
-                FrameLayout.LayoutParams(iconSizePx, iconSizePx, Gravity.CENTER),
-            )
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            contentDescription = "録音中"
-            alpha = 0.92f
+        val (width, height) = when (status) {
+            HarnessOverlayStatus.Recording -> (56f * density).toInt() to (56f * density).toInt()
+            is HarnessOverlayStatus.ReadingPassthrough ->
+                WindowManager.LayoutParams.WRAP_CONTENT to (40f * density).toInt()
         }
 
         val params = WindowManager.LayoutParams(
-            sizePx,
-            sizePx,
+            width,
+            height,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -98,26 +116,81 @@ class RecordingOverlayController(context: Context) {
                 layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
-            title = "Harness recording"
+            title = when (status) {
+                HarnessOverlayStatus.Recording -> "Harness recording"
+                is HarnessOverlayStatus.ReadingPassthrough -> "Harness passthrough"
+            }
         }
 
-        windowManager.addView(container, params)
-        rootView = container
-        visible = true
-        startPulse(container)
-        Log.i(TAG, "Recording overlay shown")
+        windowManager.addView(view, params)
+        rootView = view
+        visibleStatus = status
+        if (status == HarnessOverlayStatus.Recording) startPulse(view)
+        Log.i(TAG, "Status overlay shown: $status")
+    }
+
+    private fun createRecordingView(density: Float): View {
+        val iconSizePx = (28f * density).toInt()
+        val circle = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(0xE6E53935.toInt())
+        }
+        val icon = ImageView(appContext).apply {
+            setImageResource(R.drawable.ic_recording_mic)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        return FrameLayout(appContext).apply {
+            background = circle
+            addView(
+                icon,
+                FrameLayout.LayoutParams(iconSizePx, iconSizePx, Gravity.CENTER),
+            )
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            contentDescription = "録音中"
+            alpha = 0.92f
+        }
+    }
+
+    private fun createReadingView(
+        status: HarnessOverlayStatus.ReadingPassthrough,
+        density: Float,
+    ): View {
+        val horizontalPadding = (14f * density).toInt()
+        val background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 20f * density
+            setColor(0xE6255961.toInt())
+        }
+        val label = if (status.loading) {
+            "次ページ取得中…"
+        } else {
+            readingPassthroughOverlayLabel(status.page, status.pageCount)
+        }
+        return TextView(appContext).apply {
+            text = label
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(horizontalPadding, 0, horizontalPadding, 0)
+            this.background = background
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            contentDescription = "読書$label"
+            alpha = 0.94f
+        }
     }
 
     private fun detach() {
         stopPulse()
         val view = rootView ?: run {
-            visible = false
+            visibleStatus = null
             return
         }
         rootView = null
-        visible = false
+        visibleStatus = null
         windowManager.removeView(view)
-        Log.i(TAG, "Recording overlay hidden")
+        Log.i(TAG, "Status overlay hidden")
     }
 
     private fun startPulse(view: View) {

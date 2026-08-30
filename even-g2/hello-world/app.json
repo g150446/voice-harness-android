@@ -1,0 +1,16 @@
+{
+  "package_id": "com.g150446.voiceharness.g2hello",
+  "edition": "202601",
+  "name": "Voice Harness Hello",
+  "version": "0.1.0",
+  "min_sdk_version": "0.0.14",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "network",
+      "desc": "Reads Kindle reading text and Harness Node gestures from Voice Harness on this phone.",
+      "whitelist": ["http://127.0.0.1:8787"]
+    }
+  ],
+  "supported_languages": ["en", "ja"]
+}

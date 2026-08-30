@@ -134,6 +134,9 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.BLUETOOTH_CONNECT,
             Manifest.permission.RECORD_AUDIO,
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            permissions += Manifest.permission.ACTIVITY_RECOGNITION
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions += Manifest.permission.POST_NOTIFICATIONS
         }
@@ -176,9 +179,11 @@ fun HomeScreen(
     val batteryLevel by viewModel.batteryLevel.collectAsState()
     val isPrimary by viewModel.isPrimary.collectAsState()
     val doubleTapStatus by viewModel.doubleTapStatus.collectAsState()
+    val drivingMode by viewModel.drivingMode.collectAsState()
     val connectionPriority by viewModel.connectionPriority.collectAsState()
     val responseOutputTarget by viewModel.responseOutputTarget.collectAsState()
     val smartGlassesState by viewModel.smartGlassesState.collectAsState()
+    val readingPassthroughEnabled by viewModel.readingPassthroughEnabled.collectAsState()
     val modelStatus by viewModel.modelStatus.collectAsState()
     val lastPipelineMs by viewModel.lastPipelineMs.collectAsState()
     val context = LocalContext.current
@@ -252,10 +257,10 @@ fun HomeScreen(
                 },
                 modifier = Modifier.padding(bottom = 8.dp),
             ) {
-                Text("録音中アイコンの表示を許可")
+                Text("状態オーバーレイの表示を許可")
             }
             Text(
-                text = "他アプリ表示中に録音状態を画面に出すために必要です",
+                text = "他アプリ表示中に録音・パススルー状態を画面に出すために必要です",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 8.dp),
@@ -282,6 +287,11 @@ fun HomeScreen(
             if (bleMode && state == VoiceState.RECORDING) {
                 Text(text = "(nRF52840 recording)", fontSize = 11.sp, color = Color(0xFF9E9E9E))
             }
+            Text(
+                text = if (drivingMode == DrivingMode.DRIVING) "運転モード: ダブルタップ録音" else "通常モード: ジェスチャー録音",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         doubleTapStatus.lastDetectedAtMillis?.let { detectedAtMillis ->
@@ -452,6 +462,8 @@ fun HomeScreen(
             !smartGlassesState.available -> "Vuzix Connectを利用できません"
             !smartGlassesState.linked -> "Z100は未リンクです"
             !smartGlassesState.connected -> "Z100は未接続です"
+            smartGlassesState.readingPassthroughActive ->
+                "読書パススルー ${smartGlassesState.readingPage}/${smartGlassesState.readingPageCount}"
             smartGlassesState.displaying -> "Z100に返答を表示中"
             smartGlassesState.controlledByMe -> "Z100接続済み（制御中）"
             else -> "Z100接続済み"
@@ -468,6 +480,41 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 8.dp)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "パススルーモード",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Switch(
+                checked = readingPassthroughEnabled,
+                onCheckedChange = viewModel::setReadingPassthroughEnabled,
+            )
+        }
+        val passthroughStatus = when {
+            !readingPassthroughEnabled -> "オフ"
+            smartGlassesState.readingPageLoading -> "次ページ取得中…"
+            smartGlassesState.readingPassthroughActive ->
+                "動作中 ${smartGlassesState.readingPage}/${smartGlassesState.readingPageCount}"
+            else -> "待機中 — 電子書籍を開いてHarness Nodeの起動ジェスチャーを行ってください"
+        }
+        Text(
+            text = passthroughStatus,
+            fontSize = 11.sp,
+            color = if (readingPassthroughEnabled) {
+                Color(0xFF43A047)
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
         )
 
         OutlinedButton(

@@ -2,6 +2,7 @@
 *.apk
 *.ap_
 *.aab
+*.ehpk
 
 # Files for the ART/Dalvik VM
 *.dex
@@ -81,6 +82,7 @@ tmp*.html
 *.egg
 *.egg-info/
 dist/
+node_modules/
 *.whl
 
 # Jupyter Notebook

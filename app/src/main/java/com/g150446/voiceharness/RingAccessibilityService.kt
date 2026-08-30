@@ -38,6 +38,7 @@ class RingAccessibilityService : AccessibilityService() {
         setupWakeLocks()
 
         isServiceRunning = true
+        KindlePageTurnController.attach(this)
         DebugMessageManager.addMessage("Accessibility Service started")
 
         startAccessibilityMonitoring()
@@ -47,6 +48,7 @@ class RingAccessibilityService : AccessibilityService() {
         super.onDestroy()
         Log.d(TAG, "RingAccessibilityService destroyed")
         releaseWakeLocks()
+        KindlePageTurnController.detach(this)
         isServiceRunning = false
         DebugMessageManager.addMessage("Accessibility Service stopped")
     }
@@ -65,7 +67,7 @@ class RingAccessibilityService : AccessibilityService() {
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
                     AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
             notificationTimeout = 100
-            packageNames = arrayOf(packageName)
+            packageNames = arrayOf(packageName, KindlePageTurnController.KINDLE_PACKAGE)
         }
         serviceInfo = info
 

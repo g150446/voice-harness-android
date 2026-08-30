@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -22,6 +23,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "VoiceProcessor"
@@ -37,6 +39,8 @@ enum class VoiceState {
 }
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
+private const val KINDLE_CAPTURE_ATTEMPTS = 3
+private const val KINDLE_CAPTURE_DELAY_MS = 450L
 
 /**
  * Owns the audio processing pipeline: PCM buffering → VAD → on-device STT/LLM → TTS.
@@ -63,6 +67,10 @@ internal class VoiceProcessor(
     private var pendingGestureDiags: List<GestureDiagEntry> = emptyList()
     /** Screen snapshot captured at BLE recording start (HarnessNode path). */
     private val pendingHarnessScreen = AtomicReference<ScreenContext?>(null)
+    private val readingPageTurnInFlight = AtomicBoolean(false)
+    private val readingInitialCaptureInFlight = AtomicBoolean(false)
+    @Volatile private var readingSourceContext: ScreenContext? = null
+    @Volatile private var readingPageTurnGesture = PageTurnGesture.UNKNOWN
     private var harnessScreenCaptureJob: Job? = null
     private val pipelineTiming = PipelineTimingTracker()
 
@@ -121,6 +129,8 @@ internal class VoiceProcessor(
         // Prefer an already-idle Z100 (auto-release after the read window). When still
         // displaying, stopDisplay() clears it; when idle it skips Z100 BLE traffic.
         smartGlassesOutput.stopDisplay()
+        readingSourceContext = null
+        readingPageTurnGesture = PageTurnGesture.UNKNOWN
         pcmBuffer.reset()
         sileroVad?.reset()
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
@@ -232,6 +242,18 @@ internal class VoiceProcessor(
 
         tts?.stop()
         recordingCuePlayer.playStopped()
+
+        if (BleConnectionService.readingPassthroughEnabled.value) {
+            pipelineTiming.start(SystemClock.elapsedRealtime())
+            BleConnectionService.setTranscription("パススルーモード")
+            BleConnectionService.setResponse("")
+            BleConnectionService.setErrorMessage("")
+            BleConnectionService.setVoiceState(VoiceState.RESPONDING)
+            scope.launch(Dispatchers.IO) {
+                processArmedReadingPassthrough()
+            }
+            return
+        }
 
         if (!isBlePcmCaptureComplete(recordingDurationMs, pcmDurationMs)) {
             val completeness = if (recordingDurationMs > 0L) {
@@ -412,9 +434,29 @@ internal class VoiceProcessor(
                 ?.takeIf { resetParse.shouldReset && it.isNotEmpty() }
                 ?: transcribed
             val screenContext = takePendingHarnessScreen()
+            val readingPassthrough = ReadingPassthrough.isRequested(query)
+            if (readingPassthrough) {
+                BleConnectionService.setReadingPassthroughEnabled(appContext, true)
+            }
+            if (readingPassthrough && screenContext?.isEmpty != false) {
+                val message = "画面の本文を取得できませんでした"
+                BleConnectionService.setResponse(message)
+                saveHistoryEntry(
+                    transcription = BleConnectionService.transcription.value,
+                    response = message,
+                    isSilent = false,
+                    errorMessage = message,
+                )
+                presentResponse(message)
+                return
+            }
             val chat = assistantGateway.submit(
                 AssistantRequest(
-                    text = query,
+                    text = if (readingPassthrough) {
+                        ReadingPassthrough.extractionPrompt(query)
+                    } else {
+                        query
+                    },
                     origin = QueryOrigin.HARNESS_NODE_VOICE,
                     conversationId = HARNESS_CONVERSATION_ID,
                     speakResponse = true,
@@ -446,6 +488,13 @@ internal class VoiceProcessor(
                 handleReminderToolCall(reminderCall.argumentsJson)
             } else {
                 val responseText = chatResult.text
+                if (readingPassthrough) {
+                    // Screen-derived book text is transient: do not retain it in the shared
+                    // conversation after the extraction turn.
+                    assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
+                    presentReadingPassthrough(query, responseText, screenContext)
+                    return
+                }
                 val finalResponse = responseText.ifBlank { "(返答なし)" }
                 BleConnectionService.setResponse(finalResponse)
                 Log.d(TAG, "Response: $responseText")
@@ -906,6 +955,309 @@ internal class VoiceProcessor(
         speakResponse(text, requestId)
     }
 
+    private suspend fun presentReadingPassthrough(
+        command: String,
+        extracted: String,
+        sourceContext: ScreenContext? = null,
+        saveHistory: Boolean = true,
+    ) {
+        commitPipelineTiming()
+        if (!BleConnectionService.readingPassthroughEnabled.value) {
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            return
+        }
+        val extraction = ReadingPassthrough.parseExtraction(extracted)
+        val text = extraction.bodyText
+        if (text == null) {
+            val message = "画面から表示できる本文を抽出できませんでした"
+            EvenG2ReadingSession.failAdvance(message)
+            BleConnectionService.setResponse(message)
+            BleConnectionService.setErrorMessage(message)
+            saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+            speakResponse(message)
+            return
+        }
+
+        readingSourceContext = sourceContext
+        if (extraction.pageTurnGesture != PageTurnGesture.UNKNOWN) {
+            readingPageTurnGesture = extraction.pageTurnGesture
+        }
+        EvenG2ReadingSession.publishBody(text)
+        if (EvenG2ReadingSession.isClientActive()) {
+            val status = "読書パススルーを開始しました（G2）"
+            BleConnectionService.setResponse(status)
+            if (saveHistory) saveHistoryEntry(command, status, isSilent = false, errorMessage = "")
+            tts?.stop()
+            BleConnectionService.setPhonePlaybackActive(false)
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            Log.d(TAG, "Reading passthrough started on Even G2 (${text.length} chars)")
+            return
+        }
+
+        when (val result = smartGlassesOutput.startReadingPassthrough(text)) {
+            is SmartGlassesDisplayResult.Started -> {
+                val pageCount = smartGlassesOutput.state.value.readingPageCount
+                val status = "読書パススルーを開始しました（${pageCount}ページ）"
+                // The extracted screen text is intentionally kept out of UI/history and lives
+                // only in the in-memory glasses session.
+                BleConnectionService.setResponse(status)
+                if (saveHistory) {
+                    saveHistoryEntry(command, status, isSilent = false, errorMessage = "")
+                }
+                tts?.stop()
+                BleConnectionService.setPhonePlaybackActive(false)
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                Log.d(TAG, "Reading passthrough started (${text.length} chars)")
+            }
+            is SmartGlassesDisplayResult.Failed -> {
+                val message = "Z100に本文を表示できませんでした: ${result.message}"
+                BleConnectionService.setResponse(message)
+                BleConnectionService.setErrorMessage(message)
+                saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+                Log.w(TAG, message, result.cause)
+                speakResponse(message)
+            }
+        }
+    }
+
+    private suspend fun processArmedReadingPassthrough() {
+        val command = "ホーム画面からパススルーモード"
+        try {
+            val screenContext = takePendingHarnessScreen()
+            if (!BleConnectionService.readingPassthroughEnabled.value) {
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                return
+            }
+            if (screenContext?.isEmpty != false) {
+                val message = "画面の本文を取得できませんでした"
+                BleConnectionService.setResponse(message)
+                BleConnectionService.setErrorMessage(message)
+                saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                return
+            }
+            extractAndPresentReadingPassthrough(command, screenContext)
+        } catch (error: Exception) {
+            Log.e(TAG, "Armed reading passthrough failed", error)
+            val message = "パススルーエラー: ${error.message}"
+            BleConnectionService.setResponse(message)
+            BleConnectionService.setErrorMessage(message)
+            saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+            BleConnectionService.setVoiceState(VoiceState.ERROR)
+        } finally {
+            clearPendingHarnessScreen()
+            pipelineTiming.discardIfRunning()
+        }
+    }
+
+    private suspend fun extractAndPresentReadingPassthrough(
+        command: String,
+        screenContext: ScreenContext,
+    ) {
+        val ready = aiBackend.ensureReady()
+        if (ready.isFailure) {
+            val message = ready.exceptionOrNull()?.message ?: "モデル準備に失敗しました"
+            BleConnectionService.setResponse(message)
+            BleConnectionService.setErrorMessage(message)
+            saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+            BleConnectionService.setVoiceState(VoiceState.ERROR)
+            return
+        }
+
+        val result = assistantGateway.submit(
+            AssistantRequest(
+                text = ReadingPassthrough.extractionPrompt(command),
+                origin = QueryOrigin.HARNESS_NODE_VOICE,
+                conversationId = HARNESS_CONVERSATION_ID,
+                speakResponse = false,
+                languageCode = null,
+                screenContext = screenContext,
+            )
+        )
+        assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
+        if (!BleConnectionService.readingPassthroughEnabled.value) {
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            return
+        }
+        result.onSuccess { reply ->
+            presentReadingPassthrough(command, reply.text, screenContext)
+        }.onFailure { error ->
+            val message = "Chat error: ${error.message}"
+            BleConnectionService.setResponse(message)
+            BleConnectionService.setErrorMessage(message)
+            saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+            BleConnectionService.setVoiceState(VoiceState.ERROR)
+        }
+    }
+
+    internal fun handleDoubleTap() {
+        if (EvenG2ReadingSession.isClientActive() &&
+            EvenG2ReadingSession.snapshot(BleConnectionService.doubleTapStatus.value.count).active
+        ) {
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            when (val result = smartGlassesOutput.showNextReadingPage()) {
+                ReadingPageAdvanceResult.Inactive -> {
+                    if (BleConnectionService.readingPassthroughEnabled.value) {
+                        startReadingPassthroughFromCurrentScreen()
+                    } else {
+                        Log.d(TAG, "Double tap ignored: no reading passthrough session")
+                    }
+                }
+                ReadingPageAdvanceResult.Advanced -> Unit
+                ReadingPageAdvanceResult.AtEnd -> advanceKindlePageIfPossible()
+                is ReadingPageAdvanceResult.Failed -> {
+                    BleConnectionService.setErrorMessage(
+                        "次の本文をZ100に表示できませんでした: ${result.message}"
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun startReadingPassthroughFromCurrentScreen() {
+        if (!readingInitialCaptureInFlight.compareAndSet(false, true)) {
+            Log.d(TAG, "Double tap screen capture ignored: already in flight")
+            return
+        }
+        val command = "ダブルタップでKindle画面を表示"
+        try {
+            BleConnectionService.setResponse("")
+            BleConnectionService.setErrorMessage("")
+            BleConnectionService.setVoiceState(VoiceState.RESPONDING)
+            val screenContext = runCatching { HeadlessScreenCapture.capture(appContext) }
+                .onFailure { Log.w(TAG, "Double tap screen capture failed", it) }
+                .getOrNull()
+            if (!BleConnectionService.readingPassthroughEnabled.value) {
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                return
+            }
+            if (screenContext?.isEmpty != false) {
+                val message = "Kindle画面の本文を取得できませんでした"
+                BleConnectionService.setResponse(message)
+                BleConnectionService.setErrorMessage(message)
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                return
+            }
+            val sourcePackage = screenContext.sourcePackage
+            if (sourcePackage != null && sourcePackage != KindlePageTurnController.KINDLE_PACKAGE) {
+                val message = "Kindleを表示した状態でダブルタップしてください"
+                BleConnectionService.setResponse(message)
+                BleConnectionService.setErrorMessage(message)
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                Log.w(TAG, "Double tap capture rejected: package=$sourcePackage")
+                return
+            }
+            extractAndPresentReadingPassthrough(command, screenContext)
+        } catch (error: Exception) {
+            Log.e(TAG, "Double tap reading passthrough failed", error)
+            val message = "パススルーエラー: ${error.message}"
+            BleConnectionService.setResponse(message)
+            BleConnectionService.setErrorMessage(message)
+            BleConnectionService.setVoiceState(VoiceState.ERROR)
+        } finally {
+            readingInitialCaptureInFlight.set(false)
+        }
+    }
+
+    internal fun requestEvenG2PageAdvance(expectedRevision: Long) {
+        scope.launch(Dispatchers.IO) {
+            val completed = runCatching {
+                if (EvenG2ReadingSession.snapshot(BleConnectionService.doubleTapStatus.value.count).revision != expectedRevision) {
+                    false
+                } else {
+                    advanceKindlePageIfPossible()
+                }
+            }.getOrDefault(false)
+            if (!completed) {
+                EvenG2ReadingSession.failAdvance("Kindleの次ページを取得できませんでした")
+            }
+        }
+    }
+
+    private suspend fun advanceKindlePageIfPossible(): Boolean {
+        if (!readingPageTurnInFlight.compareAndSet(false, true)) return false
+        smartGlassesOutput.setReadingPageLoading(true)
+        try {
+            if (!KindlePageTurnController.isAvailable()) {
+                showKindlePageTurnError("Accessibility Serviceを有効にしてください")
+                return false
+            }
+            val previous = readingSourceContext?.let(ScreenContextFingerprint::from)
+                ?: run {
+                    showKindlePageTurnError("現在のKindle画面を確認できません")
+                    return false
+                }
+
+            var changedScreen: ScreenContext? = null
+            val semanticResult = withContext(Dispatchers.Main.immediate) {
+                KindlePageTurnController.performSemanticNext()
+            }
+            if (semanticResult == KindlePageTurnResult.DISPATCHED) {
+                changedScreen = captureChangedKindleScreen(previous)
+            }
+            if (changedScreen == null && readingPageTurnGesture != PageTurnGesture.UNKNOWN) {
+                val swipeResult = KindlePageTurnController.performSwipe(readingPageTurnGesture)
+                if (swipeResult == KindlePageTurnResult.DISPATCHED) {
+                    changedScreen = captureChangedKindleScreen(previous)
+                }
+            }
+            if (changedScreen == null) {
+                showKindlePageTurnError(
+                    "Kindleの次ページ操作または画面更新を確認できませんでした"
+                )
+                return false
+            }
+
+            val result = assistantGateway.submit(
+                AssistantRequest(
+                    text = ReadingPassthrough.extractionPrompt("Kindleの次ページを表示"),
+                    origin = QueryOrigin.HARNESS_NODE_VOICE,
+                    conversationId = HARNESS_CONVERSATION_ID,
+                    speakResponse = false,
+                    languageCode = null,
+                    screenContext = changedScreen,
+                )
+            )
+            assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
+            result.onSuccess { reply ->
+                presentReadingPassthrough(
+                    command = "Kindleの次ページ",
+                    extracted = reply.text,
+                    sourceContext = changedScreen,
+                    saveHistory = false,
+                )
+            }.onFailure { error ->
+                showKindlePageTurnError("次ページ本文の抽出に失敗しました: ${error.message}")
+            }
+            return result.isSuccess
+        } finally {
+            smartGlassesOutput.setReadingPageLoading(false)
+            readingPageTurnInFlight.set(false)
+        }
+    }
+
+    private suspend fun captureChangedKindleScreen(
+        previous: ScreenContextFingerprint,
+    ): ScreenContext? {
+        repeat(KINDLE_CAPTURE_ATTEMPTS) { attempt ->
+            kotlinx.coroutines.delay(KINDLE_CAPTURE_DELAY_MS * (attempt + 1))
+            val captured = runCatching { HeadlessScreenCapture.capture(appContext) }.getOrNull()
+                ?: return@repeat
+            if (captured.sourcePackage != null &&
+                captured.sourcePackage != KindlePageTurnController.KINDLE_PACKAGE
+            ) return@repeat
+            if (ScreenContextFingerprint.from(captured).changedFrom(previous)) return captured
+        }
+        return null
+    }
+
+    private fun showKindlePageTurnError(message: String) {
+        BleConnectionService.setErrorMessage(message)
+        Log.w(TAG, message)
+    }
+
     private fun speakResponse(text: String, requestId: String? = null) {
         if (isAssistantCancelled(requestId)) {
             BleConnectionService.releaseAssistantProcessing()
@@ -983,6 +1335,8 @@ internal class VoiceProcessor(
         aiFacade.switchProfile(profile)
         tts?.stop()
         smartGlassesOutput.stopDisplay()
+        readingSourceContext = null
+        readingPageTurnGesture = PageTurnGesture.UNKNOWN
         if (BleConnectionService.voiceState.value != VoiceState.RECORDING) {
             BleConnectionService.setVoiceState(VoiceState.READY)
         }
@@ -1015,6 +1369,8 @@ internal class VoiceProcessor(
         tts?.stop()
         BleConnectionService.setPhonePlaybackActive(false)
         smartGlassesOutput.stopDisplay()
+        readingSourceContext = null
+        readingPageTurnGesture = PageTurnGesture.UNKNOWN
         isCollectingPcm = false
         pcmBuffer.reset()
         sileroVad?.reset()

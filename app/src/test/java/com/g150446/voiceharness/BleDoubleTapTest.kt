@@ -14,6 +14,12 @@ class BleDoubleTapTest {
     }
 
     @Test
+    fun `0x14 event packet decodes as single tap`() {
+        val event = parseSimpleBleEvent(byteArrayOf(0x00, 0x55, 0x14))
+        assertSame(BleEvent.SingleTap, event)
+    }
+
+    @Test
     fun `short malformed and unknown packets do not decode`() {
         assertNull(parseSimpleBleEvent(byteArrayOf(0x00, 0x55)))
         assertNull(parseSimpleBleEvent(byteArrayOf(0x00, 0x54, 0x12)))

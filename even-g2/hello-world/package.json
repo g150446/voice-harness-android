@@ -1,0 +1,23 @@
+{
+  "name": "voice-harness-even-g2-hello-world",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "simulate": "evenhub-simulator http://localhost:5173",
+    "pack": "npm run build && evenhub pack app.json dist --sdk-ver 0.0.14"
+  },
+  "dependencies": {
+    "@evenrealities/even_hub_sdk": "0.0.14",
+    "@evenrealities/pretext": "0.1.4"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "0.1.14",
+    "@evenrealities/evenhub-simulator": "0.9.3",
+    "typescript": "5.9.2",
+    "vite": "7.3.6"
+  }
+}

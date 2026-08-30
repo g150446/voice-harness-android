@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import android.app.PendingIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -70,6 +71,8 @@ class BleConnectionService : Service() {
 
         private val _doubleTapStatus = MutableStateFlow(DoubleTapStatus())
         val doubleTapStatus: StateFlow<DoubleTapStatus> = _doubleTapStatus.asStateFlow()
+        private val _drivingMode = MutableStateFlow(DrivingMode.NORMAL)
+        val drivingMode: StateFlow<DrivingMode> = _drivingMode.asStateFlow()
 
         // Voice processing state flows — written by VoiceProcessor, read by ViewModel for UI.
         private val _voiceState = MutableStateFlow(VoiceState.READY)
@@ -94,6 +97,10 @@ class BleConnectionService : Service() {
         private val _smartGlassesState = MutableStateFlow(SmartGlassesState())
         val smartGlassesState: StateFlow<SmartGlassesState> = _smartGlassesState.asStateFlow()
 
+        private val _readingPassthroughEnabled = MutableStateFlow(false)
+        val readingPassthroughEnabled: StateFlow<Boolean> =
+            _readingPassthroughEnabled.asStateFlow()
+
         private val _lastPipelineMs = MutableStateFlow(0L)
         val lastPipelineMs: StateFlow<Long> = _lastPipelineMs.asStateFlow()
 
@@ -113,6 +120,11 @@ class BleConnectionService : Service() {
 
         fun sendCommand(byte: Byte) {
             instance?.bleManager?.sendToRx(byte)
+        }
+
+        fun setDrivingMode(context: Context, mode: DrivingMode) {
+            _drivingMode.value = mode
+            instance?.bleManager?.sendToRx(byteArrayOf(0x05, if (mode == DrivingMode.DRIVING) 0x01 else 0x00))
         }
 
         fun setRole(claimPrimary: Boolean) {
@@ -202,6 +214,22 @@ class BleConnectionService : Service() {
             _responseOutputTarget.value = ResponseOutputPreferences(context).target()
         }
 
+        fun initializeReadingPassthroughEnabled(context: Context) {
+            val enabled = ReadingPassthroughPreferences(context).enabled()
+            _readingPassthroughEnabled.value = enabled
+            EvenG2ReadingSession.setEnabled(enabled)
+        }
+
+        fun setReadingPassthroughEnabled(context: Context, enabled: Boolean) {
+            ReadingPassthroughPreferences(context).setEnabled(enabled)
+            _readingPassthroughEnabled.value = enabled
+            EvenG2ReadingSession.setEnabled(enabled)
+            if (!enabled) {
+                instance?.smartGlassesOutputManager?.stopDisplay()
+                setErrorMessage("")
+            }
+        }
+
         fun setResponseOutputTarget(context: Context, target: ResponseOutputTarget) {
             ResponseOutputPreferences(context).setTarget(target)
             _responseOutputTarget.value = target
@@ -272,6 +300,8 @@ class BleConnectionService : Service() {
     private var processingWakeLock: PowerManager.WakeLock? = null
     private var playbackActive = false
     private var recordingOverlay: RecordingOverlayController? = null
+    private var evenG2BridgeServer: EvenG2BridgeServer? = null
+    private lateinit var drivingModeController: DrivingModeController
 
     override fun onCreate() {
         super.onCreate()
@@ -281,13 +311,36 @@ class BleConnectionService : Service() {
 
         createNotificationChannel()
         startForegroundWithNotification("BLE: Scanning...")
+        evenG2BridgeServer = EvenG2BridgeServer(
+            statusProvider = { _doubleTapStatus.value },
+            readingProvider = { EvenG2ReadingSession.snapshot(_doubleTapStatus.value.count) },
+            onAdvance = { revision ->
+                val processor = instance?.voiceProcessor
+                if (processor == null) {
+                    EvenG2AdvanceResponse(503, "Voice processor is unavailable", false)
+                } else {
+                    val result = EvenG2ReadingSession.beginAdvance(revision)
+                    if (result.accepted) {
+                        processor.requestEvenG2PageAdvance(revision)
+                    }
+                    result
+                }
+            },
+        ).also { it.start() }
         recordingOverlay = RecordingOverlayController(applicationContext)
+        drivingModeController = DrivingModeController(applicationContext)
+        _drivingMode.value = drivingModeController.mode.value
+        drivingModeController.start()
 
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         initializeResponseOutputTarget(applicationContext)
+        initializeReadingPassthroughEnabled(applicationContext)
         smartGlassesOutputManager = SmartGlassesOutputManager(applicationContext).also { manager ->
             serviceScope.launch {
-                manager.state.collect { _smartGlassesState.value = it }
+                manager.state.collect {
+                    _smartGlassesState.value = it
+                    refreshStatusOverlay()
+                }
             }
         }
         voiceProcessor = VoiceProcessor(
@@ -304,11 +357,22 @@ class BleConnectionService : Service() {
             mgr.start(bluetoothManager)
 
             serviceScope.launch {
+                drivingModeController.mode.collect { mode ->
+                    _drivingMode.value = mode
+                    if (stateIsConnected()) setDrivingMode(applicationContext, mode)
+                    refreshNotification()
+                }
+            }
+
+            serviceScope.launch {
                 mgr.connectionState.collect { state ->
                     _connectionState.value = state
                     refreshNotification()
                     when (state) {
-                        BleConnectionState.CONNECTED -> acquireWakeLock()
+                        BleConnectionState.CONNECTED -> {
+                            acquireWakeLock()
+                            setDrivingMode(applicationContext, drivingModeController.mode.value)
+                        }
                         BleConnectionState.SCANNING, BleConnectionState.CONNECTING -> acquireWakeLock()
                         BleConnectionState.DISCONNECTED -> releaseWakeLock()
                     }
@@ -319,6 +383,9 @@ class BleConnectionService : Service() {
                     if (input is BleVoiceInput.Event && input.event is BleEvent.DoubleTap) {
                         recordDoubleTap()
                         Log.i(TAG, "Double tap published to UI")
+                        voiceProcessor?.handleDoubleTap()
+                    } else if (input is BleVoiceInput.Event && input.event is BleEvent.SingleTap) {
+                        Log.i(TAG, "Single tap received (diagnostic only)")
                     }
                     voiceProcessor?.handleBleInput(input)
                 }
@@ -348,6 +415,13 @@ class BleConnectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand")
         when (intent?.action) {
+            DrivingModeController.ACTION_SET_MODE -> {
+                when (intent.getStringExtra(DrivingModeController.EXTRA_MODE)) {
+                    "driving" -> drivingModeController.setOverride(DrivingMode.DRIVING)
+                    "normal" -> drivingModeController.setOverride(DrivingMode.NORMAL)
+                    "auto" -> drivingModeController.setOverride(null)
+                }
+            }
             ACTION_ASSISTANT_QUERY -> {
                 val text = intent.getStringExtra(EXTRA_ASSISTANT_TEXT).orEmpty()
                 val conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID).orEmpty()
@@ -385,7 +459,10 @@ class BleConnectionService : Service() {
         Log.d(TAG, "Service destroyed")
         recordingOverlay?.hide()
         recordingOverlay = null
+        evenG2BridgeServer?.close()
+        evenG2BridgeServer = null
         voiceProcessor?.shutdown()
+        if (::drivingModeController.isInitialized) drivingModeController.stop()
         bleManager?.shutdown()
         smartGlassesOutputManager?.close()
         serviceScope.cancel()
@@ -401,12 +478,17 @@ class BleConnectionService : Service() {
     }
 
     private fun onVoiceStateChanged(state: VoiceState) {
-        if (state == VoiceState.RECORDING) {
-            recordingOverlay?.show()
-        } else {
-            recordingOverlay?.hide()
-        }
+        refreshStatusOverlay(state)
         refreshNotification()
+    }
+
+    private fun refreshStatusOverlay(voiceState: VoiceState = _voiceState.value) {
+        recordingOverlay?.show(
+            overlayStatusFor(
+                voiceState = voiceState,
+                glassesState = _smartGlassesState.value,
+            )
+        )
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -466,7 +548,20 @@ class BleConnectionService : Service() {
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
+            .addAction(NotificationCompat.Action(0, if (_drivingMode.value == DrivingMode.DRIVING) "運転中" else "運転判定", modePendingIntent("auto")))
+            .addAction(NotificationCompat.Action(0, "通常", modePendingIntent("normal")))
+            .addAction(NotificationCompat.Action(0, "運転", modePendingIntent("driving")))
             .build()
+
+    private fun modePendingIntent(mode: String) = PendingIntent.getService(
+        this,
+        mode.hashCode(),
+        Intent(this, BleConnectionService::class.java).setAction(DrivingModeController.ACTION_SET_MODE)
+            .putExtra(DrivingModeController.EXTRA_MODE, mode),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun stateIsConnected() = _connectionState.value == BleConnectionState.CONNECTED
 
     private fun startForegroundWithNotification(text: String) {
         val notification = buildNotification(text)

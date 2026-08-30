@@ -39,6 +39,7 @@ sealed class BleEvent {
     data class MotionActive(val ax: Float, val ay: Float, val az: Float) : BleEvent()
     data object GestureDetected : BleEvent()
     data object DoubleTap : BleEvent()
+    data object SingleTap : BleEvent()
     data object LightSleepEnter : BleEvent()
     data object LightSleepWake : BleEvent()
     data object PeerConnected : BleEvent()
@@ -61,6 +62,7 @@ internal fun parseSimpleBleEvent(data: ByteArray): BleEvent? {
         0x02 -> BleEvent.RecordingStopped
         0x11 -> BleEvent.GestureDetected
         0x12 -> BleEvent.DoubleTap
+        0x14 -> BleEvent.SingleTap
         0x20 -> BleEvent.LightSleepEnter
         0x21 -> BleEvent.LightSleepWake
         else -> null
@@ -651,6 +653,10 @@ class BleManager(
                         Log.i(TAG, "Double tap event received")
                         parseSimpleBleEvent(data)
                     }
+                    0x14 -> {
+                        Log.i(TAG, "Single tap event received")
+                        parseSimpleBleEvent(data)
+                    }
                     0x20 -> parseSimpleBleEvent(data)
                     0x21 -> parseSimpleBleEvent(data)
                     0x31 -> {
@@ -701,7 +707,9 @@ class BleManager(
         return BleEvent.MotionActive(floatAt(3), floatAt(7), floatAt(11))
     }
 
-    fun sendToRx(byte: Byte) {
+    fun sendToRx(byte: Byte) = sendToRx(byteArrayOf(byte))
+
+    fun sendToRx(bytes: ByteArray) {
         val characteristic = rxCharacteristic ?: run {
             Log.w(TAG, "RX characteristic not available")
             return
@@ -710,16 +718,16 @@ class BleManager(
             if (Build.VERSION.SDK_INT >= 33) {
                 gatt?.writeCharacteristic(
                     characteristic,
-                    byteArrayOf(byte),
+                    bytes,
                     BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 )
             } else {
                 @Suppress("DEPRECATION")
-                characteristic.value = byteArrayOf(byte)
+                characteristic.value = bytes
                 @Suppress("DEPRECATION")
                 gatt?.writeCharacteristic(characteristic)
             }
-            Log.d(TAG, "Sent to RX: 0x${byte.toInt().and(0xFF).toString(16)}")
+            Log.d(TAG, "Sent to RX: ${bytes.joinToString(" ") { "%02x".format(it) }}")
         }
     }
 

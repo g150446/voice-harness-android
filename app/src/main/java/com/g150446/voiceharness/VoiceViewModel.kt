@@ -49,10 +49,13 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     val bleMode: StateFlow<Boolean> = BleConnectionService.bleMode
     val isPrimary: StateFlow<Boolean> = BleConnectionService.isPrimary
     val doubleTapStatus: StateFlow<DoubleTapStatus> = BleConnectionService.doubleTapStatus
+    val drivingMode: StateFlow<DrivingMode> = BleConnectionService.drivingMode
     val responseOutputTarget: StateFlow<ResponseOutputTarget> =
         BleConnectionService.responseOutputTarget
     val smartGlassesState: StateFlow<SmartGlassesState> =
         BleConnectionService.smartGlassesState
+    val readingPassthroughEnabled: StateFlow<Boolean> =
+        BleConnectionService.readingPassthroughEnabled
     val lastPipelineMs: StateFlow<Long> = BleConnectionService.lastPipelineMs
     val modelStatus: StateFlow<ModelStatus> = ModelManager.status
 
@@ -74,6 +77,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         BleConnectionService.initializeResponseOutputTarget(application)
+        BleConnectionService.initializeReadingPassthroughEnabled(application)
         ModelManager.refresh(application)
 
         viewModelScope.launch {
@@ -114,6 +118,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setResponseOutputTarget(target: ResponseOutputTarget) {
         BleConnectionService.setResponseOutputTarget(getApplication(), target)
+    }
+
+    fun setReadingPassthroughEnabled(enabled: Boolean) {
+        BleConnectionService.setReadingPassthroughEnabled(getApplication(), enabled)
     }
 
     fun startBleScan() {
