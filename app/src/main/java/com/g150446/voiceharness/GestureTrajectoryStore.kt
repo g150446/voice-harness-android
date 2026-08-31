@@ -54,6 +54,9 @@ data class GestureTrajectory(
     val isMatch: Boolean get() = result == 1
     val complete: Boolean get() = samples.size == declaredCount && !overflow && !notifyError
 
+    /** Indices begin never sent, i.e. chunks lost on the way. */
+    val missingSamples: Int get() = (declaredCount - samples.size).coerceAtLeast(0)
+
     /** Measured spacing, so nobody resamples against the nominal period. */
     fun medianPeriodMs(): Int {
         if (samples.size < 2) return periodMs
@@ -108,7 +111,17 @@ object GestureTrajectoryStore {
     private var overflow = false
     private var notifyError = false
     private var receiving = false
-    private val buffer = mutableListOf<GestureTrajectorySample>()
+
+    /**
+     * Indexed by the chunk's own start offset rather than appended.
+     *
+     * The node has been observed emitting two batches of the same window with
+     * their chunks interleaved, and appending merged them into one oversized
+     * trajectory (746 samples against a declared 377). Placing each sample at
+     * the index the packet states makes a duplicate overwrite itself instead of
+     * corrupting the window, whatever the sender does.
+     */
+    private val buffer = sortedMapOf<Int, GestureTrajectorySample>()
 
     /** Latest completed attempt, consumed when a recording ends. */
     @Volatile
@@ -141,11 +154,11 @@ object GestureTrajectoryStore {
     @Synchronized
     fun onChunk(startIndex: Int, samples: List<GestureTrajectorySample>) {
         if (!receiving) return
-        // startIndex is advisory; chunks arrive in order on a single connection.
-        if (startIndex != buffer.size) {
-            Log.w(TAG, "Chunk out of order: expected ${buffer.size}, got $startIndex")
+        samples.forEachIndexed { i, sample ->
+            val index = startIndex + i
+            // Anything past what begin declared is not part of this window.
+            if (index < declaredCount) buffer[index] = sample
         }
-        buffer.addAll(samples)
     }
 
     @Synchronized
@@ -160,7 +173,7 @@ object GestureTrajectoryStore {
             reason = reason,
             periodMs = periodMs,
             gyroBiasY = gyroBiasY,
-            samples = buffer.toList(),
+            samples = buffer.values.toList(),
             overflow = overflow,
             notifyError = notifyError,
             declaredCount = declaredCount,
@@ -172,7 +185,8 @@ object GestureTrajectoryStore {
         Log.i(
             TAG,
             "Trajectory session=$session result=$result samples=${trajectory.samples.size}" +
-                "/$declaredCount sent=$sentCount overflow=$overflow notifyError=$notifyError",
+                "/$declaredCount sent=$sentCount missing=${trajectory.missingSamples} " +
+                "overflow=$overflow notifyError=$notifyError",
         )
         return trajectory
     }
@@ -185,8 +199,11 @@ object GestureTrajectoryStore {
      */
     @Synchronized
     fun takeForRecording(recordingStopMs: Long, windowMs: Long = 5_000L): GestureTrajectory? {
+        if (recordingStopMs <= 0L) return null
         val candidate = last ?: return null
         if (!candidate.isMatch) return null
+        // Bounds are on when the batch *arrived*, not on now: the caller runs
+        // after ASR, seconds later, but the batch lands right after the stop.
         if (lastEndedAtMs < recordingStopMs - 1_000L) return null
         if (lastEndedAtMs > recordingStopMs + windowMs) return null
         last = null

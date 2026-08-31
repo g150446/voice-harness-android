@@ -65,7 +65,11 @@ internal class VoiceProcessor(
     private var recordingStartedAtWallMs = 0L
     /** Gesture milestones captured at recording stop; attached to the next HistoryEntry. */
     private var pendingGestureDiags: List<GestureDiagEntry> = emptyList()
-    private var pendingTrajectory: GestureTrajectory? = null
+    /**
+     * Wall clock of the last recording stop, used to claim the matching
+     * trajectory when the history entry is finally written.
+     */
+    private var recordingStoppedAtWallMs: Long = 0L
     /** Screen snapshot captured at BLE recording start (HarnessNode path). */
     private val pendingHarnessScreen = AtomicReference<ScreenContext?>(null)
     private val readingPageTurnInFlight = AtomicBoolean(false)
@@ -137,7 +141,7 @@ internal class VoiceProcessor(
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
         recordingStartedAtWallMs = System.currentTimeMillis()
         pendingGestureDiags = emptyList()
-        pendingTrajectory = null
+        recordingStoppedAtWallMs = 0L
         clearPendingHarnessScreen()
         isCollectingPcm = true
         BleConnectionService.setBleMode(true)
@@ -197,15 +201,12 @@ internal class VoiceProcessor(
         val start = recordingStartedAtWallMs
         val stop = System.currentTimeMillis()
         pendingGestureDiags = GestureDiagStore.snapshotForRecording(start, stop)
-        // The node flushes a successful attempt from its recording-stop handler,
-        // so the batch is already in flight; taking it here is not a race but it
-        // may legitimately be absent when capture is off.
-        pendingTrajectory = GestureTrajectoryStore.takeForRecording(stop)
-        Log.d(
-            TAG,
-            "Captured ${pendingGestureDiags.size} gesture diags and " +
-                "${pendingTrajectory?.samples?.size ?: 0} trajectory samples for history",
-        )
+        // The trajectory cannot be claimed here. The node sends 0x02 first and
+        // only then flushes the batch (main.c, recording-stop handler), which
+        // takes about 250 ms of chunked notifications — so at this point it has
+        // not arrived. saveHistoryEntry() runs after ASR, by which time it has.
+        recordingStoppedAtWallMs = stop
+        Log.d(TAG, "Captured ${pendingGestureDiags.size} gesture diags for history")
     }
 
     private fun saveHistoryEntry(
@@ -215,8 +216,10 @@ internal class VoiceProcessor(
         errorMessage: String,
     ) {
         val id = UUID.randomUUID().toString()
-        val trajectoryFile = pendingTrajectory?.let {
-            GestureTrajectoryStore.write(appContext, id, it)
+        val trajectory = GestureTrajectoryStore.takeForRecording(recordingStoppedAtWallMs)
+        val trajectoryFile = trajectory?.let { GestureTrajectoryStore.write(appContext, id, it) }
+        if (trajectory != null) {
+            Log.d(TAG, "Attached ${trajectory.samples.size} trajectory samples to $id")
         }
         historyRepository.addEntry(
             HistoryEntry(
@@ -231,7 +234,7 @@ internal class VoiceProcessor(
             )
         )
         pendingGestureDiags = emptyList()
-        pendingTrajectory = null
+        recordingStoppedAtWallMs = 0L
     }
 
     private fun handleBleRecordingStopped(reason: String = "firmware") {

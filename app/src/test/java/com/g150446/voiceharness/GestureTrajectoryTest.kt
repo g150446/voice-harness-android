@@ -167,6 +167,75 @@ class GestureTrajectoryTest {
     }
 
     @Test
+    fun `interleaved duplicate batches do not merge`() {
+        // Observed on 0.0.91: two flushes of the same 377-sample window arrived
+        // with their chunks interleaved, and appending produced 746 samples.
+        begin(result = 1, count = 3)
+        val chunk = listOf(
+            GestureTrajectorySample(0, 0, 1f, 2f, 3f, 0f, 0f, 0f),
+            GestureTrajectorySample(25, 0, 4f, 5f, 6f, 0f, 0f, 0f),
+        )
+        GestureTrajectoryStore.onChunk(0, chunk)
+        GestureTrajectoryStore.onChunk(0, chunk)
+        GestureTrajectoryStore.onChunk(
+            2,
+            listOf(GestureTrajectorySample(50, 1, 7f, 8f, 9f, 1f, 2f, 3f)),
+        )
+        val t = requireNotNull(GestureTrajectoryStore.onEnd(3, 0))
+        assertEquals(3, t.samples.size)
+        assertEquals(listOf(0, 25, 50), t.samples.map { it.tMs })
+        assertTrue(t.complete)
+    }
+
+    @Test
+    fun `samples beyond the declared count are dropped`() {
+        begin(result = 1, count = 2)
+        GestureTrajectoryStore.onChunk(
+            0,
+            listOf(
+                GestureTrajectorySample(0, 0, 1f, 1f, 1f, 0f, 0f, 0f),
+                GestureTrajectorySample(25, 0, 2f, 2f, 2f, 0f, 0f, 0f),
+                GestureTrajectorySample(50, 0, 3f, 3f, 3f, 0f, 0f, 0f),
+            ),
+        )
+        val t = requireNotNull(GestureTrajectoryStore.onEnd(2, 0))
+        assertEquals(2, t.samples.size)
+    }
+
+    @Test
+    fun `a lost chunk is reported as missing rather than silently shifting`() {
+        begin(result = 1, count = 4)
+        GestureTrajectoryStore.onChunk(
+            0,
+            listOf(GestureTrajectorySample(0, 0, 1f, 1f, 1f, 0f, 0f, 0f)),
+        )
+        // index 1 and 2 never arrive
+        GestureTrajectoryStore.onChunk(
+            3,
+            listOf(GestureTrajectorySample(75, 0, 4f, 4f, 4f, 0f, 0f, 0f)),
+        )
+        val t = requireNotNull(GestureTrajectoryStore.onEnd(2, 0))
+        assertEquals(2, t.samples.size)
+        assertEquals(2, t.missingSamples)
+        assertFalse(t.complete)
+        // The surviving samples keep their real timestamps, not compacted ones.
+        assertEquals(listOf(0, 75), t.samples.map { it.tMs })
+    }
+
+    @Test
+    fun `a zero stop time claims nothing`() {
+        begin(result = 1, count = 1)
+        GestureTrajectoryStore.onChunk(
+            0,
+            listOf(GestureTrajectorySample(0, 0, 1f, 1f, 1f, 0f, 0f, 0f)),
+        )
+        GestureTrajectoryStore.onEnd(1, 0)
+        // saveHistoryEntry() runs for non-gesture paths too, where no recording
+        // stopped; those must not adopt whatever trajectory happens to be held.
+        assertNull(GestureTrajectoryStore.takeForRecording(0L))
+    }
+
+    @Test
     fun `csv carries the header and every sample`() {
         begin(result = 1, count = 2)
         GestureTrajectoryStore.onChunk(
