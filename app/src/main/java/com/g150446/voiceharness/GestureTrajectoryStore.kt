@@ -70,7 +70,10 @@ data class GestureTrajectory(
      *   phone-side live slice instead — writing those as if they lined up would
      *   put the segment boundaries in the wrong place.
      */
-    fun toCsv(milestones: List<GestureDiagEntry>? = null): String = buildString {
+    fun toCsv(
+        milestones: List<GestureDiagEntry>? = null,
+        liveDiags: List<GestureDiagEntry>? = null,
+    ): String = buildString {
         append("# session=").append(session)
             .append(" result=").append(result)
             .append(" reason=0x").append("%02X".format(reason))
@@ -83,6 +86,7 @@ data class GestureTrajectory(
             .append(" notify_error=").append(notifyError)
             .append(" received_at_ms=").append(receivedAtMs)
             .append(" milestones=").append(milestones?.size ?: 0)
+            .append(" live=").append(liveDiags?.size ?: 0)
             .append('\n')
         milestones?.forEach { m ->
             append(
@@ -91,6 +95,23 @@ data class GestureTrajectory(
                     m.stageName, m.reasonName,
                 )
             )
+        }
+        // The node's history buffer is routinely truncated to its last few
+        // entries and its t_ms origin is the first push after a clear, not the
+        // trajectory's t0 -- measured 548 ms apart on session=143. The live
+        // 0x30 stream carries the whole sequence, so emit it too, timed from
+        // the first live entry. Neither base is the trajectory's: derive the
+        // sample offsets from the trajectory itself.
+        liveDiags?.takeIf { it.isNotEmpty() }?.let { live ->
+            val origin = live.first().receivedAtMs
+            live.forEach { d ->
+                append(
+                    "# live %d,0x%02X,0x%02X,%.4f,%.4f,%.4f  %s/%s\n".format(
+                        Locale.US, d.receivedAtMs - origin, d.stage, d.reason,
+                        d.v1, d.v2, d.v3, d.stageName, d.reasonName,
+                    )
+                )
+            }
         }
         append("t_ms,flags,ax,ay,az,gx,gy,gz\n")
         samples.forEach { s ->
@@ -237,12 +258,13 @@ object GestureTrajectoryStore {
         entryId: String,
         trajectory: GestureTrajectory,
         milestones: List<GestureDiagEntry>? = null,
+        liveDiags: List<GestureDiagEntry>? = null,
     ): String? {
         if (trajectory.samples.isEmpty()) return null
         val dir = directory(context)
         val file = File(dir, "$entryId.csv")
         return runCatching {
-            file.writeText(trajectory.toCsv(milestones))
+            file.writeText(trajectory.toCsv(milestones, liveDiags))
             prune(dir)
             file.name
         }.onFailure { Log.w(TAG, "Failed to write trajectory", it) }.getOrNull()

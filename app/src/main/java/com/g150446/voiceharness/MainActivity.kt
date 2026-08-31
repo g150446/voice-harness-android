@@ -1131,9 +1131,9 @@ fun HistoryDetailScreen(
         // is, because learning from misaligned milestones fails silently.
         Text(
             text = if (entry.diagsFromNodeBatch) {
-                "診断: Node バッチ（軌跡と時刻軸が一致）"
+                "診断: Node バッチ（軌跡とは別時刻軸・末尾のみ）"
             } else {
-                "診断: ライブ 0x30（軌跡とは別時刻軸）"
+                "診断: ライブ 0x30（全区間・軌跡とは別時刻軸）"
             },
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

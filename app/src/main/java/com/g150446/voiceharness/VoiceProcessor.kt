@@ -217,20 +217,26 @@ internal class VoiceProcessor(
     ) {
         val id = UUID.randomUUID().toString()
         val trajectory = GestureTrajectoryStore.takeForRecording(recordingStoppedAtWallMs)
-        // Prefer the node's own milestone batch over the live slice taken at stop:
-        // it is timed on the node's clock, the same origin as the trajectory, so
-        // an offline pipeline can locate the latch, the lift and the match inside
-        // the raw samples. It arrives after the stop event, like the trajectory.
+        // The node batch was preferred on the assumption that it shares the
+        // trajectory's clock. It does not: its t_ms starts at the first push
+        // after a clear, measured 548 ms after the trajectory's t0 on
+        // session=143. Worse, the node's history buffer is routinely truncated
+        // -- that same gesture emitted 24 live diags but flushed a batch of 3,
+        // so preferring it threw away most of the sequence. Keep whichever
+        // actually carries the run, and write both into the CSV.
         val batch = GestureDiagStore.takeBatchForRecording(recordingStoppedAtWallMs)
-        val diags = batch ?: pendingGestureDiags
+        val live = pendingGestureDiags
+        val useBatch = batch != null && batch.size >= live.size
+        val diags = if (useBatch) batch!! else live
         val trajectoryFile = trajectory?.let {
-            GestureTrajectoryStore.write(appContext, id, it, batch)
+            GestureTrajectoryStore.write(appContext, id, it, batch, live)
         }
         if (trajectory != null) {
             Log.d(
                 TAG,
                 "Attached ${trajectory.samples.size} trajectory samples to $id " +
-                    "(milestones=${batch?.size ?: 0} from ${if (batch != null) "node" else "live"})",
+                    "(node batch=${batch?.size ?: 0}, live=${live.size}, " +
+                    "kept ${if (useBatch) "node" else "live"})",
             )
         }
         historyRepository.addEntry(
@@ -243,7 +249,7 @@ internal class VoiceProcessor(
                 errorMessage = errorMessage,
                 gestureDiags = diags,
                 trajectoryFile = trajectoryFile,
-                diagsFromNodeBatch = batch != null,
+                diagsFromNodeBatch = useBatch,
             )
         )
         pendingGestureDiags = emptyList()
