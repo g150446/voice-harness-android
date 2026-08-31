@@ -123,7 +123,9 @@ hex ダンプログには出るが、それだけ。
 | `pending` が立った ack | `0055400001` / `0055400100` を実受信 |
 | 全接続への配信 | Macをsecondaryに繋いだ状態で、primary/secondary両方が4件とも受信 |
 | アプリの不一致検知 | `W/BleConnectionService: Driving mode mismatch: app=NORMAL node=DRIVING` |
-| シングルタップ | `0xD1`（`TAP_SRC=0x00`）→ `0x14` の順で受信。非退行を確認 |
+| シングルタップ | **5/5**、誤分類0。全回 `0xD1`(`TAP_SRC=0x00`) → `0x14` |
+| ダブルタップ | **5/5**、誤分類0。`0xD1`(`TAP_SRC=0x51` または `0x59`) → `0x12` |
+| 録音中のモード切替 | 保留され、録音停止の20ms後に適用（下記） |
 
 接続時の通知は次のログの形が正常:
 
@@ -133,12 +135,27 @@ hex ダンプログには出るが、それだけ。
 18:21:01.843  TX event 0xD0 (00 55 D0 00 60 00 83 08)
 ```
 
+**録音中のモード切替（項目3）**
+
+RX `0x01` / `0x00` で録音を遠隔開始・停止できるため、物理操作なしで検証した。
+Groq への課金を避けるためAndroidアプリは止め、Macのみで実施:
+
+```
+ 5.05s  TX 0x01 (recording started)
+ 6.82s  ACK 0x40  effective=NORMAL  pending=DRIVING   <- 録音中は保留
+ 9.87s  TX 0x02 (recording stopped)
+ 9.89s  ACK 0x40  effective=DRIVING pending=none      <- 停止20ms後に適用
+```
+
+録音中の3秒間、適用ackは1件も来ていない（実効モードは変わらない）。
+`0.0.87` までは受理時ackがなかったため、この `pending=DRIVING` はホストから
+観測できなかった。
+
 **未確認のまま残したこと**
 
-- **録音中のモード切替**（保留表示が出て、録音終了後に消えること）。`pending` 付き
-  ack が届く機構そのものは上のとおり実証済みで、録音中はその状態が長く続くだけ。
-- **タップの回数を揃えた非退行試験**（single / double 各5回で 5/5、誤検出0）。
-  物理タップが必要。single は1回だけ動作を確認した。
+- **保留中のUI表示**（「運転へ切替（録音終了後）」）を目視では確認していない。
+  上記のackをアプリが受け取って `nodePendingDrivingMode` に入れるところまでは
+  `Driving mode mismatch` ログで実証済みで、残りはCompose側の描画のみ。
 - **Android を secondary にした状態**での ack 到達。Macをsecondaryにした対称の
   ケースは確認済みで、`notify_all_conns()` は role で分岐しないため機構は同じ。
 
