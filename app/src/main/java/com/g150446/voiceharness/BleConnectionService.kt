@@ -422,6 +422,10 @@ class BleConnectionService : Service() {
         initializeResponseOutputTarget(applicationContext)
         initializeReadingPassthroughEnabled(applicationContext)
         initializeGestureCaptureEnabled(applicationContext)
+        // Create it up front: `run-as ... tar c files/gesture_trajectories` emits a
+        // corrupt archive with no clear error when the directory is missing, and
+        // that would surface at the end of a collection day.
+        GestureTrajectoryStore.directory(applicationContext)
         smartGlassesOutputManager = SmartGlassesOutputManager(applicationContext).also { manager ->
             serviceScope.launch {
                 manager.state.collect {

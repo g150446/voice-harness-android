@@ -173,6 +173,10 @@ Phase 3 の分類器には**ラベル付きの生 IMU が要る**。FW 側の軌
 ```bash
 adb -s <device> exec-out run-as com.g150446.voiceharness \
   tar c files/gesture_trajectories > trajectories.tar
+tar tvf trajectories.tar    # 中身を確認してから展開する
 ```
+
+ディレクトリはアプリ起動時に作られる。存在しないと `tar` は**エラーを出さずに
+壊れたアーカイブを吐く**ので、`tar tvf` での確認を省かないこと。
 
 5. 収集を**オフに戻す**（常時オンは帯域と電池の無駄）。
