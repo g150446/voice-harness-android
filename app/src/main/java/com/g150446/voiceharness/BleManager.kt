@@ -36,6 +36,9 @@ private const val RX_WRITE_RETRY_MS = 150L
 /** Guard against stacks that never call onCharacteristicWrite. */
 private const val RX_WRITE_TIMEOUT_MS = 2_000L
 
+/** About 3 s of retries, enough to outlast the CCCD write after a connect. */
+private const val RX_WRITE_MAX_RETRIES = 20
+
 enum class BleConnectionState { DISCONNECTED, SCANNING, CONNECTING, CONNECTED }
 
 data class AudioPacket(val seqNum: Int, val pcmData: ByteArray)
@@ -178,6 +181,8 @@ class BleManager(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val rxQueue = ArrayDeque<ByteArray>()
     private var rxWriteInFlight = false
+    private var rxRetryScheduled = false
+    private var rxRetriesLeft = RX_WRITE_MAX_RETRIES
     private val rxWriteTimeout = Runnable {
         Log.w(TAG, "RX write timed out; resuming the queue")
         rxWriteInFlight = false
@@ -876,9 +881,9 @@ class BleManager(
     /** Main thread only. */
     private fun pumpRxQueue() {
         if (rxWriteInFlight) return
-        val bytes = rxQueue.removeFirstOrNull() ?: return
+        val bytes = rxQueue.firstOrNull() ?: return
         val characteristic = rxCharacteristic ?: run {
-            Log.w(TAG, "RX characteristic not available; dropping ${bytes.size} bytes")
+            Log.w(TAG, "RX characteristic not available; dropping ${rxQueue.size} commands")
             rxQueue.clear()
             return
         }
@@ -896,16 +901,38 @@ class BleManager(
         }
         val hex = bytes.joinToString(" ") { "%02x".format(it) }
         if (!started) {
-            // Say so rather than letting the caller believe the node was told.
-            Log.w(TAG, "RX write rejected by the stack: $hex")
-            mainHandler.postDelayed({ pumpRxQueue() }, RX_WRITE_RETRY_MS)
+            // Right after connect the stack refuses writes while the CCCD write is
+            // still outstanding, so a rejection is normal and the command has to be
+            // kept, not dropped — it stays at the head of the queue.
+            if (rxRetriesLeft <= 0) {
+                rxQueue.removeFirst()
+                rxRetriesLeft = RX_WRITE_MAX_RETRIES
+                Log.w(TAG, "RX write given up after retries: $hex")
+                scheduleRxRetry()
+                return
+            }
+            rxRetriesLeft--
+            Log.w(TAG, "RX write rejected by the stack, retrying: $hex")
+            scheduleRxRetry()
             return
         }
+        rxQueue.removeFirst()
+        rxRetriesLeft = RX_WRITE_MAX_RETRIES
         rxWriteInFlight = true
         Log.d(TAG, "Sent to RX: $hex")
         // Some stacks never deliver onCharacteristicWrite; without this the queue
         // would stall for the life of the connection.
         mainHandler.postDelayed(rxWriteTimeout, RX_WRITE_TIMEOUT_MS)
+    }
+
+    /** One timer at a time, however many commands are queued behind it. */
+    private fun scheduleRxRetry() {
+        if (rxRetryScheduled) return
+        rxRetryScheduled = true
+        mainHandler.postDelayed({
+            rxRetryScheduled = false
+            pumpRxQueue()
+        }, RX_WRITE_RETRY_MS)
     }
 
     /** Main thread only. */
@@ -920,6 +947,7 @@ class BleManager(
             mainHandler.removeCallbacks(rxWriteTimeout)
             rxQueue.clear()
             rxWriteInFlight = false
+            rxRetriesLeft = RX_WRITE_MAX_RETRIES
         }
     }
 
