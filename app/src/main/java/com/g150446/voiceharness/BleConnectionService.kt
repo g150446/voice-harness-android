@@ -86,8 +86,38 @@ class BleConnectionService : Service() {
         val doubleTapStatus: StateFlow<DoubleTapStatus> = _doubleTapStatus.asStateFlow()
         private val _singleTapStatus = MutableStateFlow(SingleTapStatus())
         val singleTapStatus: StateFlow<SingleTapStatus> = _singleTapStatus.asStateFlow()
+        // _drivingMode is the app's *intent* (DrivingModeController's verdict plus any
+        // manual override). The two below are what the node reported over 0x40, so a
+        // disagreement or a deferred switch is visible instead of assumed away.
         private val _drivingMode = MutableStateFlow(DrivingMode.NORMAL)
         val drivingMode: StateFlow<DrivingMode> = _drivingMode.asStateFlow()
+
+        /** Mode the node is actually running, or null while unconfirmed. */
+        private val _nodeDrivingMode = MutableStateFlow<DrivingMode?>(null)
+        val nodeDrivingMode: StateFlow<DrivingMode?> = _nodeDrivingMode.asStateFlow()
+
+        /** Mode the node deferred until the current recording ends, or null if none. */
+        private val _nodePendingDrivingMode = MutableStateFlow<DrivingMode?>(null)
+        val nodePendingDrivingMode: StateFlow<DrivingMode?> =
+            _nodePendingDrivingMode.asStateFlow()
+
+        private fun drivingModeOrNull(raw: Int): DrivingMode? = when (raw) {
+            0x00 -> DrivingMode.NORMAL
+            0x01 -> DrivingMode.DRIVING
+            else -> null
+        }
+
+        internal fun onOperationModeAck(ack: BleEvent.OperationModeAck) {
+            val effective = drivingModeOrNull(ack.effective)
+            val pending = drivingModeOrNull(ack.pending)
+            _nodeDrivingMode.value = effective
+            _nodePendingDrivingMode.value = pending
+            if (pending == null && effective != null && effective != _drivingMode.value) {
+                // Do not auto-resend: the CONNECTED handler already re-sends the mode,
+                // and resending here could ping-pong with the node.
+                Log.w(TAG, "Driving mode mismatch: app=${_drivingMode.value} node=$effective")
+            }
+        }
 
         // Voice processing state flows — written by VoiceProcessor, read by ViewModel for UI.
         private val _voiceState = MutableStateFlow(VoiceState.READY)
@@ -393,7 +423,11 @@ class BleConnectionService : Service() {
                             setDrivingMode(applicationContext, drivingModeController.mode.value)
                         }
                         BleConnectionState.SCANNING, BleConnectionState.CONNECTING -> acquireWakeLock()
-                        BleConnectionState.DISCONNECTED -> releaseWakeLock()
+                        BleConnectionState.DISCONNECTED -> {
+                            releaseWakeLock()
+                            _nodeDrivingMode.value = null
+                            _nodePendingDrivingMode.value = null
+                        }
                     }
                 }
             }
@@ -406,6 +440,9 @@ class BleConnectionService : Service() {
                     } else if (input is BleVoiceInput.Event && input.event is BleEvent.SingleTap) {
                         recordSingleTap()
                         Log.i(TAG, "Single tap published to UI")
+                    } else if (input is BleVoiceInput.Event) {
+                        val event = input.event
+                        if (event is BleEvent.OperationModeAck) onOperationModeAck(event)
                     }
                     voiceProcessor?.handleBleInput(input)
                 }

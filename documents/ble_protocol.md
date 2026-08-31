@@ -88,12 +88,14 @@ Byte 0  Byte 1  Byte 2      Bytes 3+
 | `0x33` | ジェスチャ履歴 begin | count, session（5 B）。`GESTURE_DEBUG_HISTORY=1` のみ |
 | `0x34` | ジェスチャ履歴 entry | u16 t_ms, stage, reason, f32×3（19 B） |
 | `0x35` | ジェスチャ履歴 end | count, session（5 B） |
-| `0xD0` | タップ診断（レジスタ値、2秒周期） | read_ret i8 + レジスタ8 B + u16 + i8（15 B） |
+| `0xD0` | タップ診断（レジスタ値、接続確立時に1回） | read_ret i8 + レジスタ8 B + u16 + i8（15 B） |
 | `0xD1` | 生 `TAP_SRC`（タップ1回につき1件） | TAP_SRC u8 + read_ret i8（5 B） |
 | `0xD2` | IMUレジスタ応答（RX `0x50`/`0x51`） | reg, value, ret（6 B） |
 
-`0xD0`〜`0xD2` はファーム側のタップ経路診断用（FW `0.0.82+`）。Androidは未対応で、
-`BleManager` の hex ダンプログにのみ現れる。
+`0xD0`〜`0xD2` はファーム側のタップ経路診断用（FW `0.0.82+`）。Androidはこれらを
+パースせず、`BleManager` の hex ダンプログにのみ現れる。`0xD0` は `0.0.87` まで
+2秒周期で流れていたが、`0.0.88` で**接続確立時の1回だけ**になった。任意のタイミングで
+レジスタを見たいときは RX `0x51`（個別読み出し）→ `0xD2` を使う。
 
 **重要**: 録音トリガーは `0x01`/`0x02` のみ。`0x11` (motion_settled) と
 `0x12` (double_tap) は通知イベント。通常モードでは従来どおり通知のみ、運転モードではNode側がダブルタップで録音開始/終了をトグルするため、Androidはこのイベントを受けて録音状態を変更しない。
@@ -101,6 +103,25 @@ Byte 0  Byte 1  Byte 2      Bytes 3+
 ## 運転モード
 
 AndroidはRXへ `[0x05, 0x00]`（通常）または `[0x05, 0x01]`（運転）を送る。録音中の切替はNodeが現在の録音終了後に適用する。NodeはTXへ `[0x00, 0x55, 0x40, effective, pending]` を返す。運転モードではジェスチャー検出を停止し、ダブルタップのみで録音を開始・終了する。
+
+`0x40` の扱い（FW `0.0.88+`、Android対応済み）:
+
+- Nodeは**要求を受理した時点**と**実際に適用した時点**の2回 ack を送る。受理時のackが
+  ないと、録音中に保留された切替をAndroidが観測できない（`0.0.87` までは適用時にしか
+  送らず、`pending` が立った ack は構造上届かなかった）。
+- ack は `notify_all_conns()` で**全接続へ**飛ぶ。`ConnectionPriority.MAC_HANDY` で
+  Mac Handy に primary を譲っている間も Android がモードを追える（`0.0.87` までは
+  primary 1本にしか飛ばず、secondary の Android には届かなかった）。
+- 接続確立時にも primary / secondary のどちらでも現在のモードを1回送る。
+- `pending == 0xff` は保留なし。`effective` / `pending` はいずれも 0=通常、1=運転。
+
+Android側は `BleManager.parseOperationModeAck()` でパースし、`BleConnectionService` の
+`nodeDrivingMode` / `nodePendingDrivingMode` に反映する。既存の `drivingMode` は
+`DrivingModeController` の判定と手動overrideによる**アプリ側の意図**なので別物として残す。
+ホーム画面では保留中に「運転へ切替（録音終了後）」「通常へ切替（録音終了後）」、
+意図とNodeの実効モードが食い違う間は「Node: 運転」「Node: 通常」を警告色で併記する。
+未確認・一致時は表示を変えない。切断時は両方 `null`（未確認）へ戻し、古い値を
+Nodeの現在値として見せない。
 
 `0x12` と `0x14` は XIAO nRF52840 Sense の LSM6DS3TR-C 内蔵タップ検出を使用する。
 IMU の INT1 出力を nRF52840 の GPIO 割り込みで受けたファームウェアが、このBLEイベントを

@@ -51,6 +51,9 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     val doubleTapStatus: StateFlow<DoubleTapStatus> = BleConnectionService.doubleTapStatus
     val singleTapStatus: StateFlow<SingleTapStatus> = BleConnectionService.singleTapStatus
     val drivingMode: StateFlow<DrivingMode> = BleConnectionService.drivingMode
+    val nodeDrivingMode: StateFlow<DrivingMode?> = BleConnectionService.nodeDrivingMode
+    val nodePendingDrivingMode: StateFlow<DrivingMode?> =
+        BleConnectionService.nodePendingDrivingMode
     val responseOutputTarget: StateFlow<ResponseOutputTarget> =
         BleConnectionService.responseOutputTarget
     val smartGlassesState: StateFlow<SmartGlassesState> =

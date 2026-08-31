@@ -44,6 +44,12 @@ sealed class BleEvent {
     data object LightSleepWake : BleEvent()
     data object PeerConnected : BleEvent()
     data object PeerDisconnected : BleEvent()
+    /**
+     * Operation mode ack (event 0x40). [effective] is what the node is running now;
+     * [pending] is a mode deferred until the current recording ends, or
+     * [OPERATION_MODE_PENDING_NONE] when nothing is deferred.
+     */
+    data class OperationModeAck(val effective: Int, val pending: Int) : BleEvent()
     /** Live milestone/reject sample (event 0x30). Not used for voice pipeline. */
     data class GestureDiag(
         val stage: Int,
@@ -67,6 +73,22 @@ internal fun parseSimpleBleEvent(data: ByteArray): BleEvent? {
         0x21 -> BleEvent.LightSleepWake
         else -> null
     }
+}
+
+/** Node value for "no mode change is deferred" in an [BleEvent.OperationModeAck]. */
+const val OPERATION_MODE_PENDING_NONE = 0xFF
+
+/**
+ * Parses the operation mode ack (event 0x40, 5 bytes fixed). Kept out of
+ * [parseSimpleBleEvent], which only handles payload-free events.
+ */
+internal fun parseOperationModeAck(data: ByteArray): BleEvent.OperationModeAck? {
+    if (data.size < 5 || (data[1].toInt() and 0xFF) != 0x55) return null
+    if ((data[2].toInt() and 0xFF) != 0x40) return null
+    return BleEvent.OperationModeAck(
+        effective = data[3].toInt() and 0xFF,
+        pending = data[4].toInt() and 0xFF,
+    )
 }
 
 sealed class BleVoiceInput {
@@ -689,6 +711,7 @@ class BleManager(
                         Log.i(TAG, "Peer disconnected — reclaimed primary")
                         BleEvent.PeerDisconnected
                     }
+                    0x40 -> parseOperationModeAck(data)
                     else -> null
                 } ?: return
                 enqueueVoiceInput(BleVoiceInput.Event(event))

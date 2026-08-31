@@ -181,6 +181,8 @@ fun HomeScreen(
     val doubleTapStatus by viewModel.doubleTapStatus.collectAsState()
     val singleTapStatus by viewModel.singleTapStatus.collectAsState()
     val drivingMode by viewModel.drivingMode.collectAsState()
+    val nodeDrivingMode by viewModel.nodeDrivingMode.collectAsState()
+    val nodePendingDrivingMode by viewModel.nodePendingDrivingMode.collectAsState()
     val connectionPriority by viewModel.connectionPriority.collectAsState()
     val responseOutputTarget by viewModel.responseOutputTarget.collectAsState()
     val smartGlassesState by viewModel.smartGlassesState.collectAsState()
@@ -293,6 +295,24 @@ fun HomeScreen(
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // 0x40 ack。Node の実効モードはアプリの意図と食い違いうるので、保留中と
+            // 不一致のときだけ追記する（未確認・一致時は上の表示のまま変えない）。
+            val pending = nodePendingDrivingMode
+            val nodeMode = nodeDrivingMode
+            if (pending != null) {
+                Text(
+                    text = if (pending == DrivingMode.DRIVING) "運転へ切替（録音終了後）"
+                    else "通常へ切替（録音終了後）",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (nodeMode != null && nodeMode != drivingMode) {
+                Text(
+                    text = if (nodeMode == DrivingMode.DRIVING) "Node: 運転" else "Node: 通常",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
 
         TapStatusLine(
