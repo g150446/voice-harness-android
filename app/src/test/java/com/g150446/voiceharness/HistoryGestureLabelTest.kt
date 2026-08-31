@@ -1,6 +1,7 @@
 package com.g150446.voiceharness
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -19,6 +20,21 @@ class HistoryGestureLabelTest {
         assertNull(GestureLabel.fromStorage(null))
         assertNull(GestureLabel.fromStorage(""))
         assertNull(GestureLabel.fromStorage("MAYBE"))
+    }
+
+    @Test
+    fun `milestones default to the unaligned source`() {
+        // Anything that has not proved it came from the node batch must read as
+        // unaligned; assuming otherwise silently mis-segments the raw window.
+        val entry = HistoryEntry(
+            id = "id",
+            timestamp = 0L,
+            transcription = "",
+            response = "",
+            isSilent = false,
+            errorMessage = "",
+        )
+        assertFalse(entry.diagsFromNodeBatch)
     }
 
     @Test

@@ -75,6 +75,7 @@ class HistoryRepository(context: Context) {
                 put("errorMessage", entry.errorMessage)
                 put("gestureDiags", GestureDiagEntry.listToJson(entry.gestureDiags))
                 entry.trajectoryFile?.let { put("trajectoryFile", it) }
+                if (entry.diagsFromNodeBatch) put("diagsFromNodeBatch", true)
                 entry.gestureLabel?.let { put("gestureLabel", it.name) }
             })
         }
@@ -90,6 +91,7 @@ class HistoryRepository(context: Context) {
         errorMessage = obj.optString("errorMessage", ""),
         gestureDiags = GestureDiagEntry.listFromJson(obj.optJSONArray("gestureDiags")),
         trajectoryFile = obj.optString("trajectoryFile", "").ifBlank { null },
+        diagsFromNodeBatch = obj.optBoolean("diagsFromNodeBatch", false),
         gestureLabel = GestureLabel.fromStorage(obj.optString("gestureLabel", "")),
     )
 }

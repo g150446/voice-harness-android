@@ -64,7 +64,13 @@ data class GestureTrajectory(
         return deltas[deltas.size / 2]
     }
 
-    fun toCsv(): String = buildString {
+    /**
+     * @param milestones the node's own 0x33-0x35 batch, which shares this
+     *   trajectory's time origin. Pass null when the milestones came from the
+     *   phone-side live slice instead — writing those as if they lined up would
+     *   put the segment boundaries in the wrong place.
+     */
+    fun toCsv(milestones: List<GestureDiagEntry>? = null): String = buildString {
         append("# session=").append(session)
             .append(" result=").append(result)
             .append(" reason=0x").append("%02X".format(reason))
@@ -76,7 +82,16 @@ data class GestureTrajectory(
             .append(" overflow=").append(overflow)
             .append(" notify_error=").append(notifyError)
             .append(" received_at_ms=").append(receivedAtMs)
+            .append(" milestones=").append(milestones?.size ?: 0)
             .append('\n')
+        milestones?.forEach { m ->
+            append(
+                "# milestone %d,0x%02X,0x%02X,%.4f,%.4f,%.4f  %s/%s\n".format(
+                    Locale.US, m.tMs, m.stage, m.reason, m.v1, m.v2, m.v3,
+                    m.stageName, m.reasonName,
+                )
+            )
+        }
         append("t_ms,flags,ax,ay,az,gx,gy,gz\n")
         samples.forEach { s ->
             append(
@@ -213,13 +228,21 @@ object GestureTrajectoryStore {
     fun directory(context: Context): File =
         File(context.applicationContext.filesDir, DIR_NAME).apply { mkdirs() }
 
-    /** Writes [trajectory] and returns the file name to store on the history entry. */
-    fun write(context: Context, entryId: String, trajectory: GestureTrajectory): String? {
+    /**
+     * Writes [trajectory] and returns the file name to store on the history entry.
+     * [milestones] must be the node's own batch, or null — see [GestureTrajectory.toCsv].
+     */
+    fun write(
+        context: Context,
+        entryId: String,
+        trajectory: GestureTrajectory,
+        milestones: List<GestureDiagEntry>? = null,
+    ): String? {
         if (trajectory.samples.isEmpty()) return null
         val dir = directory(context)
         val file = File(dir, "$entryId.csv")
         return runCatching {
-            file.writeText(trajectory.toCsv())
+            file.writeText(trajectory.toCsv(milestones))
             prune(dir)
             file.name
         }.onFailure { Log.w(TAG, "Failed to write trajectory", it) }.getOrNull()

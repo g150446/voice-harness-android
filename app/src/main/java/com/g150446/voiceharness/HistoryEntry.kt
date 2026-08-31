@@ -25,6 +25,13 @@ data class HistoryEntry(
     /** Gesture milestones for this recording session (measured values from FW). */
     val gestureDiags: List<GestureDiagEntry> = emptyList(),
     /**
+     * True when [gestureDiags] came from the node's own 0x33-0x35 batch, whose
+     * `tMs` shares an origin with [trajectoryFile]. False means they were sliced
+     * from live 0x30 events on the phone's clock, which BLE jitter puts a few tens
+     * of milliseconds off — fine to read, not safe to align samples against.
+     */
+    val diagsFromNodeBatch: Boolean = false,
+    /**
      * File name under [GestureTrajectoryStore.DIR_NAME] holding the 6-axis IMU
      * trajectory for this attempt, or null when capture was off. The samples
      * themselves stay out of SharedPreferences: ~30 KB each would not survive

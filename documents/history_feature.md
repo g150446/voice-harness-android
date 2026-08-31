@@ -77,6 +77,10 @@ data class HistoryEntry(
 | 正常完了 | `false` | ASR 結果 | AI 応答 | 空 | 同上 |
 | 誤発火として抑制 | `false` | ASR 結果（**消さない**） | 空 | `誤発火として抑制: <Verdict>` | 同上 |
 
+`gestureDiags` の出所は `diagsFromNodeBatch` で区別する。`true` は Node の
+`0x33`–`0x35` バッチで、`trajectoryFile` の `tMs` と時刻原点を共有する。`false` は
+ライブ `0x30` の時刻スライスで、電話側の受信時刻基準のため軌跡とは揃わない。
+
 誤発火抑制の行は `UtteranceIntentGate` が付ける。書き起こしを残すのは、何を誤認したかを
 後から追えないとゲートを調整できないため。抑制の実績は履歴を `誤発火として抑制:` で
 grep して確認する。詳細は [`gesture_false_trigger.md`](gesture_false_trigger.md)。

@@ -236,6 +236,42 @@ class GestureTrajectoryTest {
     }
 
     @Test
+    fun `csv embeds node milestones so the window can be segmented`() {
+        begin(result = 1, count = 1)
+        GestureTrajectoryStore.onChunk(
+            0,
+            listOf(GestureTrajectorySample(0, 0, 1f, 2f, 3f, 0f, 0f, 0f)),
+        )
+        val t = requireNotNull(GestureTrajectoryStore.onEnd(1, 0))
+        val csv = t.toCsv(
+            listOf(
+                GestureDiagEntry(tMs = 0, stage = 0x01, reason = 0x00, v1 = 0.9f, v2 = 0f, v3 = 2f),
+                GestureDiagEntry(tMs = 6520, stage = 0x09, reason = 0x00, v1 = 175f, v2 = 1.1f, v3 = 502f),
+            )
+        )
+        val lines = csv.trim().lines()
+        assertTrue(lines[0].contains("milestones=2"))
+        assertTrue(lines[1].startsWith("# milestone 0,0x01,0x00,"))
+        assertTrue(lines[1].contains("outbound_start/none"))
+        assertTrue(lines[2].startsWith("# milestone 6520,0x09,0x00,"))
+        assertEquals("t_ms,flags,ax,ay,az,gx,gy,gz", lines[3])
+    }
+
+    @Test
+    fun `csv omits milestones when none are aligned`() {
+        begin(result = 1, count = 1)
+        GestureTrajectoryStore.onChunk(
+            0,
+            listOf(GestureTrajectorySample(0, 0, 1f, 2f, 3f, 0f, 0f, 0f)),
+        )
+        // Live-sliced diags run on the phone's clock; writing them here would put
+        // the segment boundaries in the wrong place, so they are left out.
+        val lines = requireNotNull(GestureTrajectoryStore.onEnd(1, 0)).toCsv().trim().lines()
+        assertTrue(lines[0].contains("milestones=0"))
+        assertEquals("t_ms,flags,ax,ay,az,gx,gy,gz", lines[1])
+    }
+
+    @Test
     fun `csv carries the header and every sample`() {
         begin(result = 1, count = 2)
         GestureTrajectoryStore.onChunk(

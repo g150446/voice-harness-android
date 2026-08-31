@@ -1126,6 +1126,17 @@ fun HistoryDetailScreen(
             text = entry.trajectoryFile?.let { "IMU軌跡: $it" } ?: "IMU軌跡: なし（収集OFF）",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // Only a node-side batch shares the trajectory's clock; say which one this
+        // is, because learning from misaligned milestones fails silently.
+        Text(
+            text = if (entry.diagsFromNodeBatch) {
+                "診断: Node バッチ（軌跡と時刻軸が一致）"
+            } else {
+                "診断: ライブ 0x30（軌跡とは別時刻軸）"
+            },
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 6.dp),
         )
 

@@ -328,22 +328,42 @@ object GestureDiagStore {
         batchExpected = 0
     }
 
-    /**
-     * Snapshot diags for the recording that just stopped.
-     * Prefers a FW debug batch if it ended within 3s of stop; else time-sliced live 0x30.
+/**
+     * Time-sliced live 0x30 diags for the recording that just stopped.
+     *
+     * Usable the moment the stop event lands, but each entry is timed by when the
+     * phone received it, so BLE jitter puts it on a different clock from the
+     * trajectory. Use it for display and as a fallback; for anything that has to
+     * line up with the raw window, use [takeBatchForRecording].
      */
-    fun snapshotForRecording(recordingStartMs: Long, recordingStopMs: Long): List<GestureDiagEntry> {
-        if (lastBatchEntries.isNotEmpty() &&
-            lastBatchEndedAtMs >= recordingStopMs - 500L &&
-            lastBatchEndedAtMs <= recordingStopMs + 3_000L
-        ) {
-            return lastBatchEntries.takeLast(40)
-        }
-        return GestureDiagEntry.sliceForRecording(
+    fun snapshotForRecording(recordingStartMs: Long, recordingStopMs: Long): List<GestureDiagEntry> =
+        GestureDiagEntry.sliceForRecording(
             live = _liveEntries.value,
             recordingStartMs = recordingStartMs,
             recordingStopMs = recordingStopMs,
         )
+
+    /**
+     * The node's own milestone batch (0x33-0x35) for that recording, or null.
+     *
+     * These carry the node's `t_ms`, and `gesture_history_clear()` runs on the
+     * same line as `gesture_trajectory_clear()`, so they share a time origin with
+     * the trajectory — that is what lets an offline pipeline find the palm-down
+     * latch, the lift and the match inside the raw samples.
+     *
+     * Like the trajectory, the batch is flushed after the stop event, so this can
+     * only be called once ASR has run. Claimed once so one batch cannot be
+     * attached to two entries.
+     */
+    @Synchronized
+    fun takeBatchForRecording(recordingStopMs: Long, windowMs: Long = 5_000L): List<GestureDiagEntry>? {
+        if (recordingStopMs <= 0L || lastBatchEntries.isEmpty()) return null
+        if (lastBatchEndedAtMs < recordingStopMs - 1_000L) return null
+        if (lastBatchEndedAtMs > recordingStopMs + windowMs) return null
+        val batch = lastBatchEntries
+        lastBatchEntries = emptyList()
+        lastBatchEndedAtMs = 0L
+        return batch
     }
 
     fun clear() {

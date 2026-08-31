@@ -217,9 +217,21 @@ internal class VoiceProcessor(
     ) {
         val id = UUID.randomUUID().toString()
         val trajectory = GestureTrajectoryStore.takeForRecording(recordingStoppedAtWallMs)
-        val trajectoryFile = trajectory?.let { GestureTrajectoryStore.write(appContext, id, it) }
+        // Prefer the node's own milestone batch over the live slice taken at stop:
+        // it is timed on the node's clock, the same origin as the trajectory, so
+        // an offline pipeline can locate the latch, the lift and the match inside
+        // the raw samples. It arrives after the stop event, like the trajectory.
+        val batch = GestureDiagStore.takeBatchForRecording(recordingStoppedAtWallMs)
+        val diags = batch ?: pendingGestureDiags
+        val trajectoryFile = trajectory?.let {
+            GestureTrajectoryStore.write(appContext, id, it, batch)
+        }
         if (trajectory != null) {
-            Log.d(TAG, "Attached ${trajectory.samples.size} trajectory samples to $id")
+            Log.d(
+                TAG,
+                "Attached ${trajectory.samples.size} trajectory samples to $id " +
+                    "(milestones=${batch?.size ?: 0} from ${if (batch != null) "node" else "live"})",
+            )
         }
         historyRepository.addEntry(
             HistoryEntry(
@@ -229,8 +241,9 @@ internal class VoiceProcessor(
                 response = response,
                 isSilent = isSilent,
                 errorMessage = errorMessage,
-                gestureDiags = pendingGestureDiags,
+                gestureDiags = diags,
                 trajectoryFile = trajectoryFile,
+                diagsFromNodeBatch = batch != null,
             )
         )
         pendingGestureDiags = emptyList()
