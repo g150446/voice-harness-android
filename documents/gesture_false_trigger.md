@@ -106,3 +106,69 @@ ASR 完了前に届くため、**発話ゲートと同じ判定点で分類器�
 Android 側のパースとファイル保存、履歴画面でのラベリング）が次の作業。
 学習後の Go/No-Go は「正検出維持率95%で誤発火70%以上削減」に置く。達成できなければ
 ML では分離できないと結論し、ジェスチャー定義そのものの変更を検討する。
+
+---
+
+## IMU 軌跡の収集（FW `0.0.91` + Android）
+
+Phase 3 の分類器には**ラベル付きの生 IMU が要る**。FW 側の軌跡パイプラインは以前から
+実装されていたが `#if GESTURE_DEBUG_HISTORY`（既定 0）で本番ビルドから落ちていた。
+`0.0.91` でこれを既定 1 にし、代わりに**実行時スイッチ**を入れた。
+
+### FW `0.0.91`
+
+- `CMD_SET_GESTURE_CAPTURE`（RX `0x06`、`[0x06, 0/1]`）で収集を切り替える。
+  ack は `EVT_GESTURE_CAPTURE`（TX `0x39`、`[0x00,0x55,0x39,enabled]`）を
+  `notify_all_conns()` で**全接続へ**（`0x40` と同じ非対称を作らない）。
+- **既定 OFF で、RAM にしか持たない。** リセットで消えるため、接続時の greeting でも
+  現在値を送り、アプリは接続のたびに再送する。
+- 収集 OFF のときは `gesture_trajectory_clear()` が `active` を立てないので、
+  push / finish / flush がすべて no-op になる。分岐1つ以外のコストは掛からない。
+- `GESTURE_DEBUG_HISTORY=0` の痩せたビルドでも ack は返るが、常に OFF を報告する
+  （`gesture_capture_effective()`）。嘘の ack を返さない。
+- コスト: 静的バッファ 22.5 KB（`gesture_trajectory` / `gesture_host_collection`
+  各 10752 B、`gesture_history` 1536 B）。RAM 171 KB / 256 KB。
+  署名イメージ 253799 B（slot 上限 335872 B）。
+
+### 送出タイミングが好都合
+
+成功時の flush は録音停止処理の中（`send_event_packet(0x02)` の直後）で走るので
+**音声ストリームと競合しない**。しかも ASR 完了より前に届くため、
+将来の分類器は**発話ゲートと同じ判定点**で使える。失敗シーケンス（`result=2`）は
+録音自体が無いので即時флush される。正例・負例が同じ経路で揃う。
+
+### Android
+
+- `BleManager` が `0x36`/`0x37`/`0x38` を解釈する。`0x37` は1試行で約48パケット来るので
+  hex ダンプ除外リストに追加した。`0x36` の version が想定外なら黙って捨てる。
+- `GestureTrajectoryStore` がバッチを組み立て、**CSV ファイル**へ書く
+  （`filesDir/gesture_trajectories/<entryId>.csv`、上限400件）。
+  **SharedPreferences には入れない** — `voice_history_prefs.xml` は既に 625 KB、
+  `openrouter_prefs.xml` は 1 MB あり、1件30 KB を100件足すと破綻する。
+  `HistoryEntry` はファイル名だけ持つ。
+- 1つの軌跡が2つの履歴に付かないよう、`takeForRecording()` は一度取ったら消す。
+  `result != 1`（失敗シーケンス）は録音を伴わないので履歴には付かない。
+
+### ラベリング
+
+- 履歴詳細に「意図的 / 誤発火」ボタン。**未判定を第3の状態として残す** —
+  判定していないものをどちらかのクラスとして数えてはいけない。
+  同じラベルをもう一度押すと未判定へ戻る。
+- 履歴一覧に**本日の時間帯一括判定**を置いた。今回ユーザーが手でやったのが
+  まさにこの操作で、外来のようにまとまった誤発火を1件ずつ開いてラベルする運用は
+  まず続かない。ここが省かれると学習データが集まらない。
+
+### 運用
+
+1. 設定画面の「ジェスチャーIMU収集」をオンにする（Nodeの実報告を併記するので、
+   非対応ファームや Node リセットは表示で分かる）。
+2. 外来など誤発火が起きる環境で1日使う。
+3. 帰宅後、履歴の時間帯一括判定でラベルを付ける。
+4. CSV を吸い出す:
+
+```bash
+adb -s <device> exec-out run-as com.g150446.voiceharness \
+  tar c files/gesture_trajectories > trajectories.tar
+```
+
+5. 収集を**オフに戻す**（常時オンは帯域と電池の無駄）。

@@ -65,6 +65,7 @@ internal class VoiceProcessor(
     private var recordingStartedAtWallMs = 0L
     /** Gesture milestones captured at recording stop; attached to the next HistoryEntry. */
     private var pendingGestureDiags: List<GestureDiagEntry> = emptyList()
+    private var pendingTrajectory: GestureTrajectory? = null
     /** Screen snapshot captured at BLE recording start (HarnessNode path). */
     private val pendingHarnessScreen = AtomicReference<ScreenContext?>(null)
     private val readingPageTurnInFlight = AtomicBoolean(false)
@@ -136,6 +137,7 @@ internal class VoiceProcessor(
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
         recordingStartedAtWallMs = System.currentTimeMillis()
         pendingGestureDiags = emptyList()
+        pendingTrajectory = null
         clearPendingHarnessScreen()
         isCollectingPcm = true
         BleConnectionService.setBleMode(true)
@@ -195,7 +197,15 @@ internal class VoiceProcessor(
         val start = recordingStartedAtWallMs
         val stop = System.currentTimeMillis()
         pendingGestureDiags = GestureDiagStore.snapshotForRecording(start, stop)
-        Log.d(TAG, "Captured ${pendingGestureDiags.size} gesture diags for history")
+        // The node flushes a successful attempt from its recording-stop handler,
+        // so the batch is already in flight; taking it here is not a race but it
+        // may legitimately be absent when capture is off.
+        pendingTrajectory = GestureTrajectoryStore.takeForRecording(stop)
+        Log.d(
+            TAG,
+            "Captured ${pendingGestureDiags.size} gesture diags and " +
+                "${pendingTrajectory?.samples?.size ?: 0} trajectory samples for history",
+        )
     }
 
     private fun saveHistoryEntry(
@@ -204,18 +214,24 @@ internal class VoiceProcessor(
         isSilent: Boolean,
         errorMessage: String,
     ) {
+        val id = UUID.randomUUID().toString()
+        val trajectoryFile = pendingTrajectory?.let {
+            GestureTrajectoryStore.write(appContext, id, it)
+        }
         historyRepository.addEntry(
             HistoryEntry(
-                id = UUID.randomUUID().toString(),
+                id = id,
                 timestamp = System.currentTimeMillis(),
                 transcription = transcription,
                 response = response,
                 isSilent = isSilent,
                 errorMessage = errorMessage,
                 gestureDiags = pendingGestureDiags,
+                trajectoryFile = trajectoryFile,
             )
         )
         pendingGestureDiags = emptyList()
+        pendingTrajectory = null
     }
 
     private fun handleBleRecordingStopped(reason: String = "firmware") {

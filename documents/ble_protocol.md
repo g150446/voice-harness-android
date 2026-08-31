@@ -88,6 +88,10 @@ Byte 0  Byte 1  Byte 2      Bytes 3+
 | `0x33` | ジェスチャ履歴 begin | count, session（5 B）。`GESTURE_DEBUG_HISTORY=1` のみ |
 | `0x34` | ジェスチャ履歴 entry | u16 t_ms, stage, reason, f32×3（19 B） |
 | `0x35` | ジェスチャ履歴 end | count, session（5 B） |
+| `0x36` | IMU軌跡 begin | ver, session, result, reason, u16 count, u16 period_ms, f32 gyro_bias_y（15 B） |
+| `0x37` | IMU軌跡 chunk | session, u16 start, count + 27 B×count |
+| `0x38` | IMU軌跡 end | session, u16 sent, flags（7 B） |
+| `0x39` | IMU収集スイッチ ack | enabled（4 B） |
 | `0xD0` | タップ診断（レジスタ値、接続確立時に1回） | read_ret i8 + レジスタ8 B + u16 + i8（15 B） |
 | `0xD1` | 生 `TAP_SRC`（タップ1回につき1件） | TAP_SRC u8 + read_ret i8（5 B） |
 | `0xD2` | IMUレジスタ応答（RX `0x50`/`0x51`） | reg, value, ret（6 B） |
@@ -96,6 +100,27 @@ Byte 0  Byte 1  Byte 2      Bytes 3+
 パースせず、`BleManager` の hex ダンプログにのみ現れる。`0xD0` は `0.0.87` まで
 2秒周期で流れていたが、`0.0.88` で**接続確立時の1回だけ**になった。任意のタイミングで
 レジスタを見たいときは RX `0x51`（個別読み出し）→ `0xD2` を使う。
+
+## IMU軌跡の収集（FW `0.0.91+`）
+
+分類器の学習データ用に、ジェスチャー試行1回分の6軸 IMU（40 Hz、最大384サンプル＝9.6秒）を
+`0x36` / `0x37` / `0x38` でバッチ送信する。**既定オフ**で、AndroidがRXへ
+`[0x06, 0x00/0x01]`（`CMD_SET_GESTURE_CAPTURE`）を書いて切り替える。
+Nodeは `[0x00, 0x55, 0x39, enabled]` を `notify_all_conns()` で返す。
+
+- **NodeはこのスイッチをRAMにしか持たない。** リセットで消えるため、接続時の
+  greeting でも現在値を送り、アプリは接続のたびに再送する。UIにはアプリの意図では
+  なく **Nodeが報告した値**を出す。
+- `GESTURE_DEBUG_HISTORY=0` の痩せたビルドは ack で常にオフを報告する。嘘をつかない。
+- `0x36` の `result` は `1`=録音成立、`2`=シーケンス失敗。**両方送る**ので、
+  正例と負例が同じ経路で揃う。`reason` は失敗理由（`0x30` と同じ体系）。
+- `0x37` は1サンプル27 B（`u16 t_ms`, `flags`, `f32 ax ay az gx gy gz`）を8個ずつ。
+  1試行で約48パケット・10.7 KB。`flags` bit0 はジャイロ通電済みで、
+  掌上ラッチ前のサンプルはジャイロが 0 のまま入っている。
+- `0x38` の `flags` は bit0=overflow、bit1=notify失敗。
+- **成功時の flush は録音停止処理の中**で走るので音声と競合せず、ASR完了より前に届く。
+- 軌跡は `get_primary_conn()` にしか送らない（10 KBを複製する意味がない）。
+  Mac Handy が primary を握っている間はAndroidに届かない。
 
 **重要**: 録音トリガーは `0x01`/`0x02` のみ。`0x11` (motion_settled) と
 `0x12` (double_tap) は通知イベント。通常モードでは従来どおり通知のみ、運転モードではNode側がダブルタップで録音開始/終了をトグルするため、Androidはこのイベントを受けて録音状態を変更しない。
@@ -112,7 +137,8 @@ AndroidはRXへ `[0x05, 0x00]`（通常）または `[0x05, 0x01]`（運転）�
 - ack は `notify_all_conns()` で**全接続へ**飛ぶ。`ConnectionPriority.MAC_HANDY` で
   Mac Handy に primary を譲っている間も Android がモードを追える（`0.0.87` までは
   primary 1本にしか飛ばず、secondary の Android には届かなかった）。
-- 接続確立時にも primary / secondary のどちらでも現在のモードを1回送る。
+- 接続確立時にも primary / secondary のどちらでも現在のモードを1回送る
+  （FW `0.0.91+` では収集スイッチの現在値 `0x39` も同時に送る）。
 - `pending == 0xff` は保留なし。`effective` / `pending` はいずれも 0=通常、1=運転。
 
 **接続時の `0x40` / `0xD0` は購読完了後に届く（FW `0.0.90+`）。** GATT接続から

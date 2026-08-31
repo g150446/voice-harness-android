@@ -149,6 +149,15 @@ class BleConnectionService : Service() {
         private val _lastPipelineMs = MutableStateFlow(0L)
         val lastPipelineMs: StateFlow<Long> = _lastPipelineMs.asStateFlow()
 
+        /** What the app asked the node to do about trajectory capture. */
+        private val _gestureCaptureEnabled = MutableStateFlow(false)
+        val gestureCaptureEnabled: StateFlow<Boolean> = _gestureCaptureEnabled.asStateFlow()
+
+        /** What the node reported over 0x39, or null while unconfirmed. */
+        private val _nodeGestureCaptureEnabled = MutableStateFlow<Boolean?>(null)
+        val nodeGestureCaptureEnabled: StateFlow<Boolean?> =
+            _nodeGestureCaptureEnabled.asStateFlow()
+
         // Internal setters used by VoiceProcessor (same module/package).
         internal fun setVoiceState(state: VoiceState) { _voiceState.value = state }
         internal fun setTranscription(text: String) { _transcription.value = text }
@@ -169,6 +178,34 @@ class BleConnectionService : Service() {
 
         fun sendCommand(byte: Byte) {
             instance?.bleManager?.sendToRx(byte)
+        }
+
+        fun initializeGestureCaptureEnabled(context: Context) {
+            _gestureCaptureEnabled.value = GestureCapturePreferences(context).enabled()
+        }
+
+        fun setGestureCaptureEnabled(context: Context, enabled: Boolean) {
+            GestureCapturePreferences(context).setEnabled(enabled)
+            _gestureCaptureEnabled.value = enabled
+            sendGestureCapture(enabled)
+        }
+
+        /** Re-asserts the switch; the node holds it in RAM only. */
+        private fun sendGestureCapture(enabled: Boolean) {
+            instance?.bleManager?.sendToRx(byteArrayOf(0x06, if (enabled) 0x01 else 0x00))
+        }
+
+        internal fun onGestureCaptureAck(ack: BleEvent.GestureCaptureAck) {
+            _nodeGestureCaptureEnabled.value = ack.enabled
+            if (ack.enabled != _gestureCaptureEnabled.value) {
+                // A lean firmware build reports off no matter what we ask, so say
+                // which side disagrees instead of silently retrying forever.
+                Log.w(
+                    TAG,
+                    "Gesture capture mismatch: app=${_gestureCaptureEnabled.value} " +
+                        "node=${ack.enabled}",
+                )
+            }
         }
 
         fun setDrivingMode(context: Context, mode: DrivingMode) {
@@ -384,6 +421,7 @@ class BleConnectionService : Service() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         initializeResponseOutputTarget(applicationContext)
         initializeReadingPassthroughEnabled(applicationContext)
+        initializeGestureCaptureEnabled(applicationContext)
         smartGlassesOutputManager = SmartGlassesOutputManager(applicationContext).also { manager ->
             serviceScope.launch {
                 manager.state.collect {
@@ -421,12 +459,14 @@ class BleConnectionService : Service() {
                         BleConnectionState.CONNECTED -> {
                             acquireWakeLock()
                             setDrivingMode(applicationContext, drivingModeController.mode.value)
+                            sendGestureCapture(_gestureCaptureEnabled.value)
                         }
                         BleConnectionState.SCANNING, BleConnectionState.CONNECTING -> acquireWakeLock()
                         BleConnectionState.DISCONNECTED -> {
                             releaseWakeLock()
                             _nodeDrivingMode.value = null
                             _nodePendingDrivingMode.value = null
+                            _nodeGestureCaptureEnabled.value = null
                         }
                     }
                 }
@@ -443,6 +483,7 @@ class BleConnectionService : Service() {
                     } else if (input is BleVoiceInput.Event) {
                         val event = input.event
                         if (event is BleEvent.OperationModeAck) onOperationModeAck(event)
+                        if (event is BleEvent.GestureCaptureAck) onGestureCaptureAck(event)
                     }
                     voiceProcessor?.handleBleInput(input)
                 }

@@ -60,6 +60,12 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
         BleConnectionService.smartGlassesState
     val readingPassthroughEnabled: StateFlow<Boolean> =
         BleConnectionService.readingPassthroughEnabled
+
+    val gestureCaptureEnabled: StateFlow<Boolean> =
+        BleConnectionService.gestureCaptureEnabled
+
+    val nodeGestureCaptureEnabled: StateFlow<Boolean?> =
+        BleConnectionService.nodeGestureCaptureEnabled
     val lastPipelineMs: StateFlow<Long> = BleConnectionService.lastPipelineMs
     val modelStatus: StateFlow<ModelStatus> = ModelManager.status
 
@@ -156,6 +162,29 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     fun openHistoryDetail(entry: HistoryEntry) {
         _selectedHistoryEntry.value = entry
         _currentScreen.value = AppScreen.HISTORY_DETAIL
+    }
+
+    fun setGestureLabel(entry: HistoryEntry, label: GestureLabel?) {
+        // Toggling the label already shown clears it, so a misclick is undoable.
+        val next = if (entry.gestureLabel == label) null else label
+        if (!historyRepository.setGestureLabel(entry.id, next)) return
+        _historyEntries.value = historyRepository.getAll()
+        _selectedHistoryEntry.value = _historyEntries.value.firstOrNull { it.id == entry.id }
+    }
+
+    /**
+     * Labels a whole block at once. A clinic session produces a run of accidental
+     * triggers the user recognises as a group, and labelling them one by one is
+     * the step most likely to be skipped.
+     */
+    fun labelHistoryRange(fromMs: Long, toMs: Long, label: GestureLabel?): Int {
+        val count = historyRepository.setGestureLabelInRange(fromMs, toMs, label)
+        if (count > 0) _historyEntries.value = historyRepository.getAll()
+        return count
+    }
+
+    fun setGestureCaptureEnabled(enabled: Boolean) {
+        BleConnectionService.setGestureCaptureEnabled(getApplication(), enabled)
     }
 
     fun openReminders() {

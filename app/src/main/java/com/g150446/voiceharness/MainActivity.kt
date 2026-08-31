@@ -19,6 +19,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,12 +28,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Scaffold
@@ -55,6 +59,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import androidx.core.content.ContextCompat
@@ -187,6 +192,8 @@ fun HomeScreen(
     val responseOutputTarget by viewModel.responseOutputTarget.collectAsState()
     val smartGlassesState by viewModel.smartGlassesState.collectAsState()
     val readingPassthroughEnabled by viewModel.readingPassthroughEnabled.collectAsState()
+    val gestureCaptureEnabled by viewModel.gestureCaptureEnabled.collectAsState()
+    val nodeGestureCaptureEnabled by viewModel.nodeGestureCaptureEnabled.collectAsState()
     val modelStatus by viewModel.modelStatus.collectAsState()
     val lastPipelineMs by viewModel.lastPipelineMs.collectAsState()
     val context = LocalContext.current
@@ -531,6 +538,43 @@ fun HomeScreen(
             fontSize = 11.sp,
             color = if (readingPassthroughEnabled) {
                 Color(0xFF43A047)
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "ジェスチャーIMU収集",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Switch(
+                checked = gestureCaptureEnabled,
+                onCheckedChange = viewModel::setGestureCaptureEnabled,
+            )
+        }
+        // The node holds this in RAM only, so show what it actually reported
+        // rather than what we asked for; a node reset silently turns it off.
+        val captureStatus = when {
+            !gestureCaptureEnabled -> "オフ — 誤発火の学習データは貯まりません"
+            nodeGestureCaptureEnabled == null -> "オン（Node未確認）"
+            nodeGestureCaptureEnabled == true ->
+                "オン — 1試行あたり約10KBを受信して履歴に保存します"
+            else -> "Nodeがオフを報告（収集非対応ファームの可能性）"
+        }
+        Text(
+            text = captureStatus,
+            fontSize = 11.sp,
+            color = if (nodeGestureCaptureEnabled == false && gestureCaptureEnabled) {
+                MaterialTheme.colorScheme.error
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
@@ -914,6 +958,10 @@ fun HistoryListScreen(
 
         HorizontalDivider(modifier = Modifier.padding(bottom = 8.dp))
 
+        BulkGestureLabelRow(viewModel = viewModel)
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
         if (entries.isEmpty()) {
             Text(
                 text = "履歴はまだありません",
@@ -929,10 +977,16 @@ fun HistoryListScreen(
                     entry.transcription.length > 60 -> entry.transcription.take(60) + "…"
                     else -> entry.transcription
                 }
-                val gestureBadge = if (entry.gestureDiags.isNotEmpty()) {
-                    " · ジェスチャ${entry.gestureDiags.size}"
-                } else {
-                    ""
+                val gestureBadge = buildString {
+                    if (entry.gestureDiags.isNotEmpty()) {
+                        append(" · ジェスチャ${entry.gestureDiags.size}")
+                    }
+                    if (entry.trajectoryFile != null) append(" · 軌跡")
+                    when (entry.gestureLabel) {
+                        GestureLabel.INTENTIONAL -> append(" · 意図的")
+                        GestureLabel.ACCIDENTAL -> append(" · 誤発火")
+                        null -> Unit
+                    }
                 }
                 val interactionSource = remember(entry.id) { MutableInteractionSource() }
                 Column(
@@ -1066,6 +1120,15 @@ fun HistoryDetailScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 4.dp)
         )
+        GestureLabelRow(entry = entry, viewModel = viewModel)
+
+        Text(
+            text = entry.trajectoryFile?.let { "IMU軌跡: $it" } ?: "IMU軌跡: なし（収集OFF）",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+
         if (entry.gestureDiags.isEmpty()) {
             Text(
                 text = "（診断データなし）",
@@ -1089,6 +1152,164 @@ fun HistoryDetailScreen(
                         .padding(vertical = 2.dp)
                 )
             }
+        }
+    }
+}
+
+/**
+ * Labels a run of entries at once, by hour, for today.
+ *
+ * This mirrors how the classification actually happens: the user knows "the
+ * clinic block this morning was all accidental" and would not open twenty
+ * entries to say so. Without it the labels needed for training never arrive.
+ */
+@Composable
+private fun BulkGestureLabelRow(
+    viewModel: VoiceViewModel,
+    modifier: Modifier = Modifier,
+) {
+    var fromHour by remember { mutableStateOf("10") }
+    var toHour by remember { mutableStateOf("12") }
+    var status by remember { mutableStateOf("") }
+
+    fun apply(label: GestureLabel?) {
+        val from = fromHour.toIntOrNull()
+        val to = toHour.toIntOrNull()
+        if (from == null || to == null || from !in 0..23 || to !in 0..24 || from >= to) {
+            status = "時刻の指定が不正です"
+            return
+        }
+        val day = Calendar.getInstance().apply {
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        day.set(Calendar.HOUR_OF_DAY, from)
+        val fromMs = day.timeInMillis
+        // Exclusive upper bound so 10-12 and 12-14 cannot both claim an entry.
+        day.set(Calendar.HOUR_OF_DAY, 0)
+        val toMs = day.timeInMillis + to.toLong() * 3_600_000L - 1L
+        val count = viewModel.labelHistoryRange(fromMs, toMs, label)
+        status = when {
+            count == 0 -> "対象なし"
+            label == null -> "${count}件の判定を取り消しました"
+            label == GestureLabel.ACCIDENTAL -> "${count}件を誤発火にしました"
+            else -> "${count}件を意図的にしました"
+        }
+    }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            text = "本日の時間帯を一括判定",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Row(
+            modifier = Modifier.padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = fromHour,
+                onValueChange = { fromHour = it.filter(Char::isDigit).take(2) },
+                label = { Text("開始時", fontSize = 10.sp) },
+                singleLine = true,
+                textStyle = LocalTextStyle.current.copy(fontSize = 13.sp),
+                modifier = Modifier.width(84.dp),
+            )
+            Text(text = "〜", modifier = Modifier.padding(horizontal = 6.dp))
+            OutlinedTextField(
+                value = toHour,
+                onValueChange = { toHour = it.filter(Char::isDigit).take(2) },
+                label = { Text("終了時", fontSize = 10.sp) },
+                singleLine = true,
+                textStyle = LocalTextStyle.current.copy(fontSize = 13.sp),
+                modifier = Modifier.width(84.dp),
+            )
+        }
+        Row(
+            modifier = Modifier.padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = { apply(GestureLabel.ACCIDENTAL) },
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) { Text("誤発火", fontSize = 12.sp) }
+            Spacer(modifier = Modifier.width(6.dp))
+            OutlinedButton(
+                onClick = { apply(GestureLabel.INTENTIONAL) },
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) { Text("意図的", fontSize = 12.sp) }
+            Spacer(modifier = Modifier.width(6.dp))
+            TextButton(onClick = { apply(null) }) { Text("取消", fontSize = 12.sp) }
+        }
+        if (status.isNotEmpty()) {
+            Text(
+                text = status,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * Training label for one attempt. Two explicit buttons rather than a single
+ * toggle, so "not yet judged" stays distinguishable from "judged intentional" —
+ * an unlabelled entry must never be counted as either class.
+ */
+@Composable
+private fun GestureLabelRow(
+    entry: HistoryEntry,
+    viewModel: VoiceViewModel,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "判定:",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(end = 6.dp),
+        )
+        GestureLabelButton(
+            text = "意図的",
+            selected = entry.gestureLabel == GestureLabel.INTENTIONAL,
+            onClick = { viewModel.setGestureLabel(entry, GestureLabel.INTENTIONAL) },
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        GestureLabelButton(
+            text = "誤発火",
+            selected = entry.gestureLabel == GestureLabel.ACCIDENTAL,
+            onClick = { viewModel.setGestureLabel(entry, GestureLabel.ACCIDENTAL) },
+        )
+        if (entry.gestureLabel == null) {
+            Text(
+                text = "未判定",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun GestureLabelButton(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    if (selected) {
+        Button(onClick = onClick, contentPadding = PaddingValues(horizontal = 12.dp)) {
+            Text(text, fontSize = 12.sp)
+        }
+    } else {
+        OutlinedButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 12.dp)) {
+            Text(text, fontSize = 12.sp)
         }
     }
 }

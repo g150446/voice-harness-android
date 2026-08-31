@@ -50,6 +50,13 @@ sealed class BleEvent {
      * [OPERATION_MODE_PENDING_NONE] when nothing is deferred.
      */
     data class OperationModeAck(val effective: Int, val pending: Int) : BleEvent()
+
+    /**
+     * Gesture capture switch ack (event 0x39). The node keeps this in RAM, so a
+     * node reset silently turns it off and the app must not assume its last
+     * request still holds.
+     */
+    data class GestureCaptureAck(val enabled: Boolean) : BleEvent()
     /** Live milestone/reject sample (event 0x30). Not used for voice pipeline. */
     data class GestureDiag(
         val stage: Int,
@@ -77,6 +84,19 @@ internal fun parseSimpleBleEvent(data: ByteArray): BleEvent? {
 
 /** Node value for "no mode change is deferred" in an [BleEvent.OperationModeAck]. */
 const val OPERATION_MODE_PENDING_NONE = 0xFF
+
+/** Layout version carried by trajectory_begin (0x36); bump with the packing. */
+internal const val TRAJECTORY_VERSION = 1
+
+/** [u16 t_ms][flags][f32 ax ay az gx gy gz] per sample in a 0x37 chunk. */
+internal const val TRAJECTORY_SAMPLE_BYTES = 27
+
+/** Parses the gesture capture ack (event 0x39, 4 bytes fixed). */
+internal fun parseGestureCaptureAck(data: ByteArray): BleEvent.GestureCaptureAck? {
+    if (data.size < 4 || (data[1].toInt() and 0xFF) != 0x55) return null
+    if ((data[2].toInt() and 0xFF) != 0x39) return null
+    return BleEvent.GestureCaptureAck(enabled = data[3].toInt() != 0)
+}
 
 /**
  * Parses the operation mode ack (event 0x40, 5 bytes fixed). Kept out of
@@ -613,7 +633,9 @@ class BleManager(
             0x55 -> {
                 if (data.size < 3) return
                 val eventCode = data[2].toInt() and 0xFF
-                if (eventCode != 0x10 && eventCode != 0x30 && eventCode != 0x34) {
+                if (eventCode != 0x10 && eventCode != 0x30 && eventCode != 0x34 &&
+                    eventCode != 0x37
+                ) {
                     // Skip high-rate motion/diag samples; log control/tap events.
                     Log.i(
                         TAG,
@@ -668,6 +690,61 @@ class BleManager(
                         }
                         return
                     }
+                    0x36 -> {
+                        // trajectory_begin: [ver][session][result][reason]
+                        //                   [u16 count][u16 period_ms][f32 gyro_bias_y] = 15
+                        if (data.size >= 15) {
+                            val version = data[3].toInt() and 0xFF
+                            if (version != TRAJECTORY_VERSION) {
+                                Log.w(TAG, "Unknown trajectory version $version; ignoring batch")
+                                return
+                            }
+                            GestureTrajectoryStore.onBegin(
+                                session = data[4].toInt() and 0xFF,
+                                result = data[5].toInt() and 0xFF,
+                                reason = data[6].toInt() and 0xFF,
+                                sampleCount = GestureDiagStore.parseU16Le(data, 7),
+                                periodMs = GestureDiagStore.parseU16Le(data, 9),
+                                gyroBiasY = GestureDiagStore.parseFloatLe(data, 11),
+                            )
+                        }
+                        return
+                    }
+                    0x37 -> {
+                        // trajectory_chunk: [session][u16 start][count] then
+                        // count × ([u16 t_ms][flags][f32 ax ay az gx gy gz]) = 27 B
+                        if (data.size >= 7) {
+                            val start = GestureDiagStore.parseU16Le(data, 4)
+                            val count = data[6].toInt() and 0xFF
+                            val samples = ArrayList<GestureTrajectorySample>(count)
+                            for (i in 0 until count) {
+                                val o = 7 + i * TRAJECTORY_SAMPLE_BYTES
+                                if (o + TRAJECTORY_SAMPLE_BYTES > data.size) break
+                                samples += GestureTrajectorySample(
+                                    tMs = GestureDiagStore.parseU16Le(data, o),
+                                    flags = data[o + 2].toInt() and 0xFF,
+                                    ax = GestureDiagStore.parseFloatLe(data, o + 3),
+                                    ay = GestureDiagStore.parseFloatLe(data, o + 7),
+                                    az = GestureDiagStore.parseFloatLe(data, o + 11),
+                                    gx = GestureDiagStore.parseFloatLe(data, o + 15),
+                                    gy = GestureDiagStore.parseFloatLe(data, o + 19),
+                                    gz = GestureDiagStore.parseFloatLe(data, o + 23),
+                                )
+                            }
+                            GestureTrajectoryStore.onChunk(start, samples)
+                        }
+                        return
+                    }
+                    0x38 -> {
+                        // trajectory_end: [session][u16 sent][flags]
+                        if (data.size >= 7) {
+                            GestureTrajectoryStore.onEnd(
+                                sentCount = GestureDiagStore.parseU16Le(data, 4),
+                                flags = data[6].toInt() and 0xFF,
+                            )
+                        }
+                        return
+                    }
                 }
                 val event = when (data[2].toInt() and 0xFF) {
                     0x01 -> {
@@ -711,6 +788,7 @@ class BleManager(
                         Log.i(TAG, "Peer disconnected — reclaimed primary")
                         BleEvent.PeerDisconnected
                     }
+                    0x39 -> parseGestureCaptureAck(data)
                     0x40 -> parseOperationModeAck(data)
                     else -> null
                 } ?: return
