@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -28,6 +29,12 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 
 private const val TAG = "BleManager"
+
+/** Retry gap when the stack refuses a write outright (usually a busy GATT). */
+private const val RX_WRITE_RETRY_MS = 150L
+
+/** Guard against stacks that never call onCharacteristicWrite. */
+private const val RX_WRITE_TIMEOUT_MS = 2_000L
 
 enum class BleConnectionState { DISCONNECTED, SCANNING, CONNECTING, CONNECTED }
 
@@ -168,6 +175,14 @@ class BleManager(
     private var bluetoothManager: BluetoothManager? = null
     private var gatt: BluetoothGatt? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val rxQueue = ArrayDeque<ByteArray>()
+    private var rxWriteInFlight = false
+    private val rxWriteTimeout = Runnable {
+        Log.w(TAG, "RX write timed out; resuming the queue")
+        rxWriteInFlight = false
+        pumpRxQueue()
+    }
     private var batteryLevelCharacteristic: BluetoothGattCharacteristic? = null
     private var isScanning = false
     private var lastSeqNum = -1
@@ -388,6 +403,7 @@ class BleManager(
         val currentGatt = gatt
         gatt = null
         rxCharacteristic = null
+        clearRxQueue()
         batteryLevelCharacteristic = null
         _batteryLevel.value = null
         lastSeqNum = -1
@@ -425,6 +441,8 @@ class BleManager(
                     if (!isCurrentGatt) return
                     this@BleManager.gatt = null
                     rxCharacteristic = null
+                    // Commands aimed at the old link must not ride the new one.
+                    clearRxQueue()
                     lastSeqNum = -1
                     _connectionState.value = BleConnectionState.DISCONNECTED
                     if (!isShuttingDown) {
@@ -529,6 +547,18 @@ class BleManager(
                     // to avoid a GATT race between readCharacteristic and writeCharacteristic.
                 }
             }
+        }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            if (characteristic.uuid != RX_CHAR_UUID) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "RX write failed: status=$status")
+            }
+            onRxWriteSettled()
         }
 
         override fun onCharacteristicChanged(
@@ -827,28 +857,80 @@ class BleManager(
 
     fun sendToRx(byte: Byte) = sendToRx(byteArrayOf(byte))
 
+    /**
+     * Queues one RX command.
+     *
+     * Android carries a single outstanding GATT operation per connection, so two
+     * writes issued in the same tick lose the second one silently — no exception,
+     * no callback, nothing on the air. That is what dropped the capture switch
+     * when the CONNECTED handler sent the driving mode and the capture flag
+     * back to back. Serialise them instead of racing.
+     */
     fun sendToRx(bytes: ByteArray) {
-        val characteristic = rxCharacteristic ?: run {
-            Log.w(TAG, "RX characteristic not available")
-            return
-        }
-        Handler(Looper.getMainLooper()).post {
-            if (Build.VERSION.SDK_INT >= 33) {
-                gatt?.writeCharacteristic(
-                    characteristic,
-                    bytes,
-                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                characteristic.value = bytes
-                @Suppress("DEPRECATION")
-                gatt?.writeCharacteristic(characteristic)
-            }
-            Log.d(TAG, "Sent to RX: ${bytes.joinToString(" ") { "%02x".format(it) }}")
+        mainHandler.post {
+            rxQueue.addLast(bytes)
+            pumpRxQueue()
         }
     }
 
+    /** Main thread only. */
+    private fun pumpRxQueue() {
+        if (rxWriteInFlight) return
+        val bytes = rxQueue.removeFirstOrNull() ?: return
+        val characteristic = rxCharacteristic ?: run {
+            Log.w(TAG, "RX characteristic not available; dropping ${bytes.size} bytes")
+            rxQueue.clear()
+            return
+        }
+        val started = if (Build.VERSION.SDK_INT >= 33) {
+            gatt?.writeCharacteristic(
+                characteristic,
+                bytes,
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            ) == BluetoothStatusCodes.SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            characteristic.value = bytes
+            @Suppress("DEPRECATION")
+            gatt?.writeCharacteristic(characteristic) == true
+        }
+        val hex = bytes.joinToString(" ") { "%02x".format(it) }
+        if (!started) {
+            // Say so rather than letting the caller believe the node was told.
+            Log.w(TAG, "RX write rejected by the stack: $hex")
+            mainHandler.postDelayed({ pumpRxQueue() }, RX_WRITE_RETRY_MS)
+            return
+        }
+        rxWriteInFlight = true
+        Log.d(TAG, "Sent to RX: $hex")
+        // Some stacks never deliver onCharacteristicWrite; without this the queue
+        // would stall for the life of the connection.
+        mainHandler.postDelayed(rxWriteTimeout, RX_WRITE_TIMEOUT_MS)
+    }
+
+    /** Main thread only. */
+    private fun onRxWriteSettled() {
+        mainHandler.removeCallbacks(rxWriteTimeout)
+        rxWriteInFlight = false
+        pumpRxQueue()
+    }
+
+    private fun clearRxQueue() {
+        mainHandler.post {
+            mainHandler.removeCallbacks(rxWriteTimeout)
+            rxQueue.clear()
+            rxWriteInFlight = false
+        }
+    }
+
+    /**
+     * Repeats a one-byte command.
+     *
+     * Predates the RX queue, and was how the role-negotiation commands worked
+     * around writes being dropped when issued back to back. The queue now
+     * delivers every write, so this is belt-and-braces for a command the node
+     * treats as idempotent; new callers should use [sendToRx].
+     */
     fun sendToRxWithRetry(byte: Byte, retries: Int = 2, delayMs: Long = 300) {
         sendToRx(byte)
         val handler = Handler(Looper.getMainLooper())
