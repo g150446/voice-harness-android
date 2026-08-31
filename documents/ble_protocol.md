@@ -115,6 +115,13 @@ AndroidはRXへ `[0x05, 0x00]`（通常）または `[0x05, 0x01]`（運転）�
 - 接続確立時にも primary / secondary のどちらでも現在のモードを1回送る。
 - `pending == 0xff` は保留なし。`effective` / `pending` はいずれも 0=通常、1=運転。
 
+**接続時の `0x40` / `0xD0` は購読完了後に届く（FW `0.0.90+`）。** GATT接続から
+AndroidがTXのCCCDを書くまで約1.2秒あり、`0.0.88` はその間に送っていたため接続時の
+`0x40` / `0xD0` がAndroid自身には届いていなかった（別クライアントが後から接続した
+ときだけ現れた）。`0.0.90` ではNodeがメインループで接続ごとに
+`bt_gatt_is_subscribed()` を確認してから送る。Android側から見ると、
+`TX notifications enabled` のログの直後に `0x40` と `0xD0` が1件ずつ来るのが正常。
+
 Android側は `BleManager.parseOperationModeAck()` でパースし、`BleConnectionService` の
 `nodeDrivingMode` / `nodePendingDrivingMode` に反映する。既存の `drivingMode` は
 `DrivingModeController` の判定と手動overrideによる**アプリ側の意図**なので別物として残す。
