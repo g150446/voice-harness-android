@@ -138,6 +138,35 @@ class GestureTrajectoryTest {
     }
 
     @Test
+    fun `median period is measured, not the nominal field`() {
+        begin(result = 1, count = 4)
+        // Node polls at 50 ms in light sleep and 25 ms once active, so a real
+        // window mixes both and the nominal 25 must not be trusted.
+        GestureTrajectoryStore.onChunk(
+            0,
+            listOf(
+                GestureTrajectorySample(0, 0, 1f, 1f, 1f, 0f, 0f, 0f),
+                GestureTrajectorySample(50, 0, 1f, 1f, 1f, 0f, 0f, 0f),
+                GestureTrajectorySample(100, 1, 1f, 1f, 1f, 0f, 0f, 0f),
+                GestureTrajectorySample(150, 1, 1f, 1f, 1f, 0f, 0f, 0f),
+            ),
+        )
+        val t = requireNotNull(GestureTrajectoryStore.onEnd(4, 0))
+        assertEquals(25, t.periodMs)
+        assertEquals(50, t.medianPeriodMs())
+    }
+
+    @Test
+    fun `median period falls back to nominal for a single sample`() {
+        begin(result = 1, count = 1)
+        GestureTrajectoryStore.onChunk(
+            0,
+            listOf(GestureTrajectorySample(0, 0, 1f, 1f, 1f, 0f, 0f, 0f)),
+        )
+        assertEquals(25, requireNotNull(GestureTrajectoryStore.onEnd(1, 0)).medianPeriodMs())
+    }
+
+    @Test
     fun `csv carries the header and every sample`() {
         begin(result = 1, count = 2)
         GestureTrajectoryStore.onChunk(
@@ -150,6 +179,7 @@ class GestureTrajectoryTest {
         val csv = requireNotNull(GestureTrajectoryStore.onEnd(2, 0)).toCsv()
         val lines = csv.trim().lines()
         assertTrue(lines[0].startsWith("# session=7 result=1"))
+        assertTrue(lines[0].contains("median_period_ms="))
         assertEquals("t_ms,flags,ax,ay,az,gx,gy,gz", lines[1])
         assertEquals(4, lines.size)
         assertTrue(lines[3].startsWith("25,7,"))

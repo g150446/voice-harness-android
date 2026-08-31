@@ -117,6 +117,11 @@ Nodeは `[0x00, 0x55, 0x39, enabled]` を `notify_all_conns()` で返す。
 - `0x37` は1サンプル27 B（`u16 t_ms`, `flags`, `f32 ax ay az gx gy gz`）を8個ずつ。
   1試行で約48パケット・10.7 KB。`flags` bit0 はジャイロ通電済みで、
   掌上ラッチ前のサンプルはジャイロが 0 のまま入っている。
+- **`period_ms` は公称値であり、実サンプル間隔と一致しない。** Nodeの IMU
+  ポーリングはライトスリープ中 50 ms、活動中 25 ms（`main.c` の `imu_poll_ms`）。
+  静止状態での実測は 6005 ms / 118 サンプル ≈ 51 ms 間隔だった。
+  **特徴量抽出では必ず各サンプルの `t_ms` を使い、一定レートを仮定しないこと。**
+  Android は CSV ヘッダに実測中央値（`median_period_ms`）も書き出す。
 - `0x38` の `flags` は bit0=overflow、bit1=notify失敗。
 - **成功時の flush は録音停止処理の中**で走るので音声と競合せず、ASR完了より前に届く。
 - 軌跡は `get_primary_conn()` にしか送らない（10 KBを複製する意味がない）。

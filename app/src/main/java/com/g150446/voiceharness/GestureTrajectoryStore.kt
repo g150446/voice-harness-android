@@ -6,10 +6,13 @@ import java.io.File
 import java.util.Locale
 
 /**
- * One 40 Hz IMU sample from the node (event 0x37).
+ * One IMU sample from the node (event 0x37).
  *
- * Gyro reads as 0 until the gyroscope is powered up at the palm-up latch;
- * [FLAG_GYRO_ENABLED] says which samples carry real angular rate.
+ * Sampling is **not uniform**: the node polls the IMU every 25 ms while active
+ * but every 50 ms in light sleep, so [tMs] is the only trustworthy time base —
+ * the `periodMs` on [GestureTrajectory] is nominal. Gyro reads as 0 until the
+ * gyroscope is powered up at the palm-up latch; [FLAG_GYRO_ENABLED] says which
+ * samples carry real angular rate.
  */
 data class GestureTrajectorySample(
     val tMs: Int,
@@ -39,6 +42,7 @@ data class GestureTrajectory(
     val session: Int,
     val result: Int,
     val reason: Int,
+    /** Nominal poll interval the node reports; real spacing varies, use tMs. */
     val periodMs: Int,
     val gyroBiasY: Float,
     val samples: List<GestureTrajectorySample>,
@@ -50,11 +54,19 @@ data class GestureTrajectory(
     val isMatch: Boolean get() = result == 1
     val complete: Boolean get() = samples.size == declaredCount && !overflow && !notifyError
 
+    /** Measured spacing, so nobody resamples against the nominal period. */
+    fun medianPeriodMs(): Int {
+        if (samples.size < 2) return periodMs
+        val deltas = samples.zipWithNext { a, b -> b.tMs - a.tMs }.sorted()
+        return deltas[deltas.size / 2]
+    }
+
     fun toCsv(): String = buildString {
         append("# session=").append(session)
             .append(" result=").append(result)
             .append(" reason=0x").append("%02X".format(reason))
-            .append(" period_ms=").append(periodMs)
+            .append(" nominal_period_ms=").append(periodMs)
+            .append(" median_period_ms=").append(medianPeriodMs())
             .append(" gyro_bias_y=").append("%.4f".format(Locale.US, gyroBiasY))
             .append(" declared=").append(declaredCount)
             .append(" received=").append(samples.size)

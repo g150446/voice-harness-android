@@ -141,6 +141,10 @@ Phase 3 の分類器には**ラベル付きの生 IMU が要る**。FW 側の軌
 
 - `BleManager` が `0x36`/`0x37`/`0x38` を解釈する。`0x37` は1試行で約48パケット来るので
   hex ダンプ除外リストに追加した。`0x36` の version が想定外なら黙って捨てる。
+- **サンプリングは一定ではない。** NodeのIMUポーリングはライトスリープ中50 ms、
+  活動中25 ms。`0x36` の `period_ms`（25）は公称値にすぎない（実測: 静止状態で
+  6005 ms / 118サンプル ≈ 51 ms間隔）。**特徴量抽出では各サンプルの `t_ms` を使い、
+  一定レートを仮定しないこと。** CSVヘッダには実測中央値 `median_period_ms` も書く。
 - `GestureTrajectoryStore` がバッチを組み立て、**CSV ファイル**へ書く
   （`filesDir/gesture_trajectories/<entryId>.csv`、上限400件）。
   **SharedPreferences には入れない** — `voice_history_prefs.xml` は既に 625 KB、
