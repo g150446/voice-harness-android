@@ -216,6 +216,17 @@ BLE 音声は `VoiceProcessor` が担当し、次の順で判定する。
 
 語彙の追加方法は [`ondevice_gemma.md`](ondevice_gemma.md) の「ASR 認識語彙」を参照。
 
+## 誤発火の発話ゲート
+
+`AsrTextFilter` を通過したあと、`UtteranceIntentGate` が「アシスタントへの依頼か」を
+判定し、そうでなければ LLM 呼び出しと TTS 発話に到達させずに履歴へ落とす。録音開始
+ジェスチャーは日常の腕の動きと motion 特徴量で分離できず、FW 側の閾値では止められない
+（データによる棄却の詳細は [`gesture_false_trigger.md`](gesture_false_trigger.md)）。
+
+抑制は**非依頼の積極的証拠があるときだけ**行い、証拠がなければ通す。依頼形・疑問形・
+アプリコマンド語は無条件で通過する。判定点は
+`VoiceProcessor.transcribeAndRespondOnDevice()` で、ジェスチャー録音経路のみに効く。
+
 ## オンデバイスAI
 
 `OnDeviceAiFacade`が選択中の`VoiceAiBackend`へ処理を委譲する。デフォルトのQwenは

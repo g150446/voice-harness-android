@@ -397,6 +397,31 @@ internal class VoiceProcessor(
                 return
             }
 
+            val intentVerdict = UtteranceIntentGate.evaluate(
+                text = rawText,
+                baseLanguage = ModelManager.currentSpeechBaseLanguage(appContext),
+                conversationActive =
+                    assistantGateway.isConversationActive(HARNESS_CONVERSATION_ID),
+            )
+            if (intentVerdict.isSuppressed) {
+                // The gesture fires on everyday arm motion it cannot be told apart
+                // from, so an accidental recording is expected; what must not happen
+                // is an LLM call and spoken answer in the middle of a consultation.
+                Log.w(TAG, "Suppressed as accidental trigger ($intentVerdict): '$rawText'")
+                // Keep the text: tuning the gate needs to know what was misheard.
+                saveHistoryEntry(
+                    transcription = rawText,
+                    response = "",
+                    isSilent = false,
+                    errorMessage = "誤発火として抑制: ${intentVerdict.name}",
+                )
+                BleConnectionService.setTranscription(rawText)
+                BleConnectionService.setResponse("")
+                BleConnectionService.setErrorMessage("誤発火として抑制しました")
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                return
+            }
+
             val transcribed = rawText.ifBlank { "(音声なし)" }
             responseLanguageCode = SpeechLanguageResolver.resolvePreferredLanguageCode(
                 whisperLanguageCode = transcriptionResult.languageCode,

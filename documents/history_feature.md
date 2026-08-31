@@ -75,6 +75,11 @@ data class HistoryEntry(
 | VAD 無音判定 | `true` | 空 | 空 | 空 | キャプチャ済みなら付与 |
 | ASR / Chat エラー | `false` | 取得済みのもの | 空 | エラー内容 | 同上 |
 | 正常完了 | `false` | ASR 結果 | AI 応答 | 空 | 同上 |
+| 誤発火として抑制 | `false` | ASR 結果（**消さない**） | 空 | `誤発火として抑制: <Verdict>` | 同上 |
+
+誤発火抑制の行は `UtteranceIntentGate` が付ける。書き起こしを残すのは、何を誤認したかを
+後から追えないとゲートを調整できないため。抑制の実績は履歴を `誤発火として抑制:` で
+grep して確認する。詳細は [`gesture_false_trigger.md`](gesture_false_trigger.md)。
 
 ## 画面構成
 

@@ -69,4 +69,7 @@ data class AssistantResult(
 interface AssistantGateway {
     suspend fun submit(request: AssistantRequest): Result<AssistantResult>
     fun resetConversation(conversationId: String)
+
+    /** True while a multi-turn session is still open, so a bare reply makes sense. */
+    fun isConversationActive(conversationId: String): Boolean
 }

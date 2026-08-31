@@ -50,6 +50,9 @@ internal class BackendAssistantGateway(
         sessions.remove(conversationId)?.reset()
     }
 
+    override fun isConversationActive(conversationId: String): Boolean =
+        sessions[conversationId]?.isActive() == true
+
     private fun sanitizeScreenContext(request: AssistantRequest): ScreenContext? {
         val screen = request.screenContext ?: return null
         return if (screen.isEmpty) null else screen
