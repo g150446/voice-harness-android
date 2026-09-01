@@ -6,6 +6,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.g150446.voiceharness.assistant.HeadlessScreenCapture
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,6 +37,11 @@ enum class VoiceState {
     RESPONDING,
     SPEAKING,
     ERROR
+}
+
+internal fun shouldInterruptOnDoubleTap(state: VoiceState): Boolean = when (state) {
+    VoiceState.TRANSCRIBING, VoiceState.RESPONDING, VoiceState.SPEAKING -> true
+    VoiceState.READY, VoiceState.RECORDING, VoiceState.ERROR -> false
 }
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
@@ -77,6 +83,10 @@ internal class VoiceProcessor(
     @Volatile private var readingSourceContext: ScreenContext? = null
     @Volatile private var readingPageTurnGesture = PageTurnGesture.UNKNOWN
     private var harnessScreenCaptureJob: Job? = null
+    private var harnessPipelineJob: Job? = null
+    private val harnessPipelineInterrupted = AtomicBoolean(false)
+    private val reminderMutationLock = Any()
+    private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
 
     private val sileroVad: SileroVad? = try {
@@ -141,6 +151,7 @@ internal class VoiceProcessor(
         recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
         recordingStartedAtWallMs = System.currentTimeMillis()
         pendingGestureDiags = emptyList()
+        harnessPipelineInterrupted.set(false)
         recordingStoppedAtWallMs = 0L
         clearPendingHarnessScreen()
         isCollectingPcm = true
@@ -287,7 +298,7 @@ internal class VoiceProcessor(
             BleConnectionService.setResponse("")
             BleConnectionService.setErrorMessage("")
             BleConnectionService.setVoiceState(VoiceState.RESPONDING)
-            scope.launch(Dispatchers.IO) {
+            harnessPipelineJob = scope.launch(Dispatchers.IO) {
                 processArmedReadingPassthrough()
             }
             return
@@ -349,7 +360,7 @@ internal class VoiceProcessor(
             BleConnectionService.setErrorMessage("")
         }
 
-        scope.launch(Dispatchers.IO) {
+        harnessPipelineJob = scope.launch(Dispatchers.IO) {
             val trimmedPcm = PcmSilenceTrimmer.trim(pcmData, PCM_SAMPLE_RATE)
             if (trimmedPcm !== pcmData) {
                 val beforeMs = pcmData.size * 1_000L / (PCM_SAMPLE_RATE * PCM_CHANNELS * 2)
@@ -569,6 +580,8 @@ internal class VoiceProcessor(
                 )
                 presentResponse(finalResponse)
             }
+        } catch (_: CancellationException) {
+            Log.d(TAG, "Harness pipeline cancelled by double tap")
         } catch (e: Exception) {
             Log.e(TAG, "Error during on-device transcribe/respond", e)
             val errMsg = "エラー: ${e.message}"
@@ -613,6 +626,7 @@ internal class VoiceProcessor(
         val query = text.trim()
         if (query.isEmpty()) return
         activeAssistantRequestId = requestId
+        harnessPipelineInterrupted.set(false)
         scope.launch(Dispatchers.IO) {
             val screenContext = com.g150446.voiceharness.assistant.ScreenContextStore.take(screenToken)
             BleConnectionService.setTranscription(query)
@@ -898,18 +912,44 @@ internal class VoiceProcessor(
             scheduledAtMillis = scheduledAtMillis,
             isTtsEnabled = ttsEnabled
         )
-        reminderRepository.addEntry(entry)
-        ReminderAlarmScheduler.schedule(appContext, entry)
+        activeReminderId.set(entry.id)
+        val registered = synchronized(reminderMutationLock) {
+            if (harnessPipelineInterrupted.get()) {
+                false
+            } else {
+                reminderRepository.addEntry(entry)
+                if (harnessPipelineInterrupted.get()) {
+                    reminderRepository.deleteEntry(entry.id)
+                    false
+                } else {
+                    ReminderAlarmScheduler.schedule(appContext, entry)
+                    true
+                }
+            }
+        }
+        if (!registered) {
+            rollbackInterruptedReminder(entry.id)
+            activeReminderId.compareAndSet(entry.id, null)
+            return
+        }
 
         val confirmation = buildReminderConfirmationText(title, datetimeStr, ttsEnabled)
-        BleConnectionService.setResponse(confirmation)
-        saveHistoryEntry(
-            transcription = BleConnectionService.transcription.value,
-            response = confirmation,
-            isSilent = false,
-            errorMessage = "",
-        )
-        assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
+        synchronized(reminderMutationLock) {
+            if (harnessPipelineInterrupted.get()) {
+                rollbackInterruptedReminder(entry.id)
+                activeReminderId.compareAndSet(entry.id, null)
+                return
+            }
+            BleConnectionService.setResponse(confirmation)
+            saveHistoryEntry(
+                transcription = BleConnectionService.transcription.value,
+                response = confirmation,
+                isSilent = false,
+                errorMessage = "",
+            )
+            assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
+            activeReminderId.compareAndSet(entry.id, null)
+        }
         presentResponse(confirmation)
     }
 
@@ -1154,6 +1194,11 @@ internal class VoiceProcessor(
     }
 
     internal fun handleDoubleTap() {
+        val voiceState = BleConnectionService.voiceState.value
+        if (shouldInterruptOnDoubleTap(voiceState)) {
+            interruptHarnessPipeline(voiceState)
+            return
+        }
         if (EvenG2ReadingSession.isClientActive() &&
             EvenG2ReadingSession.snapshot(BleConnectionService.doubleTapStatus.value.count).active
         ) {
@@ -1177,6 +1222,32 @@ internal class VoiceProcessor(
                 }
             }
         }
+    }
+
+    private fun interruptHarnessPipeline(interruptedState: VoiceState) {
+        harnessPipelineInterrupted.set(true)
+        harnessPipelineJob?.cancel()
+        harnessPipelineJob = null
+        cancelAssistantRequest(activeAssistantRequestId)
+        synchronized(reminderMutationLock) {
+            activeReminderId.getAndSet(null)?.let(::rollbackInterruptedReminder)
+        }
+        val message = "中断しました"
+        saveHistoryEntry(
+            transcription = BleConnectionService.transcription.value,
+            response = BleConnectionService.response.value,
+            isSilent = false,
+            errorMessage = message,
+        )
+        BleConnectionService.setResponse("")
+        BleConnectionService.setErrorMessage(message)
+        BleConnectionService.setVoiceState(VoiceState.READY)
+        Log.i(TAG, "Interrupted $interruptedState by double tap")
+    }
+
+    private fun rollbackInterruptedReminder(reminderId: String) {
+        ReminderAlarmScheduler.cancel(appContext, reminderId)
+        reminderRepository.deleteEntry(reminderId)
     }
 
     private suspend fun startReadingPassthroughFromCurrentScreen() {

@@ -1,6 +1,7 @@
 package com.g150446.voiceharness
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -200,6 +201,7 @@ fun HomeScreen(
     val displayLocale = LocalConfiguration.current.locales[0]
     val scrollState = rememberScrollState()
     var isAssistant by remember { mutableStateOf(AssistantRoleManager.isHeld(context)) }
+    var assistantSettingsError by remember { mutableStateOf<String?>(null) }
     var canDrawOverlay by remember {
         mutableStateOf(Settings.canDrawOverlays(context))
     }
@@ -243,17 +245,35 @@ fun HomeScreen(
         if (!isAssistant) {
             OutlinedButton(
                 onClick = {
-                    val intent = if (AssistantRoleManager.isAvailable(context)) {
-                        AssistantRoleManager.requestIntent(context)
-                    } else {
-                        AssistantRoleManager.fallbackSettingsIntent()
+                    assistantSettingsError = null
+                    try {
+                        assistantRoleLauncher.launch(AssistantRoleManager.settingsIntent())
+                    } catch (e: ActivityNotFoundException) {
+                        Log.w(TAG, "Could not open voice assistant settings", e)
+                        assistantSettingsError =
+                            "設定画面を開けませんでした。Android設定からデフォルトのデジタルアシスタントを変更してください"
                     }
-                    assistantRoleLauncher.launch(intent)
                 },
                 modifier = Modifier.padding(bottom = 8.dp),
             ) {
-                Text("デフォルトの音声アシスタントに設定")
+                Text("デフォルトのデジタルアシスタントアプリに設定")
             }
+        } else {
+            Text(
+                text = "デフォルトの音声アシスタントに設定済み",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+
+        assistantSettingsError?.let { message ->
+            Text(
+                text = message,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
         }
 
         if (!canDrawOverlay) {

@@ -11,9 +11,9 @@ package com.g150446.voiceharness
  * No firmware threshold can separate them, so the utterance itself is the last
  * place to catch one before it reaches the LLM and the speaker.
  *
- * Polarity matters: this suppresses only on *positive evidence* of non-request
- * speech. "Doesn't look like a request" is not enough — that would silently eat
- * phrasings nobody anticipated. Anything without such evidence passes.
+ * Unknown Japanese phrasing still passes, while Latin-only text must positively
+ * match an English request/question form. Field history showed that otherwise
+ * permissive language detection lets silence hallucinations and Chinese through.
  *
  * [AsrTextFilter] runs first and drops clear garbage; this handles utterances
  * that are real speech but were never meant for the assistant.
@@ -23,8 +23,11 @@ object UtteranceIntentGate {
     enum class Verdict {
         PASS,
 
-        /** Latin-only transcript under Japanese operation: a Whisper silence hallucination. */
-        SUPPRESS_NON_CJK,
+        /** A script outside Japanese and English, including han-only Chinese. */
+        SUPPRESS_FOREIGN,
+
+        /** Latin text that is not shaped like an English request or question. */
+        SUPPRESS_NON_REQUEST,
 
         /** Nothing but conversational filler ("はい、はい。"). */
         SUPPRESS_BACKCHANNEL,
@@ -36,7 +39,22 @@ object UtteranceIntentGate {
         val isSuppressed: Boolean get() = this != PASS
     }
 
-    private val cjk = Regex("[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]")
+    private val kana = Regex("[\\u3040-\\u30ff]")
+    private val han = Regex("[\\u3400-\\u4dbf\\u4e00-\\u9fff]")
+    private val japanese = Regex("[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]")
+    private val foreignScript = Regex(
+        "[\\u0370-\\u03ff\\u0400-\\u052f\\u0590-\\u05ff\\u0600-\\u06ff" +
+            "\\u0900-\\u097f\\u0e00-\\u0e7f\\u1100-\\u11ff\\u3130-\\u318f" +
+            "\\uac00-\\ud7af]"
+    )
+    private val latinLetter = Regex("[A-Za-z]")
+    private val englishRequest = Regex(
+        "^(tell|set|show|give|find|search|play|remind|explain|write|read|open|close|" +
+            "stop|start|make|create|send|help|list|add|turn|call|check|translate|" +
+            "summari[sz]e|describe|what|who|when|where|why|how|which|can|could|" +
+            "would|will|should|is|are|do|does|did|please)\\b",
+        RegexOption.IGNORE_CASE,
+    )
 
     /**
      * Request or question forms. A hit means PASS unconditionally, so these stay
@@ -91,12 +109,16 @@ object UtteranceIntentGate {
         if (questionForm.containsMatchIn(trimmed)) return Verdict.PASS
         if (ConversationResetDetector.parse(trimmed).shouldReset) return Verdict.PASS
 
-        if (!cjk.containsMatchIn(trimmed)) {
-            // Only under Japanese operation. ENGLISH/AUTO users speak Latin on purpose.
-            return if (baseLanguage == SpeechBaseLanguage.JAPANESE) {
-                Verdict.SUPPRESS_NON_CJK
-            } else {
+        val hasKana = kana.containsMatchIn(trimmed)
+        val hasHan = han.containsMatchIn(trimmed)
+        if (!hasKana && (hasHan || foreignScript.containsMatchIn(trimmed))) {
+            return Verdict.SUPPRESS_FOREIGN
+        }
+        if (!hasKana && !hasHan && latinLetter.containsMatchIn(trimmed)) {
+            return if (englishRequest.containsMatchIn(trimmed) || '?' in trimmed) {
                 Verdict.PASS
+            } else {
+                Verdict.SUPPRESS_NON_REQUEST
             }
         }
 
@@ -104,7 +126,7 @@ object UtteranceIntentGate {
             return Verdict.SUPPRESS_BACKCHANNEL
         }
 
-        val cjkCount = trimmed.count { cjk.matches(it.toString()) }
+        val cjkCount = trimmed.count { japanese.matches(it.toString()) }
         if (cjkCount <= FRAGMENT_MAX_CJK && particleEnd.containsMatchIn(trimmed)) {
             return Verdict.SUPPRESS_FRAGMENT
         }

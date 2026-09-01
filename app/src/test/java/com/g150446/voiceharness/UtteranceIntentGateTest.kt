@@ -26,7 +26,7 @@ class UtteranceIntentGateTest {
     }
 
     @Test
-    fun `whisper silence hallucinations are suppressed under japanese`() {
+    fun `measured english hallucinations are suppressed as non requests`() {
         listOf(
             "I'm going to go.",
             "I'm going to go ahead and put it in the middle.",
@@ -35,7 +35,25 @@ class UtteranceIntentGateTest {
             "I'm sorry.",
             "PHONE RINGS",
             "BEEP BEEP BEEP",
-        ).forEach { assertEquals(it, Verdict.SUPPRESS_NON_CJK, evaluate(it)) }
+            "Thank you.",
+            "All right. Thank you.",
+        ).forEach { assertEquals(it, Verdict.SUPPRESS_NON_REQUEST, evaluate(it)) }
+    }
+
+    @Test
+    fun `foreign scripts and han without kana are suppressed`() {
+        assertEquals(Verdict.SUPPRESS_FOREIGN, evaluate("這 因為怎麼吃掉"))
+        assertEquals(Verdict.SUPPRESS_FOREIGN, evaluate("안녕하세요"))
+        assertEquals(Verdict.SUPPRESS_FOREIGN, evaluate("Привет"))
+        assertEquals(Verdict.SUPPRESS_FOREIGN, evaluate("مرحبا"))
+    }
+
+    @Test
+    fun `english requests and questions pass`() {
+        assertEquals(Verdict.PASS, evaluate("What is the weather today?"))
+        assertEquals(Verdict.PASS, evaluate("Set a reminder for 5pm"))
+        assertEquals(Verdict.PASS, evaluate("please explain this"))
+        assertEquals(Verdict.PASS, evaluate("Weather today?"))
     }
 
     @Test
@@ -77,13 +95,13 @@ class UtteranceIntentGateTest {
     }
 
     @Test
-    fun `latin utterances pass when japanese is not the base language`() {
+    fun `language setting does not waive the request requirement`() {
         assertEquals(
-            Verdict.PASS,
+            Verdict.SUPPRESS_NON_REQUEST,
             UtteranceIntentGate.evaluate("All right.", SpeechBaseLanguage.ENGLISH, false),
         )
         assertEquals(
-            Verdict.PASS,
+            Verdict.SUPPRESS_NON_REQUEST,
             UtteranceIntentGate.evaluate("All right.", SpeechBaseLanguage.AUTO, false),
         )
     }

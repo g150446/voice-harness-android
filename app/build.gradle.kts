@@ -90,7 +90,16 @@ android {
             useSupportLibrary = true
         }
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // x86_64 is only for the emulator and costs 84 MB of native libs.
+            // Installing over Tailscale (see scripts/adb-tailscale.sh) runs at
+            // well under 1 MB/s, where the extra weight is the difference
+            // between an install that lands and one that drops mid-transfer.
+            // Opt out with -Parm64Only=true; the default is unchanged.
+            abiFilters += if (project.findProperty("arm64Only") == "true") {
+                listOf("arm64-v8a")
+            } else {
+                listOf("arm64-v8a", "x86_64")
+            }
         }
     }
 
