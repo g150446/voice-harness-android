@@ -85,6 +85,13 @@ internal suspend fun awaitSmartGlassesControl(
     } ?: false
 }
 
+/**
+ * Archived Vuzix Z100 output path.
+ *
+ * Runtime display now goes through [EvenG2ReadingSession] and the Even Hub plugin.
+ * This class and the Ultralite SDK dependency are kept so Z100 can be rewired later
+ * without reconstructing the control / reading-passthrough sequence.
+ */
 internal class SmartGlassesOutputManager(context: Context) {
     private val sdk = UltraliteSDK.get(context.applicationContext)
     private val mainHandler = Handler(Looper.getMainLooper())

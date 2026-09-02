@@ -311,16 +311,24 @@ class BleConnectionService : Service() {
             _readingPassthroughEnabled.value = enabled
             EvenG2ReadingSession.setEnabled(enabled)
             if (!enabled) {
-                instance?.smartGlassesOutputManager?.stopDisplay()
+                EvenG2ReadingSession.clearDisplay()
+                instance?.publishEvenG2UiState()
                 setErrorMessage("")
             }
+        }
+
+        /** Kindle became the foreground app while accessibility is watching. */
+        fun onKindleBecameForeground() {
+            if (!_readingPassthroughEnabled.value) return
+            instance?.voiceProcessor?.onKindleBecameForeground()
         }
 
         fun setResponseOutputTarget(context: Context, target: ResponseOutputTarget) {
             ResponseOutputPreferences(context).setTarget(target)
             _responseOutputTarget.value = target
             if (target == ResponseOutputTarget.PHONE_AUDIO) {
-                instance?.smartGlassesOutputManager?.stopDisplay()
+                EvenG2ReadingSession.clearDisplay()
+                instance?.publishEvenG2UiState()
             }
         }
 
@@ -381,7 +389,6 @@ class BleConnectionService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var bleManager: BleManager? = null
     private var voiceProcessor: VoiceProcessor? = null
-    private var smartGlassesOutputManager: SmartGlassesOutputManager? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var processingWakeLock: PowerManager.WakeLock? = null
     private var playbackActive = false
@@ -399,7 +406,12 @@ class BleConnectionService : Service() {
         startForegroundWithNotification("BLE: Scanning...")
         evenG2BridgeServer = EvenG2BridgeServer(
             statusProvider = { _doubleTapStatus.value },
-            readingProvider = { EvenG2ReadingSession.snapshot(_doubleTapStatus.value.count) },
+            readingProvider = {
+                EvenG2ReadingSession.snapshot(
+                    doubleTapCount = _doubleTapStatus.value.count,
+                    singleTapCount = _singleTapStatus.value.count,
+                )
+            },
             onAdvance = { revision ->
                 val processor = instance?.voiceProcessor
                 if (processor == null) {
@@ -426,19 +438,16 @@ class BleConnectionService : Service() {
         // corrupt archive with no clear error when the directory is missing, and
         // that would surface at the end of a collection day.
         GestureTrajectoryStore.directory(applicationContext)
-        smartGlassesOutputManager = SmartGlassesOutputManager(applicationContext).also { manager ->
-            serviceScope.launch {
-                manager.state.collect {
-                    _smartGlassesState.value = it
-                    refreshStatusOverlay()
-                }
+        // Z100 SmartGlassesOutputManager is intentionally not started.
+        // Keep the class and Ultralite SDK dependency for a possible future rewire.
+        publishEvenG2UiState()
+        serviceScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(500)
+                publishEvenG2UiState()
             }
         }
-        voiceProcessor = VoiceProcessor(
-            applicationContext,
-            serviceScope,
-            requireNotNull(smartGlassesOutputManager)
-        )
+        voiceProcessor = VoiceProcessor(applicationContext, serviceScope)
         serviceScope.launch {
             voiceState.collect { state ->
                 onVoiceStateChanged(state)
@@ -484,6 +493,7 @@ class BleConnectionService : Service() {
                     } else if (input is BleVoiceInput.Event && input.event is BleEvent.SingleTap) {
                         recordSingleTap()
                         Log.i(TAG, "Single tap published to UI")
+                        voiceProcessor?.handleSingleTap()
                     } else if (input is BleVoiceInput.Event) {
                         val event = input.event
                         if (event is BleEvent.OperationModeAck) onOperationModeAck(event)
@@ -566,7 +576,7 @@ class BleConnectionService : Service() {
         voiceProcessor?.shutdown()
         if (::drivingModeController.isInitialized) drivingModeController.stop()
         bleManager?.shutdown()
-        smartGlassesOutputManager?.close()
+        EvenG2ReadingSession.clearDisplay()
         serviceScope.cancel()
         releaseWakeLock()
         releaseProcessingWakeLock()
@@ -577,6 +587,14 @@ class BleConnectionService : Service() {
         _bleMode.value = false
         _smartGlassesState.value = SmartGlassesState()
         instance = null
+    }
+
+    private fun publishEvenG2UiState() {
+        val next = EvenG2ReadingSession.uiSmartGlassesState(_doubleTapStatus.value.count)
+        if (_smartGlassesState.value != next) {
+            _smartGlassesState.value = next
+            refreshStatusOverlay()
+        }
     }
 
     private fun onVoiceStateChanged(state: VoiceState) {

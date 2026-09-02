@@ -205,6 +205,10 @@ fun HomeScreen(
     var canDrawOverlay by remember {
         mutableStateOf(Settings.canDrawOverlays(context))
     }
+    var accessibilityEnabled by remember {
+        mutableStateOf(isRingAccessibilityEnabled(context))
+    }
+    var accessibilitySettingsError by remember { mutableStateOf<String?>(null) }
     val assistantRoleLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -215,11 +219,17 @@ fun HomeScreen(
     ) {
         canDrawOverlay = Settings.canDrawOverlays(context)
     }
+    val accessibilitySettingsLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        accessibilityEnabled = isRingAccessibilityEnabled(context)
+    }
     androidx.compose.runtime.DisposableEffect(Unit) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 isAssistant = AssistantRoleManager.isHeld(context)
                 canDrawOverlay = Settings.canDrawOverlays(context)
+                accessibilityEnabled = isRingAccessibilityEnabled(context)
             }
         }
         val owner = context as? androidx.lifecycle.LifecycleOwner
@@ -297,6 +307,51 @@ fun HomeScreen(
             )
         }
 
+        if (accessibilityEnabled) {
+            Text(
+                text = "ユーザー補助: 有効（Kindle自動／ページ送り）",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        } else {
+            OutlinedButton(
+                onClick = {
+                    accessibilitySettingsError = null
+                    val intent = accessibilitySettingsIntent(context)
+                    try {
+                        accessibilitySettingsLauncher.launch(intent)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "ActivityResult launch failed for accessibility settings", e)
+                        try {
+                            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        } catch (e2: Exception) {
+                            Log.w(TAG, "Could not open accessibility settings", e2)
+                            accessibilitySettingsError =
+                                "設定画面を開けませんでした。Android設定→ユーザー補助から Voice Harness を有効にしてください"
+                        }
+                    }
+                },
+                modifier = Modifier.padding(bottom = 8.dp),
+            ) {
+                Text("ユーザー補助を有効にする")
+            }
+            Text(
+                text = "パススルーのKindle自動表示とページめくりに必要です",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            accessibilitySettingsError?.let { message ->
+                Text(
+                    text = message,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
+        }
+
         val (dotColor, bleLabel) = when (bleConnectionState) {
             BleConnectionState.CONNECTED -> Color(0xFF43A047) to "BLE Connected"
             BleConnectionState.CONNECTING -> Color(0xFFFFA726) to "BLE Connecting..."
@@ -318,7 +373,11 @@ fun HomeScreen(
                 Text(text = "(nRF52840 recording)", fontSize = 11.sp, color = Color(0xFF9E9E9E))
             }
             Text(
-                text = if (drivingMode == DrivingMode.DRIVING) "運転モード: ダブルタップ録音" else "通常モード: ジェスチャー録音",
+                text = if (drivingMode == DrivingMode.DRIVING) {
+                    "運転モード: シングルタップ録音（ホスト承認）"
+                } else {
+                    "通常モード: ジェスチャー / シングルタップ録音"
+                },
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -504,21 +563,19 @@ fun HomeScreen(
                 },
                 modifier = Modifier.padding(horizontal = 8.dp)
             )
-            Text(text = "Z100", fontSize = 12.sp)
+            Text(text = "G2", fontSize = 12.sp)
         }
 
         val glassesStatusText = when {
-            !smartGlassesState.available -> "Vuzix Connectを利用できません"
-            !smartGlassesState.linked -> "Z100は未リンクです"
-            !smartGlassesState.connected -> "Z100は未接続です"
-            smartGlassesState.readingPassthroughActive ->
-                "読書パススルー ${smartGlassesState.readingPage}/${smartGlassesState.readingPageCount}"
-            smartGlassesState.displaying -> "Z100に返答を表示中"
-            smartGlassesState.controlledByMe -> "Z100接続済み（制御中）"
-            else -> "Z100接続済み"
+            !smartGlassesState.connected && !smartGlassesState.linked ->
+                "G2プラグイン未接続（Even Hubで起動）"
+            !smartGlassesState.connected -> "G2プラグインが応答していません"
+            smartGlassesState.readingPassthroughActive -> "G2で読書パススルー中"
+            smartGlassesState.displaying -> "G2に返答を表示中"
+            else -> "G2プラグイン接続済み"
         }
         Text(
-            text = smartGlassesState.deviceName?.let { "$glassesStatusText: $it" }
+            text = smartGlassesState.errorMessage?.takeIf { it.isNotBlank() }
                 ?: glassesStatusText,
             fontSize = 11.sp,
             color = if (smartGlassesState.connected) {
@@ -548,18 +605,20 @@ fun HomeScreen(
         }
         val passthroughStatus = when {
             !readingPassthroughEnabled -> "オフ"
+            !accessibilityEnabled ->
+                "待機中 — ユーザー補助を有効にするとKindle自動表示が使えます（ダブルタップでも開始可）"
             smartGlassesState.readingPageLoading -> "次ページ取得中…"
             smartGlassesState.readingPassthroughActive ->
                 "動作中 ${smartGlassesState.readingPage}/${smartGlassesState.readingPageCount}"
-            else -> "待機中 — 電子書籍を開いてHarness Nodeの起動ジェスチャーを行ってください"
+            else -> "待機中 — 電子書籍を開くか、Harness Nodeをダブルタップしてください"
         }
         Text(
             text = passthroughStatus,
             fontSize = 11.sp,
-            color = if (readingPassthroughEnabled) {
-                Color(0xFF43A047)
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
+            color = when {
+                !readingPassthroughEnabled -> MaterialTheme.colorScheme.onSurfaceVariant
+                !accessibilityEnabled -> MaterialTheme.colorScheme.error
+                else -> Color(0xFF43A047)
             },
             modifier = Modifier
                 .fillMaxWidth()
@@ -605,27 +664,26 @@ fun HomeScreen(
 
         OutlinedButton(
             onClick = {
-                val launchIntent = context.packageManager
-                    .getLaunchIntentForPackage(VUZIX_CONNECT_PACKAGE)
+                val launchIntent = EVEN_REALITIES_APP_PACKAGES.firstNotNullOfOrNull { pkg ->
+                    context.packageManager.getLaunchIntentForPackage(pkg)
+                }
                 val intent = launchIntent ?: Intent(
                     Intent.ACTION_VIEW,
-                    Uri.parse("market://details?id=$VUZIX_CONNECT_PACKAGE")
+                    Uri.parse("market://search?q=Even%20Realities")
                 )
                 try {
                     context.startActivity(intent)
                 } catch (error: Exception) {
-                    Log.w(TAG, "Could not open Vuzix Connect", error)
+                    Log.w(TAG, "Could not open Even Realities App", error)
                     try {
                         context.startActivity(
                             Intent(
                                 Intent.ACTION_VIEW,
-                                Uri.parse(
-                                    "https://play.google.com/store/apps/details?id=$VUZIX_CONNECT_PACKAGE"
-                                )
+                                Uri.parse("https://www.evenrealities.com/")
                             )
                         )
                     } catch (browserError: Exception) {
-                        Log.e(TAG, "Could not open the Vuzix Connect web page", browserError)
+                        Log.e(TAG, "Could not open the Even Realities web page", browserError)
                     }
                 }
             },
@@ -633,7 +691,7 @@ fun HomeScreen(
                 .fillMaxWidth()
                 .padding(bottom = 16.dp)
         ) {
-            Text("Vuzix Connectを開く")
+            Text("Even Realities Appを開く")
         }
 
         Text(
@@ -937,7 +995,11 @@ fun GestureDiagScreen(
     }
 }
 
-private const val VUZIX_CONNECT_PACKAGE = "com.vuzix.connect"
+private val EVEN_REALITIES_APP_PACKAGES = listOf(
+    "com.evenrealities.even",
+    "com.evenrealities.app",
+    "com.evenrealities.evenapp",
+)
 
 @Composable
 fun HistoryListScreen(

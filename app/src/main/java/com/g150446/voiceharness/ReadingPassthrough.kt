@@ -12,7 +12,7 @@ internal object ReadingPassthrough {
     )
 
     private val screenWords = listOf("画面", "表示内容", "本文", "電子書籍", "kindle", "本")
-    private val glassesWords = listOf("グラス", "vuzix", "z100")
+    private val glassesWords = listOf("グラス", "g2", "even", "vuzix", "z100")
     private val displayWords = listOf("表示", "映して", "見せて", "送って", "読む", "読書")
 
     fun isRequested(query: String): Boolean {
@@ -27,17 +27,23 @@ internal object ReadingPassthrough {
     fun extractionPrompt(userCommand: String): String = """
         Enter reading passthrough mode for the user's command: "$userCommand"
         Extract the main ebook or article body that is visible in the supplied screen context.
-        Also determine how the user should swipe the Kindle screen to advance one page, based on
-        the visible reader layout, writing direction, and book language. A SWIPE_LEFT gesture means
-        the finger moves from the right side to the left side; SWIPE_RIGHT means left to right.
+        Also judge the visible writing direction of that body:
+        - VERTICAL = tategaki / columns top-to-bottom, lines progressing right-to-left
+        - HORIZONTAL = yokogaki / lines left-to-right
+        - UNKNOWN only when the screenshot does not reveal a reliable direction. Never guess.
+        Map writing direction to the Kindle page-turn finger swipe with these fixed rules:
+        - VERTICAL → SWIPE_RIGHT (finger moves left to right)
+        - HORIZONTAL → SWIPE_LEFT (finger moves right to left)
+        - UNKNOWN writing direction → page_turn_gesture UNKNOWN
+        SWIPE_LEFT means the finger moves from the right side to the left side.
+        SWIPE_RIGHT means the finger moves from the left side to the right side.
         Return exactly one JSON object with this schema:
-        {"body_text":"visible body text","page_turn_gesture":"SWIPE_LEFT|SWIPE_RIGHT|UNKNOWN"}
+        {"body_text":"visible body text","writing_direction":"VERTICAL|HORIZONTAL|UNKNOWN","page_turn_gesture":"SWIPE_LEFT|SWIPE_RIGHT|UNKNOWN"}
         Put the body text verbatim in its original language and reading order, preserving paragraph
         breaks. Do not summarize, translate, paraphrase, explain, or add a title, preface, Markdown
         fence, page number, or any text not present in the body.
         Omit status bars, navigation, menus, buttons, reading progress, and other app chrome.
         If no readable body is available, use "$NO_READABLE_TEXT" for body_text.
-        If the screenshot does not reveal a reliable page direction, use UNKNOWN. Never guess.
     """.trimIndent()
 
     internal fun parseExtraction(raw: String): ReadingExtraction {
@@ -49,15 +55,25 @@ internal object ReadingPassthrough {
             runCatching {
                 val json = JSONObject(candidate)
                 val body = json.optString("body_text", json.optString("text", ""))
-                val direction = when (json.optString("page_turn_gesture").uppercase()) {
-                    PageTurnGesture.SWIPE_LEFT.name -> PageTurnGesture.SWIPE_LEFT
-                    PageTurnGesture.SWIPE_RIGHT.name -> PageTurnGesture.SWIPE_RIGHT
-                    else -> PageTurnGesture.UNKNOWN
+                val writing = parseWritingDirection(json.optString("writing_direction"))
+                val gestureFromWriting = pageTurnGestureForWritingDirection(writing)
+                val gestureFromField = parsePageTurnGesture(json.optString("page_turn_gesture"))
+                val gesture = when {
+                    gestureFromWriting != PageTurnGesture.UNKNOWN -> gestureFromWriting
+                    else -> gestureFromField
                 }
-                return ReadingExtraction(usableExtractedText(body), direction)
+                return ReadingExtraction(
+                    bodyText = usableExtractedText(body),
+                    pageTurnGesture = gesture,
+                    writingDirection = writing,
+                )
             }
         }
-        return ReadingExtraction(usableExtractedText(candidate), PageTurnGesture.UNKNOWN)
+        return ReadingExtraction(
+            bodyText = usableExtractedText(candidate),
+            pageTurnGesture = PageTurnGesture.UNKNOWN,
+            writingDirection = WritingDirection.UNKNOWN,
+        )
     }
 
     fun usableExtractedText(raw: String): String? {
@@ -69,11 +85,33 @@ internal object ReadingPassthrough {
             .trim()
             .takeIf { it.isNotEmpty() && it != NO_READABLE_TEXT }
     }
+
+    internal fun parseWritingDirection(raw: String?): WritingDirection =
+        when (raw?.trim()?.uppercase()) {
+            WritingDirection.VERTICAL.name, "TATEGAKI", "縦書き", "縦" -> WritingDirection.VERTICAL
+            WritingDirection.HORIZONTAL.name, "YOKOGAKI", "横書き", "横" -> WritingDirection.HORIZONTAL
+            else -> WritingDirection.UNKNOWN
+        }
+
+    internal fun pageTurnGestureForWritingDirection(direction: WritingDirection): PageTurnGesture =
+        when (direction) {
+            WritingDirection.VERTICAL -> PageTurnGesture.SWIPE_RIGHT
+            WritingDirection.HORIZONTAL -> PageTurnGesture.SWIPE_LEFT
+            WritingDirection.UNKNOWN -> PageTurnGesture.UNKNOWN
+        }
+
+    private fun parsePageTurnGesture(raw: String?): PageTurnGesture =
+        when (raw?.trim()?.uppercase()) {
+            PageTurnGesture.SWIPE_LEFT.name -> PageTurnGesture.SWIPE_LEFT
+            PageTurnGesture.SWIPE_RIGHT.name -> PageTurnGesture.SWIPE_RIGHT
+            else -> PageTurnGesture.UNKNOWN
+        }
 }
 
 internal data class ReadingExtraction(
     val bodyText: String?,
     val pageTurnGesture: PageTurnGesture,
+    val writingDirection: WritingDirection = WritingDirection.UNKNOWN,
 )
 
 internal data class ReadingPageRange(

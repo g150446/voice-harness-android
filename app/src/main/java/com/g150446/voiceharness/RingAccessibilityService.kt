@@ -23,8 +23,10 @@ class RingAccessibilityService : AccessibilityService() {
     private var screenWakeLock: PowerManager.WakeLock? = null
 
     private var lastRingTapTime: Long = 0
+    private var lastKindleForegroundNotifyAtMs: Long = 0L
     private companion object {
         const val RING_TAP_COOLDOWN_MS = 1000L
+        const val KINDLE_FOREGROUND_DEBOUNCE_MS = 1_000L
         var isServiceRunning = false
     }
 
@@ -77,14 +79,27 @@ class RingAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event?.let { accessibilityEvent ->
             when (accessibilityEvent.eventType) {
-                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ->
-                    Log.d(TAG, "Window state changed: ${accessibilityEvent.packageName}")
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                    val pkg = accessibilityEvent.packageName?.toString()
+                    Log.d(TAG, "Window state changed: $pkg")
+                    maybeNotifyKindleForeground(pkg)
+                }
                 AccessibilityEvent.TYPE_VIEW_CLICKED ->
                     Log.d(TAG, "View clicked: ${accessibilityEvent.packageName}")
                 AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED ->
                     Log.d(TAG, "Notification state changed: ${accessibilityEvent.packageName}")
             }
         }
+    }
+
+    private fun maybeNotifyKindleForeground(packageName: String?) {
+        if (!KindlePageTurnController.isKindlePackage(packageName)) return
+        if (!BleConnectionService.readingPassthroughEnabled.value) return
+        val now = System.currentTimeMillis()
+        if (now - lastKindleForegroundNotifyAtMs < KINDLE_FOREGROUND_DEBOUNCE_MS) return
+        lastKindleForegroundNotifyAtMs = now
+        Log.i(TAG, "Kindle foreground while passthrough armed")
+        BleConnectionService.onKindleBecameForeground()
     }
 
     override fun onInterrupt() {

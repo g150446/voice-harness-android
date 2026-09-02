@@ -43,7 +43,7 @@ BleManager ── Channel<BleVoiceInput> ──▶ BleConnectionService ──�
              （PCMとイベントを同じ順序で配送）
 
 VoiceProcessor ── ResponseOutputTarget ──┬──▶ Android TTS
-                                        └──▶ SmartGlassesOutputManager ──▶ Z100
+                                        └──▶ EvenG2ReadingSession ──▶ Even Hub plugin ──▶ G2
 
 ┌─────────────────────────────────────────────┐
 │            BleSpeechDetector                │
@@ -143,9 +143,9 @@ ROLE_ASSISTANT
 - HarnessNode 経路は画面情報なしのまま。
 - 詳細は [`opendroid-integration.md`](opendroid-integration.md)。
 
-ダブルタップイベント `0x12` は同じ入力Channelで順序を保って受信し、Serviceが
-`DoubleTapStatus` の回数と最終受信時刻を更新する。ViewModel / UIはそのStateFlowを観察し、
-ホーム画面へ表示する。音声処理には渡されるが操作対象にはならず、録音開始・停止は行わない。
+シングルタップ `0x14` / ダブルタップ `0x12` は同じ入力 Channel で受信し、Service が
+回数を UI と G2 ブリッジへ公開する。FW `0.0.94+` ではどちらも notify-only。
+single はホスト承認録音または G2 ページ送り、double はパススルー トグル／パイプライン割り込み。
 
 ### バックグラウンド動作の仕組み
 
@@ -161,7 +161,7 @@ Activity が破棄された（画面消灯・タスクスワイプ・再起動�
 | `BootReceiver` | 再起動後に `BleConnectionService` を自動起動する |
 | `serviceScope` で処理 | `viewModelScope` と異なり Activity 破棄の影響を受けない |
 
-## BLE 録音フロー（ファームウェア主導）
+## BLE 録音フロー（TX イベント主導・開始経路は複数）
 
 ```
 nRF52840                        Android
@@ -175,20 +175,25 @@ nRF52840                        Android
     │                               │   pcmBuffer.write(packet.pcmData)
     │                               │
     │── 0x02 (RecordingStopped) ───▶│
-    │                               │ handleBleRecordingStopped("firmware")
+    │                               │ handleBleRecordingStopped(...)
     │                               │   PCM completeness check
     │                               │   Silero VAD
     │                               │   FFT fallback / stuck 時のみ energy rescue
     │                               │   buildWavFile()
-    │                               │   ASR: Gemma / Qwen3-ASR / Groq Whisper
-    │                               │   Chat: Gemma / LFM 2.5 / Groq / OpenRouter
-    │                               │   TTS 読み上げ or Z100
+    │                               │   ASR → Chat → TTS or Even G2
 ```
 
-録音開始はファームウェアのジェスチャー（TX `0x01`）が担う。停止もジェスチャー（TX `0x02`）のみ。  
-Android は無音検出で RX `0x00` を送らない。  
-Android アプリ側の UI は BLE デバイスのスキャン・選択・接続・切断だけを担当する。  
-スキャン結果はアプリ内で単一選択リストとして表示し、ユーザーは対象デバイスを選んで `Connect` する。
+アプリ状態は常に TX `0x01`/`0x02` に追従する。開始のきっかけは次のいずれか:
+
+| 経路 | FW `0.0.94+` | Android |
+|---|---|---|
+| 手首ジェスチャー | 自律で `0x01`/`0x02` | 追従のみ |
+| シングルタップ (`0x14`) | **notify-only** | パススルー OFF 時に RX `0x01`/`0x00` でホスト承認 |
+| パススルー ON の single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
+| ダブルタップ (`0x12`) | notify-only | パススルー ON/OFF トグル（処理中は割り込み） |
+
+無音による RX `0x00` 自動停止は廃止済み。  
+詳細は [`ble_protocol.md`](ble_protocol.md) / [`smart_glasses_output.md`](smart_glasses_output.md)。
 
 1秒以上の録音では、16 kHz / 16-bit / monoから算出したPCM時間が壁時計の録音時間の
 70%未満ならASRへ進めない。これは欠落音声による無関係な文字列生成を防ぐ境界であり、
@@ -256,20 +261,16 @@ Gemma 4 LiteRT-LMで両方を処理する。モデル探索と状態管理は`Mo
 ## AI返答の出力先
 
 `ResponseOutputTarget` は `PHONE_AUDIO` と `SMART_GLASSES` を持ち、SharedPreferencesへ
-保存する。電話画面の返答StateFlowと履歴保存は出力先に関係なく更新する。
+保存する（UI上の `SMART_GLASSES` は Even G2）。電話画面の返答StateFlowと履歴保存は
+出力先に関係なく更新する。
 
-Z100選択時は `SmartGlassesOutputManager` がVuzix Connect経由のSDK状態を監視し、返答が
-完成した時点でのみグラスの制御を要求する。`requestControl()`後は非同期の
-`controlledByMe`成功通知をタイムアウト付きで待つ。制御取得後は
-`Layout.TEXT_BOTTOM_LEFT_ALIGN` と `sendText()` で全文を一度に表示する。表示成功から
-12秒後に自動で制御を解放し、次のHarnessNode録音とZ100 BLEトランザクションが重ならない
-ようにする。新しいBLE録音開始時は、表示中なら消去して制御解放し、既にidleなら
-Z100向け操作を省略する。
+G2選択時は `EvenG2ReadingSession` が loopback ブリッジ（`EvenG2BridgeServer`）経由で
+Even Hub プラグインへ本文を載せる。プラグインが直近にポーリングしていれば表示成功とみなし
+TTSを抑止する。未接続なら同じ返答をAndroid TTSへフォールバックする。新しいBLE録音開始時や
+出力先を音声へ戻したときは表示セッションをクリアする。
 
-SDK利用不可、未リンク、未接続、制御取得失敗、表示開始例外の場合は、同じ返答をAndroid
-TTSへフォールバックする。Z100表示に成功した場合はTTSを実行せず、音声状態を `READY`
-へ戻して次の録音を受け付ける。詳細は
-[`smart_glasses_output.md`](smart_glasses_output.md)を参照。
+Vuzix Z100 向けの `SmartGlassesOutputManager` は実行パスから外し、将来再配線用に残置している。
+詳細は [`smart_glasses_output.md`](smart_glasses_output.md) を参照。
 
 ## WAV ファイル生成
 

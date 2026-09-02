@@ -168,5 +168,6 @@ Spectrum VAD fallback: reason=Silero output stuck near zero, speechFrames=12/31 
 ## 補足
 
 以前は電話マイク経路に対して振幅ベースの簡易 VAD を持っていたが、現在は削除済み。  
-録音開始はファームウェアのジェスチャー（TX `0x01`）が担う。停止もファームウェアの
-ジェスチャー（TX `0x02`）のみ。Android は無音検出で RX `0x00` を送らない。
+録音セッションは TX `0x01`/`0x02` でアプリ状態を動かす。開始は手首ジェスチャー
+（FW 自律）または single tap のホスト承認（RX `0x01`/`0x00`、FW `0.0.94+`）。
+Android は無音検出で RX `0x00` を送らない。

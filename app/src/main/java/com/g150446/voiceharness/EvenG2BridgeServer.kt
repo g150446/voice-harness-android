@@ -17,11 +17,13 @@ internal fun evenG2ReadingJson(snapshot: EvenG2ReadingSnapshot): String =
     JSONObject().apply {
         put("enabled", snapshot.enabled)
         put("active", snapshot.active)
+        put("mode", snapshot.mode.name.lowercase())
         put("revision", snapshot.revision)
         put("bodyText", snapshot.bodyText ?: JSONObject.NULL)
         put("loading", snapshot.loading)
         put("error", snapshot.error ?: JSONObject.NULL)
         put("doubleTapCount", snapshot.doubleTapCount)
+        put("singleTapCount", snapshot.singleTapCount)
     }.toString()
 
 /**

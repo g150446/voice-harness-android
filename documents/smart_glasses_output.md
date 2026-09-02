@@ -1,8 +1,86 @@
-# Vuzix Z100へのAI返答出力
+# スマートグラスへのAI返答出力
 
-## 概要
+> **現行ランタイムは Even Realities G2。**  
+> Vuzix Z100 実装（`SmartGlassesOutputManager` / Ultralite SDK）は将来再配線用にコードと
+> 依存を残しているが、サービス起動時には生成・呼び出ししない。  
+> 以下の「現行（Even G2）」が正本。その後の「アーカイブ（Vuzix Z100）」は過去仕様。
 
-AI返答の出力先をAndroid TTSとVuzix Z100から選択できる。入力、ASR、Chat、履歴保存は
+## 概要（現行: Even G2）
+
+AI返答の出力先をAndroid TTSとEven Realities G2から選択できる。入力、ASR、Chat、履歴保存は
+共通で、最終的な返答の提示方法だけを切り替える。
+
+```text
+HarnessNode → BLE PCM → ASR → Chat → response
+                                      ├─ PHONE_AUDIO   → Android TTS
+                                      └─ SMART_GLASSES → EvenG2ReadingSession
+                                                       → loopback :8787
+                                                       → Even Hub plugin → G2
+```
+
+G2を選択しても返答は電話画面と履歴へ残る。Even Hubプラグインが bridge をポーリング中
+（`isClientActive`）なら表示成功としてTTSを抑止し、未接続なら同じ返答をTTSへ戻す。
+
+### UIと永続設定（G2）
+
+| 選択 | 動作 |
+|---|---|
+| 音声 | Android TTS |
+| G2 | Even Hub プラグインへ本文表示（`mode=response`）。失敗時TTS |
+
+ホームの状態表示はプラグイン接続・返答表示中・読書パススルー中を示す。
+**Even Realities Appを開く** ボタンでコンパニオン起動を試みる。
+
+### 表示シーケンス（G2）
+
+1. `VoiceProcessor` が最終返答を電話画面と履歴へ保存する
+2. 出力先が `SMART_GLASSES` なら `EvenG2ReadingSession.displayResponse(text)`
+3. セッションに `mode=response` と本文を載せ、最大約1.5秒プラグインのポーリングを待つ
+4. 活性なら Started（TTSなし）。否则 clear して Failed → TTSフォールバック
+5. 新しい録音開始 / 出力先を音声へ戻す / パススルーOFF で `clearDisplay()`
+
+読書パススルーは `mode=reading`。G2プラグインがページ分割し、Harness Node の**シングルタップ**
+（`singleTapCount` / `0x14`）で G2 内送りを行う。パススルー中の single は録音に使わない
+（FW `0.0.94+` は notify-only、Android も RX を送らない）。末尾では
+`/api/v1/reading/advance` 経由で Kindle を1ページめくる。LLM が `writing_direction` を判定し、
+縦書きは左→右（`SWIPE_RIGHT`）、横書きは右→左（`SWIPE_LEFT`）。Z100フォールバックは行わない。
+
+**ダブルタップ**はパススルーのトグル:
+
+- OFF → ON + 現在画面から本文抽出
+- ON → OFF（`clearDisplay`、設定も永続 OFF）
+- パイプライン処理中は従来どおり割り込み優先（モードは維持）
+
+パススルー ON のとき、Accessibility が Kindle 前面を検知すると起動ジェスチャーなしで自動抽出する
+（デバウンスあり。既に READING セッション中や録音中はスキップ。自動失敗は silent）。
+音声コマンドやホームのトグルでも ON/OFF できる。
+**ユーザー補助（`RingAccessibilityService`）が必須。** ホーム画面に有効/無効を表示し、
+未許可時は設定へのショートカットボタンを出す。ページめくりも同サービス経由。
+
+ブリッジAPI（loopback only）:
+
+| Path | 用途 |
+|---|---|
+| `GET /api/v1/reading` | `enabled/active/mode/revision/bodyText/loading/error/doubleTapCount` |
+| `POST /api/v1/reading/advance` | 読書モード末尾でのKindle次ページ要求 |
+| `GET /api/v1/double-tap` | 診断用ダブルタップカウンタ |
+
+プラグイン手順は [`even-g2/app/README.md`](../even-g2/app/README.md)
+（Even Hub 表示名: Voice Harness、`package_id`: `com.g150446.voiceharness.g2`）。
+開発用 QR/URL プロトタイプや Vite を使い終わったら必ず終了すること。放置すると
+Even Realities App と G2 の接続が不安定になることがある（同 README「グラス切断を防ぐ」）。
+
+フォールバックメッセージ: `G2に表示できなかったため音声で再生します`
+
+---
+
+# アーカイブ: Vuzix Z100へのAI返答出力
+
+以下は Z100 を実行パスに載せていた頃の仕様。再有効化時の参照用。
+
+## 概要（Z100 アーカイブ）
+
+AI返答の出力先をAndroid TTSとVuzix Z100から選択できた。入力、ASR、Chat、履歴保存は
 共通で、最終的な返答の提示方法だけを切り替える。
 
 HarnessNodeで「パススルーモードに入って」などと指示した場合は、録音開始時に一時取得した

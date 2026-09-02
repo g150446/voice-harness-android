@@ -57,4 +57,4 @@ internal fun decideResponseDelivery(
 }
 
 internal const val SMART_GLASSES_FALLBACK_MESSAGE =
-    "Z100に表示できなかったため音声で再生します"
+    "G2に表示できなかったため音声で再生します"

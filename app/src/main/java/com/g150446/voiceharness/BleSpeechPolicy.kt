@@ -16,8 +16,10 @@ internal const val BLE_ENERGY_RESCUE_PEAK_THRESHOLD = 0.015f
 internal const val BLE_ENERGY_RESCUE_RMS_THRESHOLD = 0.004f
 /** Legacy: streaming silence no longer auto-stops BLE recording (stop = FW TX 0x02). */
 internal const val BLE_SILENCE_STOP_MS = 5_000L
-/** RX stop opcode; app no longer sends this for silence (kept for protocol/tests). */
+/** Host-authorized stop (single tap when recording; FW 0.0.94+). */
 internal const val BLE_RX_STOP_RECORDING = 0x00.toByte()
+/** Host-authorized start (single tap when idle; FW 0.0.94+). */
+internal const val BLE_RX_START_RECORDING = 0x01.toByte()
 internal const val BLE_CAPTURE_CHECK_MIN_DURATION_MS = 1_000L
 internal const val BLE_CAPTURE_MIN_COMPLETENESS_RATIO = 0.70
 

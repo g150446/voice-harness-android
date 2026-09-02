@@ -1,5 +1,9 @@
 # Even Realities G2 への移植可否検討
 
+> **実装ステータス（2026-09）:** AI返答表示と読書パススルーのランタイムは Even G2
+> （`EvenG2ReadingSession` + loopback bridge + Even Hub プラグイン）へ切り替え済み。
+> Z100 の `SmartGlassesOutputManager` は実行パスから外し、コード/SDK依存のみ残置。
+
 > 調査日: 2026-08-16  
 > 対象: 現行 Voice Harness の Vuzix Z100 出力機能を、Even Realities G2 公開SDKで同等実現できるか
 

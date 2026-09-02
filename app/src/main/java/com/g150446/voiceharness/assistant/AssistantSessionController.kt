@@ -97,16 +97,35 @@ object AssistantSessionController {
                     return@withLock
                 }
                 val extracted = AssistStructureExtractor.extract(structure)
-                pendingAssistText = extracted.text.takeIf { it.isNotBlank() }
-                pendingSourcePackage = extracted.sourcePackage
-                    ?: data?.getString(IntentKeys.SOURCE_PACKAGE)
-                pendingSourceUri = extracted.sourceUri
+                val incoming = AssistCandidateSelector.Candidate(
+                    text = extracted.text.takeIf { it.isNotBlank() },
+                    sourcePackage = extracted.sourcePackage
+                        ?: data?.getString(IntentKeys.SOURCE_PACKAGE),
+                    sourceUri = extracted.sourceUri,
+                )
+                val current = AssistCandidateSelector.Candidate(
+                    text = pendingAssistText,
+                    sourcePackage = pendingSourcePackage,
+                    sourceUri = pendingSourceUri,
+                )
+                if (AssistCandidateSelector.shouldReplace(current, incoming)) {
+                    pendingAssistText = incoming.text
+                    pendingSourcePackage = incoming.sourcePackage
+                    pendingSourceUri = incoming.sourceUri
+                    Log.d(
+                        TAG,
+                        "Assist kept textLen=${pendingAssistText?.length ?: 0} " +
+                            "pkg=$pendingSourcePackage",
+                    )
+                } else {
+                    Log.d(
+                        TAG,
+                        "Assist ignored textLen=${incoming.text?.length ?: 0} " +
+                            "pkg=${incoming.sourcePackage} (kept pkg=$pendingSourcePackage)",
+                    )
+                }
                 assistReceived = true
                 publishScreenAvailabilityLocked()
-                Log.d(
-                    TAG,
-                    "Assist received textLen=${pendingAssistText?.length ?: 0} pkg=$pendingSourcePackage",
-                )
             }
         }
     }

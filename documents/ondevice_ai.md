@@ -10,7 +10,7 @@
 | ASR | Gemma 4 E2B / Qwen3-ASR / Groq Whisper | |
 | LLM | Gemma 4 E2B / LFM 2.5 / Groq Chat / **OpenRouter** | OpenRouter は LLM のみ |
 
-TTS は Android `TextToSpeech`（または Vuzix Z100 表示）。  
+TTS は Android `TextToSpeech`（または Even Realities G2 表示）。  
 ローカルはネットワーク不要。Groq / OpenRouter はインターネットと API キーが必要。
 
 同じローカルモデルが ASR と LLM の両方で選ばれても、`BackendRegistry` が二重ロードしない。  
@@ -70,7 +70,7 @@ BLE PCM → VAD → WAV
              （ローカル: ASR 1パス → 必要なら語彙2パス）
              （Groq: Whisper 1回）
         → AsrTextFilter → conversation history
-        → LlmBackend.chat(ChatRequest) → reminder tool → TTS / Z100
+        → LlmBackend.chat(ChatRequest) → reminder tool → TTS / Even G2
 ```
 
 画面コンテキストは **送らない**（Gateway でも防御的に破棄）。

@@ -26,17 +26,44 @@ class EvenG2BridgeServerTest {
             EvenG2ReadingSnapshot(
                 enabled = true,
                 active = true,
+                mode = EvenG2DisplayMode.READING,
                 revision = 4,
                 bodyText = "吾輩は猫である。\n名前はまだ無い。",
                 loading = false,
                 error = null,
                 doubleTapCount = 9,
+                singleTapCount = 3,
             )
         )
         org.json.JSONObject(json).also {
             assertEquals(4, it.getLong("revision"))
+            assertEquals("reading", it.getString("mode"))
             assertEquals("吾輩は猫である。\n名前はまだ無い。", it.getString("bodyText"))
             assertEquals(9, it.getLong("doubleTapCount"))
+            assertEquals(3, it.getLong("singleTapCount"))
+        }
+    }
+
+    @Test
+    fun `response mode is encoded for AI answers`() {
+        val json = evenG2ReadingJson(
+            EvenG2ReadingSnapshot(
+                enabled = false,
+                active = true,
+                mode = EvenG2DisplayMode.RESPONSE,
+                revision = 2,
+                bodyText = "こんにちは",
+                loading = false,
+                error = null,
+                doubleTapCount = 0,
+                singleTapCount = 1,
+            )
+        )
+        org.json.JSONObject(json).also {
+            assertEquals("response", it.getString("mode"))
+            assertEquals("こんにちは", it.getString("bodyText"))
+            assertEquals(true, it.getBoolean("active"))
+            assertEquals(1, it.getLong("singleTapCount"))
         }
     }
 }

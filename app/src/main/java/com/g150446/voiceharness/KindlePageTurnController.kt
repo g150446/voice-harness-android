@@ -10,10 +10,26 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
 internal enum class PageTurnGesture {
+    /** Finger moves right → left (typical horizontal / LTR page turn). */
     SWIPE_LEFT,
+    /** Finger moves left → right (typical vertical Japanese page turn). */
     SWIPE_RIGHT,
     UNKNOWN,
 }
+
+internal enum class WritingDirection {
+    VERTICAL,
+    HORIZONTAL,
+    UNKNOWN,
+}
+
+/** Swipe attempts for Kindle page advance, preferred direction first. */
+internal fun pageTurnSwipeCandidates(preferred: PageTurnGesture): List<PageTurnGesture> =
+    when (preferred) {
+        PageTurnGesture.SWIPE_LEFT -> listOf(PageTurnGesture.SWIPE_LEFT)
+        PageTurnGesture.SWIPE_RIGHT -> listOf(PageTurnGesture.SWIPE_RIGHT)
+        PageTurnGesture.UNKNOWN -> listOf(PageTurnGesture.SWIPE_LEFT, PageTurnGesture.SWIPE_RIGHT)
+    }
 
 internal enum class KindlePageTurnResult {
     DISPATCHED,
@@ -40,6 +56,15 @@ internal object KindlePageTurnController {
 
     fun isAvailable(): Boolean = service != null
 
+    /** Accepts bare package ids and Assist-style "package/activity" titles. */
+    fun isKindlePackage(packageName: String?): Boolean {
+        val value = packageName?.trim().orEmpty()
+        if (value.isEmpty()) return false
+        return value == KINDLE_PACKAGE ||
+            value.startsWith("$KINDLE_PACKAGE/") ||
+            value.startsWith("$KINDLE_PACKAGE.")
+    }
+
     fun performSemanticNext(): KindlePageTurnResult {
         val current = service ?: return KindlePageTurnResult.UNAVAILABLE
         val root = current.rootInActiveWindow
@@ -59,7 +84,7 @@ internal object KindlePageTurnController {
     suspend fun performSwipe(direction: PageTurnGesture): KindlePageTurnResult = withContext(Dispatchers.Main.immediate) {
         if (direction == PageTurnGesture.UNKNOWN) return@withContext KindlePageTurnResult.FAILED
         val current = service ?: return@withContext KindlePageTurnResult.UNAVAILABLE
-        if (foregroundPackage() != KINDLE_PACKAGE) return@withContext KindlePageTurnResult.NOT_KINDLE
+        if (!isKindlePackage(foregroundPackage())) return@withContext KindlePageTurnResult.NOT_KINDLE
         val metrics = current.resources.displayMetrics
         val width = metrics.widthPixels.toFloat()
         val height = metrics.heightPixels.toFloat()

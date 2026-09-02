@@ -17,14 +17,18 @@ const CONTAINER_NAME = 'main'
 const READING_URL = 'http://127.0.0.1:8787/api/v1/reading'
 const ADVANCE_URL = 'http://127.0.0.1:8787/api/v1/reading/advance'
 
+type DisplayMode = 'idle' | 'response' | 'reading'
+
 interface ReadingState {
   enabled: boolean
   active: boolean
+  mode?: DisplayMode
   revision: number
   bodyText: string | null
   loading: boolean
   error: string | null
-  doubleTapCount: number
+  doubleTapCount?: number
+  singleTapCount?: number
 }
 
 const bridge = await waitForEvenAppBridge()
@@ -38,7 +42,7 @@ const mainText = new TextContainerProperty({
   paddingLength: BODY_PADDING,
   containerID: CONTAINER_ID,
   containerName: CONTAINER_NAME,
-  content: 'Harness Node\n\nKindle reader\nWaiting for Android…',
+  content: 'Voice Harness\n\nEven G2\nWaiting for Android…',
   isEventCapture: 1,
 })
 
@@ -50,16 +54,31 @@ if (created !== 0) console.error('createStartUpPageContainer failed:', created)
 let pages: string[] = []
 let currentPage = 0
 let currentRevision = -1
-let lastDoubleTapCount: number | null = null
+let currentMode: DisplayMode = 'idle'
+let lastSingleTapCount: number | null = null
 let awaitingAdvanceRevision: number | null = null
 let rendering: Promise<unknown> = Promise.resolve()
+
+function resolveMode(state: ReadingState): DisplayMode {
+  if (state.mode === 'response' || state.mode === 'reading' || state.mode === 'idle') {
+    return state.mode
+  }
+  if (state.active && state.bodyText) return 'reading'
+  return 'idle'
+}
+
+function idleMessage(state: ReadingState): string {
+  if (state.error) return `Voice Harness\n\n${state.error}`
+  if (state.enabled) return 'Voice Harness\n\nEven G2\nWaiting for reading gesture…'
+  return 'Voice Harness\n\nEven G2\nPlugin connected'
+}
 
 function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeList | null {
   if (!envelope) return null
   return envelope.eventType ?? OsEventTypeList.CLICK_EVENT
 }
 
-function queueUpgrade(content: string): Promise<void> {
+function textUpgrade(content: string): Promise<void> {
   rendering = rendering.then(async () => {
     await bridge.textContainerUpgrade(new TextContainerUpgrade({
       containerID: CONTAINER_ID,
@@ -73,10 +92,11 @@ function queueUpgrade(content: string): Promise<void> {
 async function showPage(index: number): Promise<void> {
   if (index < 0 || index >= pages.length || index === currentPage) return
   currentPage = index
-  await queueUpgrade(pages[currentPage])
+  await textUpgrade(pages[currentPage])
 }
 
 async function requestNextKindlePage(): Promise<void> {
+  if (currentMode !== 'reading') return
   if (awaitingAdvanceRevision === currentRevision || currentRevision < 0) return
   awaitingAdvanceRevision = currentRevision
   try {
@@ -93,43 +113,56 @@ async function requestNextKindlePage(): Promise<void> {
   }
 }
 
-async function handleDoubleTapCount(count: number): Promise<void> {
-  if (lastDoubleTapCount === null || count < lastDoubleTapCount) {
-    lastDoubleTapCount = count
+function singleTapCountOf(state: ReadingState): number {
+  if (typeof state.singleTapCount === 'number') return state.singleTapCount
+  // Older Android builds only published doubleTapCount.
+  return typeof state.doubleTapCount === 'number' ? state.doubleTapCount : 0
+}
+
+async function handleSingleTapCount(count: number): Promise<void> {
+  if (lastSingleTapCount === null || count < lastSingleTapCount) {
+    lastSingleTapCount = count
     return
   }
-  const delta = count - lastDoubleTapCount
-  lastDoubleTapCount = count
+  const delta = count - lastSingleTapCount
+  lastSingleTapCount = count
+  if (currentMode !== 'reading' && currentMode !== 'response') return
   if (currentRevision < 0 || awaitingAdvanceRevision !== null) return
   for (let index = 0; index < delta; index += 1) {
     if (currentPage < pages.length - 1) await showPage(currentPage + 1)
-    else {
+    else if (currentMode === 'reading') {
       await requestNextKindlePage()
+      break
+    } else {
       break
     }
   }
 }
 
 async function renderState(state: ReadingState): Promise<void> {
+  const mode = resolveMode(state)
+  const tapCount = singleTapCountOf(state)
   if (state.revision !== currentRevision) {
     currentRevision = state.revision
+    currentMode = mode
     currentPage = 0
     awaitingAdvanceRevision = null
     pages = state.active && state.bodyText ? paginate(state.bodyText, {
       width: INNER_WIDTH,
       height: INNER_HEIGHT,
     }) : []
-    lastDoubleTapCount = state.doubleTapCount
+    lastSingleTapCount = tapCount
     if (pages.length > 0) {
-      await queueUpgrade(pages[0])
+      await textUpgrade(pages[0])
     } else {
-      await queueUpgrade(state.enabled
-        ? 'Harness Node\n\nKindle reader\nWaiting for reading gesture…'
-        : 'Harness Node\n\nKindle reader\nPassthrough is off')
+      await textUpgrade(idleMessage(state))
     }
+  } else {
+    currentMode = mode
   }
-  await handleDoubleTapCount(state.doubleTapCount)
+  await handleSingleTapCount(tapCount)
   if (state.active && state.loading) return
+  if (state.error && pages.length === 0) await textUpgrade(idleMessage(state))
 }
 
 async function poll(): Promise<void> {
@@ -142,7 +175,7 @@ async function poll(): Promise<void> {
     await renderState((await response.json()) as ReadingState)
   } catch (error) {
     console.warn('Voice Harness bridge unavailable:', error)
-    if (currentRevision < 0) await queueUpgrade('Harness Node\n\nWaiting for Android…')
+    if (currentRevision < 0) await textUpgrade('Voice Harness\n\nWaiting for Android…')
   } finally {
     window.setTimeout(() => void poll(), 500)
   }

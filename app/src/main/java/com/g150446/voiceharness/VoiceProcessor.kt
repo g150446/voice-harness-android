@@ -43,6 +43,41 @@ internal fun shouldInterruptOnDoubleTap(state: VoiceState): Boolean = when (stat
     VoiceState.TRANSCRIBING, VoiceState.RESPONDING, VoiceState.SPEAKING -> true
     VoiceState.READY, VoiceState.RECORDING, VoiceState.ERROR -> false
 }
+
+/**
+ * Whether a single tap should ask the node to start or stop recording via RX.
+ * Passthrough mode never uses single tap for recording (G2 page advance only).
+ */
+internal fun singleTapRecordingCommand(
+    passthroughEnabled: Boolean,
+    state: VoiceState,
+): Byte? {
+    if (passthroughEnabled) return null
+    return when (state) {
+        VoiceState.RECORDING -> BLE_RX_STOP_RECORDING
+        VoiceState.READY, VoiceState.ERROR, VoiceState.SPEAKING,
+        VoiceState.TRANSCRIBING, VoiceState.RESPONDING -> BLE_RX_START_RECORDING
+    }
+}
+
+/** Passthrough double-tap: ON→OFF exit, OFF→ON enter (when not interrupting). */
+internal enum class PassthroughDoubleTapAction {
+    NONE,
+    ENABLE,
+    DISABLE,
+}
+
+internal fun passthroughDoubleTapAction(
+    passthroughEnabled: Boolean,
+    state: VoiceState,
+): PassthroughDoubleTapAction {
+    if (shouldInterruptOnDoubleTap(state)) return PassthroughDoubleTapAction.NONE
+    return if (passthroughEnabled) {
+        PassthroughDoubleTapAction.DISABLE
+    } else {
+        PassthroughDoubleTapAction.ENABLE
+    }
+}
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
 private const val KINDLE_CAPTURE_ATTEMPTS = 3
@@ -55,7 +90,6 @@ private const val KINDLE_CAPTURE_DELAY_MS = 450L
 internal class VoiceProcessor(
     private val appContext: Context,
     private val scope: CoroutineScope,
-    private val smartGlassesOutput: SmartGlassesOutputManager
 ) : TextToSpeech.OnInitListener {
 
     private val historyRepository = HistoryRepository(appContext)
@@ -141,9 +175,7 @@ internal class VoiceProcessor(
 
     private fun handleBleRecordingStarted() {
         if (BleConnectionService.voiceState.value == VoiceState.RECORDING) return
-        // Prefer an already-idle Z100 (auto-release after the read window). When still
-        // displaying, stopDisplay() clears it; when idle it skips Z100 BLE traffic.
-        smartGlassesOutput.stopDisplay()
+        EvenG2ReadingSession.clearDisplay()
         readingSourceContext = null
         readingPageTurnGesture = PageTurnGesture.UNKNOWN
         pcmBuffer.reset()
@@ -165,7 +197,7 @@ internal class VoiceProcessor(
         startHarnessScreenCapture()
         Log.d(
             TAG,
-            "BLE recording started (firmware-initiated), glasses=${smartGlassesOutput.state.value}"
+            "BLE recording started (firmware-initiated), glasses=${EvenG2ReadingSession.uiSmartGlassesState()}"
         )
     }
 
@@ -1036,7 +1068,7 @@ internal class VoiceProcessor(
         commitPipelineTiming()
         val target = BleConnectionService.responseOutputTarget.value
         val glassesResult = if (target == ResponseOutputTarget.SMART_GLASSES) {
-            smartGlassesOutput.displayResponse(text)
+            EvenG2ReadingSession.displayResponse(text)
         } else {
             null
         }
@@ -1047,7 +1079,7 @@ internal class VoiceProcessor(
             BleConnectionService.setVoiceState(VoiceState.READY)
             BleConnectionService.releaseAssistantProcessing()
             com.g150446.voiceharness.assistant.AssistantSessionController.onSpeakingFinished(requestId)
-            Log.d(TAG, "Response routed to Z100")
+            Log.d(TAG, "Response routed to Even G2")
             return
         }
         decision.fallbackMessage?.let {
@@ -1063,6 +1095,8 @@ internal class VoiceProcessor(
         extracted: String,
         sourceContext: ScreenContext? = null,
         saveHistory: Boolean = true,
+        silentFailure: Boolean = false,
+        successLabel: String = "読書パススルーを開始しました（G2）",
     ) {
         commitPipelineTiming()
         if (!BleConnectionService.readingPassthroughEnabled.value) {
@@ -1074,22 +1108,32 @@ internal class VoiceProcessor(
         if (text == null) {
             val message = "画面から表示できる本文を抽出できませんでした"
             EvenG2ReadingSession.failAdvance(message)
-            BleConnectionService.setResponse(message)
-            BleConnectionService.setErrorMessage(message)
-            saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
-            speakResponse(message)
+            if (!silentFailure) {
+                BleConnectionService.setResponse(message)
+                BleConnectionService.setErrorMessage(message)
+                saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+                speakResponse(message)
+            } else {
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                Log.w(TAG, "Auto passthrough extraction empty")
+            }
             return
         }
 
         readingSourceContext = sourceContext
         if (extraction.pageTurnGesture != PageTurnGesture.UNKNOWN) {
             readingPageTurnGesture = extraction.pageTurnGesture
+            Log.d(
+                TAG,
+                "Reading page-turn gesture=$readingPageTurnGesture " +
+                    "writing=${extraction.writingDirection}",
+            )
         }
-        EvenG2ReadingSession.publishBody(text)
-        if (EvenG2ReadingSession.isClientActive()) {
-            val status = "読書パススルーを開始しました（G2）"
-            BleConnectionService.setResponse(status)
-            if (saveHistory) saveHistoryEntry(command, status, isSilent = false, errorMessage = "")
+        EvenG2ReadingSession.publishReading(text)
+        if (EvenG2ReadingSession.isClientActive() || EvenG2ReadingSession.awaitClientActive()) {
+            // Extracted screen text stays out of UI/history and lives only in the G2 session.
+            BleConnectionService.setResponse(successLabel)
+            if (saveHistory) saveHistoryEntry(command, successLabel, isSilent = false, errorMessage = "")
             tts?.stop()
             BleConnectionService.setPhonePlaybackActive(false)
             BleConnectionService.setVoiceState(VoiceState.READY)
@@ -1097,29 +1141,17 @@ internal class VoiceProcessor(
             return
         }
 
-        when (val result = smartGlassesOutput.startReadingPassthrough(text)) {
-            is SmartGlassesDisplayResult.Started -> {
-                val pageCount = smartGlassesOutput.state.value.readingPageCount
-                val status = "読書パススルーを開始しました（${pageCount}ページ）"
-                // The extracted screen text is intentionally kept out of UI/history and lives
-                // only in the in-memory glasses session.
-                BleConnectionService.setResponse(status)
-                if (saveHistory) {
-                    saveHistoryEntry(command, status, isSilent = false, errorMessage = "")
-                }
-                tts?.stop()
-                BleConnectionService.setPhonePlaybackActive(false)
-                BleConnectionService.setVoiceState(VoiceState.READY)
-                Log.d(TAG, "Reading passthrough started (${text.length} chars)")
-            }
-            is SmartGlassesDisplayResult.Failed -> {
-                val message = "Z100に本文を表示できませんでした: ${result.message}"
-                BleConnectionService.setResponse(message)
-                BleConnectionService.setErrorMessage(message)
-                saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
-                Log.w(TAG, message, result.cause)
-                speakResponse(message)
-            }
+        val message = "G2に本文を表示できませんでした: Even G2プラグインが接続されていません"
+        EvenG2ReadingSession.clearDisplay()
+        if (!silentFailure) {
+            BleConnectionService.setResponse(message)
+            BleConnectionService.setErrorMessage(message)
+            saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+            Log.w(TAG, message)
+            speakResponse(message)
+        } else {
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            Log.w(TAG, "Auto passthrough skipped: $message")
         }
     }
 
@@ -1156,14 +1188,21 @@ internal class VoiceProcessor(
     private suspend fun extractAndPresentReadingPassthrough(
         command: String,
         screenContext: ScreenContext,
+        silentFailure: Boolean = false,
+        successLabel: String = "読書パススルーを開始しました（G2）",
     ) {
         val ready = aiBackend.ensureReady()
         if (ready.isFailure) {
             val message = ready.exceptionOrNull()?.message ?: "モデル準備に失敗しました"
-            BleConnectionService.setResponse(message)
-            BleConnectionService.setErrorMessage(message)
-            saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
-            BleConnectionService.setVoiceState(VoiceState.ERROR)
+            if (!silentFailure) {
+                BleConnectionService.setResponse(message)
+                BleConnectionService.setErrorMessage(message)
+                saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+                BleConnectionService.setVoiceState(VoiceState.ERROR)
+            } else {
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                Log.w(TAG, "Auto passthrough model not ready: $message")
+            }
             return
         }
 
@@ -1183,14 +1222,46 @@ internal class VoiceProcessor(
             return
         }
         result.onSuccess { reply ->
-            presentReadingPassthrough(command, reply.text, screenContext)
+            presentReadingPassthrough(
+                command = command,
+                extracted = reply.text,
+                sourceContext = screenContext,
+                silentFailure = silentFailure,
+                successLabel = successLabel,
+            )
         }.onFailure { error ->
             val message = "Chat error: ${error.message}"
-            BleConnectionService.setResponse(message)
-            BleConnectionService.setErrorMessage(message)
-            saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
-            BleConnectionService.setVoiceState(VoiceState.ERROR)
+            if (!silentFailure) {
+                BleConnectionService.setResponse(message)
+                BleConnectionService.setErrorMessage(message)
+                saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
+                BleConnectionService.setVoiceState(VoiceState.ERROR)
+            } else {
+                BleConnectionService.setVoiceState(VoiceState.READY)
+                Log.w(TAG, "Auto passthrough chat failed: $message")
+            }
         }
+    }
+
+    /**
+     * Single tap (FW 0.0.94+ notify-only): host authorizes recording via RX,
+     * except in passthrough mode where G2 advances pages from singleTapCount.
+     */
+    internal fun handleSingleTap() {
+        val command = singleTapRecordingCommand(
+            passthroughEnabled = BleConnectionService.readingPassthroughEnabled.value,
+            state = BleConnectionService.voiceState.value,
+        )
+        if (command == null) {
+            Log.i(TAG, "Single tap: no recording command (passthrough or ignored state)")
+            return
+        }
+        Log.i(
+            TAG,
+            "Single tap: host-authorized recording " +
+                if (command == BLE_RX_START_RECORDING) "start" else "stop",
+        )
+        BleConnectionService.sendCommand(command)
     }
 
     internal fun handleDoubleTap() {
@@ -1199,28 +1270,68 @@ internal class VoiceProcessor(
             interruptHarnessPipeline(voiceState)
             return
         }
-        if (EvenG2ReadingSession.isClientActive() &&
-            EvenG2ReadingSession.snapshot(BleConnectionService.doubleTapStatus.value.count).active
+        when (
+            passthroughDoubleTapAction(
+                passthroughEnabled = BleConnectionService.readingPassthroughEnabled.value,
+                state = voiceState,
+            )
         ) {
+            PassthroughDoubleTapAction.DISABLE -> {
+                BleConnectionService.setReadingPassthroughEnabled(appContext, false)
+                BleConnectionService.setResponse("パススルーモードを終了しました")
+                BleConnectionService.setErrorMessage("")
+                Log.i(TAG, "Double tap: passthrough disabled")
+            }
+            PassthroughDoubleTapAction.ENABLE -> {
+                BleConnectionService.setReadingPassthroughEnabled(appContext, true)
+                scope.launch(Dispatchers.IO) {
+                    startReadingPassthroughFromCurrentScreen(
+                        command = "ダブルタップでパススルー開始",
+                        silentFailure = false,
+                    )
+                }
+                Log.i(TAG, "Double tap: passthrough enabled")
+            }
+            PassthroughDoubleTapAction.NONE -> {
+                Log.d(TAG, "Double tap ignored")
+            }
+        }
+    }
+
+    /**
+     * Accessibility saw Kindle move to the foreground while passthrough is armed.
+     * Starts extraction without a harness-node gesture. Failures stay silent.
+     */
+    internal fun onKindleBecameForeground() {
+        if (!BleConnectionService.readingPassthroughEnabled.value) return
+        val voiceState = BleConnectionService.voiceState.value
+        if (voiceState != VoiceState.READY && voiceState != VoiceState.ERROR) {
+            Log.d(TAG, "Auto passthrough skipped: voiceState=$voiceState")
+            return
+        }
+        val snapshot = EvenG2ReadingSession.snapshot(BleConnectionService.doubleTapStatus.value.count)
+        if (snapshot.active && snapshot.mode == EvenG2DisplayMode.READING) {
+            Log.d(TAG, "Auto passthrough skipped: reading session already active")
             return
         }
         scope.launch(Dispatchers.IO) {
-            when (val result = smartGlassesOutput.showNextReadingPage()) {
-                ReadingPageAdvanceResult.Inactive -> {
-                    if (BleConnectionService.readingPassthroughEnabled.value) {
-                        startReadingPassthroughFromCurrentScreen()
-                    } else {
-                        Log.d(TAG, "Double tap ignored: no reading passthrough session")
-                    }
-                }
-                ReadingPageAdvanceResult.Advanced -> Unit
-                ReadingPageAdvanceResult.AtEnd -> advanceKindlePageIfPossible()
-                is ReadingPageAdvanceResult.Failed -> {
-                    BleConnectionService.setErrorMessage(
-                        "次の本文をZ100に表示できませんでした: ${result.message}"
-                    )
-                }
+            // Let the Kindle reader settle before headless assist capture.
+            kotlinx.coroutines.delay(700L)
+            if (!BleConnectionService.readingPassthroughEnabled.value) return@launch
+            if (BleConnectionService.voiceState.value != VoiceState.READY &&
+                BleConnectionService.voiceState.value != VoiceState.ERROR
+            ) {
+                return@launch
             }
+            if (!KindlePageTurnController.isKindlePackage(KindlePageTurnController.foregroundPackage())) {
+                Log.d(TAG, "Auto passthrough skipped: Kindle no longer foreground")
+                return@launch
+            }
+            startReadingPassthroughFromCurrentScreen(
+                command = "Kindle前面で自動パススルー",
+                silentFailure = true,
+                successLabel = "読書パススルーを開始しました（G2・自動）",
+            )
         }
     }
 
@@ -1250,18 +1361,23 @@ internal class VoiceProcessor(
         reminderRepository.deleteEntry(reminderId)
     }
 
-    private suspend fun startReadingPassthroughFromCurrentScreen() {
+    private suspend fun startReadingPassthroughFromCurrentScreen(
+        command: String,
+        silentFailure: Boolean,
+        successLabel: String = "読書パススルーを開始しました（G2）",
+    ) {
         if (!readingInitialCaptureInFlight.compareAndSet(false, true)) {
-            Log.d(TAG, "Double tap screen capture ignored: already in flight")
+            Log.d(TAG, "Reading capture ignored: already in flight")
             return
         }
-        val command = "ダブルタップでKindle画面を表示"
         try {
-            BleConnectionService.setResponse("")
-            BleConnectionService.setErrorMessage("")
+            if (!silentFailure) {
+                BleConnectionService.setResponse("")
+                BleConnectionService.setErrorMessage("")
+            }
             BleConnectionService.setVoiceState(VoiceState.RESPONDING)
             val screenContext = runCatching { HeadlessScreenCapture.capture(appContext) }
-                .onFailure { Log.w(TAG, "Double tap screen capture failed", it) }
+                .onFailure { Log.w(TAG, "Reading screen capture failed", it) }
                 .getOrNull()
             if (!BleConnectionService.readingPassthroughEnabled.value) {
                 BleConnectionService.setVoiceState(VoiceState.READY)
@@ -1269,27 +1385,42 @@ internal class VoiceProcessor(
             }
             if (screenContext?.isEmpty != false) {
                 val message = "Kindle画面の本文を取得できませんでした"
-                BleConnectionService.setResponse(message)
-                BleConnectionService.setErrorMessage(message)
+                if (!silentFailure) {
+                    BleConnectionService.setResponse(message)
+                    BleConnectionService.setErrorMessage(message)
+                } else {
+                    Log.w(TAG, "Auto passthrough capture empty")
+                }
                 BleConnectionService.setVoiceState(VoiceState.READY)
                 return
             }
             val sourcePackage = screenContext.sourcePackage
-            if (sourcePackage != null && sourcePackage != KindlePageTurnController.KINDLE_PACKAGE) {
-                val message = "Kindleを表示した状態でダブルタップしてください"
-                BleConnectionService.setResponse(message)
-                BleConnectionService.setErrorMessage(message)
+            if (sourcePackage != null && !KindlePageTurnController.isKindlePackage(sourcePackage)) {
+                val message = "Kindleを表示した状態で操作してください"
+                if (!silentFailure) {
+                    BleConnectionService.setResponse(message)
+                    BleConnectionService.setErrorMessage(message)
+                }
                 BleConnectionService.setVoiceState(VoiceState.READY)
-                Log.w(TAG, "Double tap capture rejected: package=$sourcePackage")
+                Log.w(TAG, "Reading capture rejected: package=$sourcePackage")
                 return
             }
-            extractAndPresentReadingPassthrough(command, screenContext)
+            extractAndPresentReadingPassthrough(
+                command = command,
+                screenContext = screenContext,
+                silentFailure = silentFailure,
+                successLabel = successLabel,
+            )
         } catch (error: Exception) {
-            Log.e(TAG, "Double tap reading passthrough failed", error)
-            val message = "パススルーエラー: ${error.message}"
-            BleConnectionService.setResponse(message)
-            BleConnectionService.setErrorMessage(message)
-            BleConnectionService.setVoiceState(VoiceState.ERROR)
+            Log.e(TAG, "Reading passthrough failed", error)
+            if (!silentFailure) {
+                val message = "パススルーエラー: ${error.message}"
+                BleConnectionService.setResponse(message)
+                BleConnectionService.setErrorMessage(message)
+                BleConnectionService.setVoiceState(VoiceState.ERROR)
+            } else {
+                BleConnectionService.setVoiceState(VoiceState.READY)
+            }
         } finally {
             readingInitialCaptureInFlight.set(false)
         }
@@ -1312,7 +1443,6 @@ internal class VoiceProcessor(
 
     private suspend fun advanceKindlePageIfPossible(): Boolean {
         if (!readingPageTurnInFlight.compareAndSet(false, true)) return false
-        smartGlassesOutput.setReadingPageLoading(true)
         try {
             if (!KindlePageTurnController.isAvailable()) {
                 showKindlePageTurnError("Accessibility Serviceを有効にしてください")
@@ -1331,10 +1461,21 @@ internal class VoiceProcessor(
             if (semanticResult == KindlePageTurnResult.DISPATCHED) {
                 changedScreen = captureChangedKindleScreen(previous)
             }
-            if (changedScreen == null && readingPageTurnGesture != PageTurnGesture.UNKNOWN) {
-                val swipeResult = KindlePageTurnController.performSwipe(readingPageTurnGesture)
-                if (swipeResult == KindlePageTurnResult.DISPATCHED) {
+            if (changedScreen == null) {
+                val candidates = pageTurnSwipeCandidates(readingPageTurnGesture)
+                Log.d(
+                    TAG,
+                    "Kindle page turn swipe candidates=$candidates " +
+                        "preferred=$readingPageTurnGesture",
+                )
+                for (gesture in candidates) {
+                    val swipeResult = KindlePageTurnController.performSwipe(gesture)
+                    if (swipeResult != KindlePageTurnResult.DISPATCHED) continue
                     changedScreen = captureChangedKindleScreen(previous)
+                    if (changedScreen != null) {
+                        readingPageTurnGesture = gesture
+                        break
+                    }
                 }
             }
             if (changedScreen == null) {
@@ -1367,7 +1508,6 @@ internal class VoiceProcessor(
             }
             return result.isSuccess
         } finally {
-            smartGlassesOutput.setReadingPageLoading(false)
             readingPageTurnInFlight.set(false)
         }
     }
@@ -1380,7 +1520,7 @@ internal class VoiceProcessor(
             val captured = runCatching { HeadlessScreenCapture.capture(appContext) }.getOrNull()
                 ?: return@repeat
             if (captured.sourcePackage != null &&
-                captured.sourcePackage != KindlePageTurnController.KINDLE_PACKAGE
+                !KindlePageTurnController.isKindlePackage(captured.sourcePackage)
             ) return@repeat
             if (ScreenContextFingerprint.from(captured).changedFrom(previous)) return captured
         }
@@ -1388,6 +1528,7 @@ internal class VoiceProcessor(
     }
 
     private fun showKindlePageTurnError(message: String) {
+        EvenG2ReadingSession.failAdvance(message)
         BleConnectionService.setErrorMessage(message)
         Log.w(TAG, message)
     }
@@ -1468,7 +1609,7 @@ internal class VoiceProcessor(
     fun switchProfile(profile: OnDeviceProfile) {
         aiFacade.switchProfile(profile)
         tts?.stop()
-        smartGlassesOutput.stopDisplay()
+        EvenG2ReadingSession.clearDisplay()
         readingSourceContext = null
         readingPageTurnGesture = PageTurnGesture.UNKNOWN
         if (BleConnectionService.voiceState.value != VoiceState.RECORDING) {
@@ -1502,7 +1643,7 @@ internal class VoiceProcessor(
     fun disconnect() {
         tts?.stop()
         BleConnectionService.setPhonePlaybackActive(false)
-        smartGlassesOutput.stopDisplay()
+        EvenG2ReadingSession.clearDisplay()
         readingSourceContext = null
         readingPageTurnGesture = PageTurnGesture.UNKNOWN
         isCollectingPcm = false

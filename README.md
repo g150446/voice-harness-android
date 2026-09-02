@@ -1,18 +1,21 @@
 # Voice Harness
 
-Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして使い、オンデバイス / Groq / OpenRouter で音声認識・AI応答を行い、Android TTS（または Vuzix Z100）で出力する。電源長押しのデジタルアシスタント（下部シート UI）にも対応する。
+Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして使い、オンデバイス / Groq / OpenRouter で音声認識・AI応答を行い、Android TTS（または Even Realities G2）で出力する。電源長押しのデジタルアシスタント（下部シート UI）にも対応する。
 
 ## 概要
 
 ```
-[nRF52840 ジェスチャー検知]
-        │ BLE 0x01 (録音開始通知)
+[Harness Node]
+  ・手首ジェスチャー → FW 自律 TX 0x01 / 0x02
+  ・シングルタップ (0x14) → ホストが RX 0x01/0x00（パススルー中はページ送りのみ）
+  ・ダブルタップ (0x12) → パススルー ON/OFF（処理中はパイプライン割り込み）
+        │ BLE TX 0x01 (録音開始)
         ▼
 [Android: PCM 蓄積]
   ・開始/終了キュー音（MEDIA 経路）
   ・他アプリ上の録音オーバーレイ（要 SYSTEM_ALERT_WINDOW）
   ・ROLE_ASSISTANT 時はヘッドレス Assist で画面テキスト/スクショ取得
-        │ BLE TX 0x02（FW 停止ジェスチャ）
+        │ BLE TX 0x02（録音停止）
         ▼
 [Silero VAD + FFT fallback]
         │ 音声あり
@@ -24,7 +27,11 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
   （取得できた ScreenContext を添付。自アプリ/ロック/画面オフは除外）
         │
         ▼
-[Android TTS or Z100] → 出力
+[Android TTS or Even G2] → 出力
+
+[読書パススルー]
+  ・ホームのユーザー補助（Accessibility）必須（Kindle 自動／ページめくり）
+  ・G2 プラグインが本文をページ分割、Node シングルタップで送り
 
 [電源長押し ROLE_ASSISTANT]
         → 下部シート UI（自動録音なし）
@@ -32,6 +39,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
         → 任意で画面テキスト / スクリーンショットを添付
         → 同じ AssistantGateway → LLM
 ```
+
+**FW は `0.0.94+` を前提**（single/double は notify-only）。アプリとセットで更新する。
 
 **モデル設定** で ASR と LLM を独立に選択する（旧プロファイルは初回のみ双方へコピー）:
 
@@ -55,7 +64,7 @@ OpenRouter は明示オプトイン（API キー + モデル選択が必須）�
 - ローカル利用時: Qwen / Gemma / LFM のオンデバイスモデル（詳細は下記ドキュメント参照）
 - クラウド利用時: Groq API キー、および/または OpenRouter API キー（モデルファイル不要）
 - デジタルアシスタント利用時: 設定アプリで Voice Harness をデフォルトのデジタルアシスタントに指定
-- （任意）Vuzix Z100とVuzix Connect（AI返答をスマートグラスへ表示する場合）
+- （任意）Even Realities G2とEven Realities App、Even Hubプラグイン（AI返答をグラスへ表示する場合）
 
 ### アプリのインストール
 
@@ -128,13 +137,20 @@ AI が読み上げ中に再度ジェスチャーを行うと、読み上げを�
 
 ### AI返答の出力先
 
-ホーム画面の **AI返答の出力先** で、従来のTTS音声とVuzix Z100を切り替えられる。
-Z100を選ぶとAI返答全文をグラスへ一度に表示し、電話画面と履歴にも返答を残す。
-Vuzix Connect、Z100のリンクまたは接続、グラスの制御取得に失敗した場合は、自動的に
-TTSへ戻して返答を読み上げる。
+ホーム画面の **AI返答の出力先** で、従来のTTS音声とEven Realities G2を切り替えられる。
+G2を選ぶとAI返答をEven Hubプラグイン経由でグラスへ表示し、電話画面と履歴にも返答を残す。
+Even Hubプラグインが未接続の場合は、自動的にTTSへ戻して返答を読み上げる。
 
-Z100を利用する前にVuzix Connectでグラスをリンク・接続する。アプリ内の
-**Vuzix Connectを開く** ボタンから設定画面を起動できる。
+G2を利用する前にEven Realities Appでグラスをペアリングし、`even-g2/app` プラグイン
+（Even Hub 表示名: Voice Harness）を起動する。アプリ内の **Even Realities Appを開く**
+ボタンからコンパニオンを起動できる。
+
+Hub の QR/URL プロトタイプや `npm run dev` を使い終わったら、**プラグイン終了と Vite 停止**を
+忘れないこと。放置すると Even アプリと G2 の接続が切れることがある。手順と復旧は
+[`even-g2/app/README.md`](even-g2/app/README.md) の「グラス切断を防ぐ」を参照。
+
+> Vuzix Z100向け実装（`SmartGlassesOutputManager`）は将来再配線用にコードとSDK依存を残しているが、
+> 実行パスからは外している。詳細は `documents/smart_glasses_output.md`。
 
 ---
 
@@ -208,7 +224,8 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 | `RecordingOverlayController.kt` | 他アプリ上の録音中オーバーレイ |
 | `RecordingCuePlayer.kt` | 録音開始/終了キュー音（USAGE_MEDIA） |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
-| `SmartGlassesOutputManager.kt` | Vuzix Z100の状態監視、制御取得、返答全文表示 |
+| `EvenG2ReadingSession.kt` / `EvenG2BridgeServer.kt` | Even G2 表示セッションと loopback ブリッジ |
+| `SmartGlassesOutputManager.kt` | Vuzix Z100 実装（実行未使用・将来再配線用アーカイブ） |
 | `MainActivity.kt` | UI（Jetpack Compose） |
 | `GroqSettingsActivity.kt` | モデル設定画面（ASR/LLM 独立 + OpenRouter） |
 
@@ -219,7 +236,8 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 - [`documents/ble_protocol.md`](documents/ble_protocol.md) — BLE パケット仕様（ジェスチャ診断 `0x30` 含む）
 - [`documents/history_feature.md`](documents/history_feature.md) — 会話履歴とジェスチャ判定の保存・UI
 - [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
-- [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Vuzix Z100へのAI返答出力とフォールバック仕様
+- [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Even G2 出力（現行）と Vuzix Z100 アーカイブ仕様
+- [`even-g2/app/README.md`](even-g2/app/README.md) — Even Hub プラグイン（Voice Harness G2）
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
 - [`documents/architecture.md`](documents/architecture.md) — アーキテクチャ詳細
 - [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — AIバックエンド（ローカル / Groq / OpenRouter）の準備・運用

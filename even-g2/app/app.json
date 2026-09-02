@@ -1,14 +1,14 @@
 {
-  "package_id": "com.g150446.voiceharness.g2hello",
+  "package_id": "com.g150446.voiceharness.g2",
   "edition": "202601",
-  "name": "Voice Harness Hello",
+  "name": "Voice Harness",
   "version": "0.1.0",
   "min_sdk_version": "0.0.14",
   "entrypoint": "index.html",
   "permissions": [
     {
       "name": "network",
-      "desc": "Reads Kindle reading text and Harness Node gestures from Voice Harness on this phone.",
+      "desc": "Displays AI replies and reading passthrough text from the Voice Harness app on this phone.",
       "whitelist": ["http://127.0.0.1:8787"]
     }
   ],

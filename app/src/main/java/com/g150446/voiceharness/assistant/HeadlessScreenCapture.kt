@@ -100,15 +100,34 @@ object HeadlessScreenCapture {
     ) {
         if (!active) return
         val extracted = AssistStructureExtractor.extract(structure)
-        pendingAssistText = extracted.text.takeIf { it.isNotBlank() }
-        pendingSourcePackage = extracted.sourcePackage
-            ?: data?.getString(ASSIST_PACKAGE_KEY)
-        pendingSourceUri = extracted.sourceUri
-        assistReceived = true
-        Log.d(
-            TAG,
-            "Assist textLen=${pendingAssistText?.length ?: 0} pkg=$pendingSourcePackage",
+        val incoming = AssistCandidateSelector.Candidate(
+            text = extracted.text.takeIf { it.isNotBlank() },
+            sourcePackage = extracted.sourcePackage
+                ?: data?.getString(ASSIST_PACKAGE_KEY),
+            sourceUri = extracted.sourceUri,
         )
+        val current = AssistCandidateSelector.Candidate(
+            text = pendingAssistText,
+            sourcePackage = pendingSourcePackage,
+            sourceUri = pendingSourceUri,
+        )
+        if (AssistCandidateSelector.shouldReplace(current, incoming)) {
+            pendingAssistText = incoming.text
+            pendingSourcePackage = incoming.sourcePackage
+            pendingSourceUri = incoming.sourceUri
+            Log.d(
+                TAG,
+                "Assist kept textLen=${pendingAssistText?.length ?: 0} pkg=$pendingSourcePackage " +
+                    "score=${AssistCandidateSelector.score(incoming)}",
+            )
+        } else {
+            Log.d(
+                TAG,
+                "Assist ignored textLen=${incoming.text?.length ?: 0} pkg=${incoming.sourcePackage} " +
+                    "(kept pkg=$pendingSourcePackage)",
+            )
+        }
+        assistReceived = true
         maybeCompleteIfReady()
     }
 
