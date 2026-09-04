@@ -141,13 +141,12 @@ AI が読み上げ中に再度ジェスチャーを行うと、読み上げを�
 G2を選ぶとAI返答をEven Hubプラグイン経由でグラスへ表示し、電話画面と履歴にも返答を残す。
 Even Hubプラグインが未接続の場合は、自動的にTTSへ戻して返答を読み上げる。
 
-G2を利用する前にEven Realities Appでグラスをペアリングし、`even-g2/app` プラグイン
-（Even Hub 表示名: Voice Harness）を起動する。アプリ内の **Even Realities Appを開く**
-ボタンからコンパニオンを起動できる。
+G2を利用する前にEven Realities Appでグラスをペアリングし、EvenHubからインストールした
+**Voice Harness**プラグインを起動する。アプリ内の **Even Realities Appを開く** ボタンから
+コンパニオンを起動できる。インストール後の通常利用にMacや開発サーバーは不要。
 
-Hub の QR/URL プロトタイプや `npm run dev` を使い終わったら、**プラグイン終了と Vite 停止**を
-忘れないこと。放置すると Even アプリと G2 の接続が切れることがある。手順と復旧は
-[`even-g2/app/README.md`](even-g2/app/README.md) の「グラス切断を防ぐ」を参照。
+QR/URLと`npm run dev`はプラグイン開発時だけ使用する。配布パッケージの作成・非公開登録と
+開発セッション終了時の注意事項は[`even-g2/app/README.md`](even-g2/app/README.md)を参照。
 
 > Vuzix Z100向け実装（`SmartGlassesOutputManager`）は将来再配線用にコードとSDK依存を残しているが、
 > 実行パスからは外している。詳細は `documents/smart_glasses_output.md`。
@@ -238,6 +237,7 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 - [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
 - [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Even G2 出力（現行）と Vuzix Z100 アーカイブ仕様
 - [`even-g2/app/README.md`](even-g2/app/README.md) — Even Hub プラグイン（Voice Harness G2）
+- [`documents/even_g2_macless_deployment.md`](documents/even_g2_macless_deployment.md) — Macなし運用、非公開Beta配布、期限切れ表示の復旧
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
 - [`documents/architecture.md`](documents/architecture.md) — アーキテクチャ詳細
 - [`documents/ondevice_ai.md`](documents/ondevice_ai.md) — AIバックエンド（ローカル / Groq / OpenRouter）の準備・運用

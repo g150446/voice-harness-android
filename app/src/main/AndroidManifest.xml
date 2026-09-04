@@ -4,6 +4,10 @@
 
     <queries>
         <package android:name="com.vuzix.connect" />
+        <package android:name="com.even.sg" />
+        <package android:name="com.evenrealities.even" />
+        <package android:name="com.evenrealities.app" />
+        <package android:name="com.evenrealities.evenapp" />
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>

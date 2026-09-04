@@ -996,6 +996,7 @@ fun GestureDiagScreen(
 }
 
 private val EVEN_REALITIES_APP_PACKAGES = listOf(
+    "com.even.sg",
     "com.evenrealities.even",
     "com.evenrealities.app",
     "com.evenrealities.evenapp",

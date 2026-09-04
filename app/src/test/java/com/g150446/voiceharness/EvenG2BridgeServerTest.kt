@@ -1,6 +1,7 @@
 package com.g150446.voiceharness
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EvenG2BridgeServerTest {
@@ -64,6 +65,36 @@ class EvenG2BridgeServerTest {
             assertEquals("こんにちは", it.getString("bodyText"))
             assertEquals(true, it.getBoolean("active"))
             assertEquals(1, it.getLong("singleTapCount"))
+        }
+    }
+
+    @Test
+    fun `loopback responses allow the Even Hub webview without caching`() {
+        val headers = evenG2ResponseHeaders(200, "OK", 12)
+
+        assertTrue(headers.startsWith("HTTP/1.1 200 OK\r\n"))
+        assertTrue(headers.contains("Content-Length: 12\r\n"))
+        assertTrue(headers.contains("Access-Control-Allow-Origin: *\r\n"))
+        assertTrue(headers.contains("Access-Control-Allow-Private-Network: true\r\n"))
+        assertTrue(headers.contains("Cache-Control: no-store\r\n"))
+        assertTrue(headers.endsWith("\r\n\r\n"))
+    }
+
+    @Test
+    fun `reading advance accepts only the current revision once`() {
+        EvenG2ReadingSession.setEnabled(false)
+        try {
+            EvenG2ReadingSession.setEnabled(true)
+            EvenG2ReadingSession.publishReading("本文")
+            val revision = EvenG2ReadingSession.snapshot().revision
+
+            assertEquals(202, EvenG2ReadingSession.beginAdvance(revision).code)
+            assertEquals(409, EvenG2ReadingSession.beginAdvance(revision).code)
+            EvenG2ReadingSession.failAdvance("retry")
+            assertEquals(409, EvenG2ReadingSession.beginAdvance(revision - 1).code)
+            assertEquals(202, EvenG2ReadingSession.beginAdvance(revision).code)
+        } finally {
+            EvenG2ReadingSession.setEnabled(false)
         }
     }
 }

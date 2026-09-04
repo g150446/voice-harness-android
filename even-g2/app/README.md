@@ -17,10 +17,25 @@ G2には次を表示します。
 ## 必要条件
 
 - Even G2とEven Realities Appをペアリングし、ファームウェアを更新済み
-- Even HubのDeveloper Modeを有効化
-- Node.js 20、22、またはそれ以降
+- EvenHubから**Voice Harness**プラグインをEven Realities Appへインストール済み
 - Voice Harness Androidアプリが同じ端末で起動していること
-- 開発中はEven Hubネットワーク権限のため、QR URLを再読み込みすること
+
+インストール後の通常利用にMac、Node.js、Viteサーバー、QR/URLプロトタイプは不要。
+G2プラグインは同じAndroid端末のVoice Harnessだけと通信する。
+
+## 通常利用（Mac不要）
+
+1. AndroidのVoice Harnessを起動する。
+2. **Even Realities Appを開く**を押し、Even Hubの**Voice Harness**を起動する。
+3. AI返答の出力先をG2にするか、読書パススルーをONにする。
+
+Android端末を再起動した場合、Voice Harnessのバックグラウンドサービスは自動復帰する。
+G2に待機画面が出ない場合は、Even Realities Appからプラグインを起動し直す。
+
+## 配布パッケージの作成・登録（開発者のみ）
+
+ここから先のNode.jsとMac/PCは開発・初回登録時だけ必要で、利用者の実行環境には含まれない。
+Node.js 20、22、またはそれ以降を使用する。
 
 ## ビルド
 
@@ -29,7 +44,10 @@ npm install
 npm run build
 ```
 
-配布用パッケージは次で`out.ehpk`として生成する。
+配布用パッケージは次で`out.ehpk`として生成する。生成後、EvenHubサイトへアップロードし、
+ビルド一覧のステータスを **Private** から **Beta** へ昇格してから、Testing groupの対象
+アカウントへインストールする。Betaへ昇格していないビルドはテスターへ配信されない。
+`.ehpk`をAndroidで直接開くことはできない。
 
 ```bash
 npm run pack
@@ -49,6 +67,9 @@ npm run simulate
 
 ## 実機で表示
 
+以下は開発用のQR/URLプロトタイプであり、通常利用には使わない。事前にEven Hubの
+Developer Modeを有効にする。
+
 ```bash
 npm run dev
 npx evenhub qr --url "http://<PCのLAN IPまたはTailscale IP>:5173"
@@ -57,7 +78,7 @@ npx evenhub qr --url "http://<PCのLAN IPまたはTailscale IP>:5173"
 Even Realities AppのEven Hub開発者メニューからQRコードを読み取る。  
 スキャンできない場合は「QRコードをスキャンできない場合」から同じ URL を手入力して開始できる。
 
-## グラス切断を防ぐ（重要）
+## 開発セッションによるグラス切断を防ぐ（重要）
 
 Hub の **プロトタイプ起動（QR / URL）** や開発用 Vite を使い終わらずに放置すると、
 Even Realities App と Even G2 の接続が不安定になることがある。日常利用の前に必ず片付ける。

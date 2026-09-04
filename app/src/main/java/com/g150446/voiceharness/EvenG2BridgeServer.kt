@@ -26,6 +26,19 @@ internal fun evenG2ReadingJson(snapshot: EvenG2ReadingSnapshot): String =
         put("singleTapCount", snapshot.singleTapCount)
     }.toString()
 
+internal fun evenG2ResponseHeaders(code: Int, reason: String, bodySize: Int): String =
+    buildString {
+        append("HTTP/1.1 $code $reason\r\n")
+        append("Content-Type: application/json; charset=utf-8\r\n")
+        append("Content-Length: $bodySize\r\n")
+        append("Access-Control-Allow-Origin: *\r\n")
+        append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+        append("Access-Control-Allow-Headers: Content-Type\r\n")
+        append("Access-Control-Allow-Private-Network: true\r\n")
+        append("Cache-Control: no-store\r\n")
+        append("Connection: close\r\n\r\n")
+    }
+
 /**
  * Localhost bridge for the Even Hub WebView running on the same Android phone.
  * It is deliberately bound to loopback so no LAN or Tailnet peer can read or control app state.
@@ -123,17 +136,8 @@ internal class EvenG2BridgeServer(
 
     private fun writeResponse(client: Socket, code: Int, reason: String, body: String) {
         val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
-        val headers = buildString {
-            append("HTTP/1.1 $code $reason\r\n")
-            append("Content-Type: application/json; charset=utf-8\r\n")
-            append("Content-Length: ${bodyBytes.size}\r\n")
-            append("Access-Control-Allow-Origin: *\r\n")
-            append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
-            append("Access-Control-Allow-Headers: Content-Type\r\n")
-            append("Access-Control-Allow-Private-Network: true\r\n")
-            append("Cache-Control: no-store\r\n")
-            append("Connection: close\r\n\r\n")
-        }.toByteArray(StandardCharsets.US_ASCII)
+        val headers = evenG2ResponseHeaders(code, reason, bodyBytes.size)
+            .toByteArray(StandardCharsets.US_ASCII)
         client.getOutputStream().use { output ->
             output.write(headers)
             output.write(bodyBytes)
