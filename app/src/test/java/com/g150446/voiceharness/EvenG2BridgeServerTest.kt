@@ -39,9 +39,32 @@ class EvenG2BridgeServerTest {
         org.json.JSONObject(json).also {
             assertEquals(4, it.getLong("revision"))
             assertEquals("reading", it.getString("mode"))
+            assertTrue(it.isNull("title"))
             assertEquals("吾輩は猫である。\n名前はまだ無い。", it.getString("bodyText"))
             assertEquals(9, it.getLong("doubleTapCount"))
             assertEquals(3, it.getLong("singleTapCount"))
+        }
+    }
+
+    @Test
+    fun `harbor state carries workspace title without logging credentials`() {
+        val json = evenG2ReadingJson(
+            EvenG2ReadingSnapshot(
+                enabled = false,
+                active = true,
+                mode = EvenG2DisplayMode.HARBOR,
+                revision = 8,
+                title = "voice-harness-even-g2",
+                bodyText = "line 1\nline 2",
+                loading = false,
+                error = null,
+                doubleTapCount = 0,
+            )
+        )
+        org.json.JSONObject(json).also {
+            assertEquals("harbor", it.getString("mode"))
+            assertEquals("voice-harness-even-g2", it.getString("title"))
+            assertEquals("line 1\nline 2", it.getString("bodyText"))
         }
     }
 

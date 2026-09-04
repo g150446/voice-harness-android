@@ -146,6 +146,13 @@ class BleConnectionService : Service() {
         val readingPassthroughEnabled: StateFlow<Boolean> =
             _readingPassthroughEnabled.asStateFlow()
 
+        private val _interactionMode = MutableStateFlow(InteractionMode.AI)
+        val interactionMode: StateFlow<InteractionMode> = _interactionMode.asStateFlow()
+
+        private val _harborConnectionState = MutableStateFlow(HarborConnectionState())
+        val harborConnectionState: StateFlow<HarborConnectionState> =
+            _harborConnectionState.asStateFlow()
+
         private val _lastPipelineMs = MutableStateFlow(0L)
         val lastPipelineMs: StateFlow<Long> = _lastPipelineMs.asStateFlow()
 
@@ -336,14 +343,11 @@ class BleConnectionService : Service() {
         }
 
         fun initializeReadingPassthroughEnabled(context: Context) {
-            // Prefer prefs, but drop stale ON when G2 plugin is not currently connected.
-            val preferred = ReadingPassthroughPreferences(context).enabled()
-            val enabled = preferred && EvenG2ReadingSession.isClientActive()
-            if (preferred && !enabled) {
-                ReadingPassthroughPreferences(context).setEnabled(false)
-            }
-            _readingPassthroughEnabled.value = enabled
-            EvenG2ReadingSession.setEnabled(enabled)
+            // Interaction mode deliberately returns to AI after a service restart.
+            ReadingPassthroughPreferences(context).setEnabled(false)
+            _readingPassthroughEnabled.value = false
+            _interactionMode.value = InteractionMode.AI
+            EvenG2ReadingSession.setEnabled(false)
         }
 
         /**
@@ -376,12 +380,65 @@ class BleConnectionService : Service() {
             return true
         }
 
+        fun setInteractionMode(context: Context, mode: InteractionMode): Boolean {
+            val service = instance
+            if (mode != InteractionMode.AI && !EvenG2ReadingSession.isClientActive()) {
+                setErrorMessage("G2プラグインの接続が必要です")
+                return false
+            }
+            if (mode == InteractionMode.HARBOR && _harborConnectionState.value.paired.not()) {
+                setErrorMessage("Terminal Harborをペアリングしてください")
+                return false
+            }
+            when (mode) {
+                InteractionMode.AI -> {
+                    setReadingPassthroughEnabled(context, false, notifyG2 = false)
+                    setResponseOutputTarget(context, ResponseOutputTarget.SMART_GLASSES)
+                    EvenG2ReadingSession.publishResponse("AI対話モード")
+                }
+                InteractionMode.READER -> {
+                    service?.harborMirrorController?.setMode(InteractionMode.AI)
+                    if (!setReadingPassthroughEnabled(context, true, notifyG2 = false)) return false
+                    setResponseOutputTarget(context, ResponseOutputTarget.SMART_GLASSES)
+                    EvenG2ReadingSession.publishReaderModeStatus(true)
+                }
+                InteractionMode.HARBOR -> {
+                    setReadingPassthroughEnabled(context, false, notifyG2 = false)
+                    service?.harborMirrorController?.setMode(InteractionMode.HARBOR)
+                    EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborに接続中…")
+                }
+            }
+            if (mode != InteractionMode.HARBOR) service?.harborMirrorController?.setMode(mode)
+            _interactionMode.value = mode
+            setErrorMessage("")
+            service?.publishEvenG2UiState()
+            return true
+        }
+
+        fun pairTerminalHarbor(rawUri: String) {
+            instance?.harborMirrorController?.pair(rawUri)
+        }
+
+        fun clearTerminalHarborPairing() {
+            instance?.harborMirrorController?.clear()
+            if (_interactionMode.value == InteractionMode.HARBOR) {
+                instance?.let { setInteractionMode(it.applicationContext, InteractionMode.AI) }
+            }
+        }
+
+        internal fun pauseHarborMirror(paused: Boolean) {
+            val controller = instance?.harborMirrorController ?: return
+            if (paused) controller.setG2Active(false)
+            else controller.setMode(_interactionMode.value)
+        }
+
         /** Drop reader mode when the G2 plugin stops polling (no auto-ON). */
         fun syncReaderModeWithG2Client(context: Context) {
             if (!_readingPassthroughEnabled.value) return
             if (EvenG2ReadingSession.isClientActive()) return
             Log.i(TAG, "Reader mode auto-off: G2 plugin inactive")
             setReadingPassthroughEnabled(context, false, notifyG2 = false)
+            _interactionMode.value = InteractionMode.AI
         }
 
         /** Kindle became the foreground app while accessibility is watching. */
@@ -461,6 +518,7 @@ class BleConnectionService : Service() {
     private var playbackActive = false
     private var recordingOverlay: RecordingOverlayController? = null
     private var evenG2BridgeServer: EvenG2BridgeServer? = null
+    private var harborMirrorController: HarborMirrorController? = null
     private lateinit var drivingModeController: DrivingModeController
 
     override fun onCreate() {
@@ -492,6 +550,12 @@ class BleConnectionService : Service() {
                 }
             },
         ).also { it.start() }
+        harborMirrorController = HarborMirrorController(applicationContext, serviceScope).also { controller ->
+            serviceScope.launch {
+                controller.state.collect { _harborConnectionState.value = it }
+            }
+        }
+        _interactionMode.value = InteractionMode.AI
         recordingOverlay = RecordingOverlayController(applicationContext)
         drivingModeController = DrivingModeController(applicationContext)
         _drivingMode.value = drivingModeController.mode.value
@@ -513,6 +577,7 @@ class BleConnectionService : Service() {
             while (true) {
                 kotlinx.coroutines.delay(500)
                 syncReaderModeWithG2Client(applicationContext)
+                harborMirrorController?.setG2Active(EvenG2ReadingSession.isClientActive())
                 publishEvenG2UiState()
             }
         }
@@ -648,6 +713,8 @@ class BleConnectionService : Service() {
         recordingOverlay = null
         evenG2BridgeServer?.close()
         evenG2BridgeServer = null
+        harborMirrorController?.setMode(InteractionMode.AI)
+        harborMirrorController = null
         voiceProcessor?.shutdown()
         if (::drivingModeController.isInitialized) drivingModeController.stop()
         bleManager?.shutdown()
@@ -661,6 +728,7 @@ class BleConnectionService : Service() {
         _voiceState.value = VoiceState.READY
         _bleMode.value = false
         _smartGlassesState.value = SmartGlassesState()
+        _interactionMode.value = InteractionMode.AI
         instance = null
     }
 

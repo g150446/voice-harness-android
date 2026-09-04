@@ -34,6 +34,11 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
   ・ホームのユーザー補助（Accessibility）必須（Kindle 自動／ページめくり）
   ・G2 プラグインが本文をページ分割、Node シングルタップで送り
 
+[Terminal Harborモード]
+  ・Terminal Harborの既存モバイルブリッジとQR/HMACでペアリング
+  ・Macで選択中のワークスペースを追従し、G2に収まる最大量を端末末尾から表示
+  ・初版は表示専用（ワークスペース切替と指示入力は後続）
+
 [電源長押し ROLE_ASSISTANT]
         → 下部シート UI（自動録音なし）
         → テキスト or マイク送信
@@ -152,6 +157,18 @@ G2を利用する前にEven Realities Appでグラスをペアリングし、Eve
 
 QR/URLと`npm run dev`はプラグイン開発時だけ使用する。配布パッケージの作成・非公開登録と
 開発セッション終了時の注意事項は[`even-g2/app/README.md`](even-g2/app/README.md)を参照。
+
+### G2操作モード
+
+ホームの「操作モード」で **AI対話 / リーダー / Harbor** を切り替えられる。
+Harness Nodeではダブルタップでモード指示の録音を開始し、モード名を話してもう一度
+ダブルタップすると切り替わる。AI対話モードはG2出力を自動選択する。
+
+Harborモードを初めて使う場合は、Terminal Harborのサイドバーで **Pair mobile** を開き、
+Voice HarnessのTerminal Harbor欄からQRを読み取る。QRを使えない場合はPair URIを手入力できる。
+ペアリング情報はAndroid Keystoreで暗号化され、Pair URI、認証鍵、端末本文はログや履歴へ保存しない。
+Harborモード中はMacで現在選択しているワークスペースのアクティブペインを追従し、長い行を
+折り返しながらG2画面に収まる最大の末尾部分を表示する。
 
 > Vuzix Z100向け実装（`SmartGlassesOutputManager`）は将来再配線用にコードとSDK依存を残しているが、
 > 実行パスからは外している。詳細は `documents/smart_glasses_output.md`。

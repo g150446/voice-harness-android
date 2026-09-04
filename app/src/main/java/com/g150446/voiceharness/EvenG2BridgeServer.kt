@@ -19,6 +19,7 @@ internal fun evenG2ReadingJson(snapshot: EvenG2ReadingSnapshot): String =
         put("active", snapshot.active)
         put("mode", snapshot.mode.name.lowercase())
         put("revision", snapshot.revision)
+        put("title", snapshot.title ?: JSONObject.NULL)
         put("bodyText", snapshot.bodyText ?: JSONObject.NULL)
         put("loading", snapshot.loading)
         put("error", snapshot.error ?: JSONObject.NULL)

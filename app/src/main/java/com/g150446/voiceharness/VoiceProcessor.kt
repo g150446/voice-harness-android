@@ -50,10 +50,10 @@ internal fun shouldInterruptOnDoubleTap(state: VoiceState): Boolean = when (stat
  * Reader mode never uses single tap for recording (G2 page advance only).
  */
 internal fun singleTapRecordingCommand(
-    readerModeEnabled: Boolean,
+    interactionMode: InteractionMode,
     state: VoiceState,
 ): Byte? {
-    if (readerModeEnabled) return null
+    if (interactionMode != InteractionMode.AI) return null
     return when (state) {
         VoiceState.RECORDING -> BLE_RX_STOP_RECORDING
         VoiceState.READY, VoiceState.ERROR, VoiceState.SPEAKING,
@@ -61,25 +61,6 @@ internal fun singleTapRecordingCommand(
     }
 }
 
-/** Reader-mode double-tap: ON→OFF, OFF→ON only when G2 is connected (when not interrupting). */
-internal enum class ReaderModeDoubleTapAction {
-    NONE,
-    ENABLE,
-    DISABLE,
-}
-
-internal fun readerModeDoubleTapAction(
-    readerModeEnabled: Boolean,
-    g2ClientActive: Boolean,
-    state: VoiceState,
-): ReaderModeDoubleTapAction {
-    if (shouldInterruptOnDoubleTap(state)) return ReaderModeDoubleTapAction.NONE
-    return when {
-        readerModeEnabled -> ReaderModeDoubleTapAction.DISABLE
-        g2ClientActive -> ReaderModeDoubleTapAction.ENABLE
-        else -> ReaderModeDoubleTapAction.NONE
-    }
-}
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
 private const val KINDLE_CAPTURE_ATTEMPTS = 3
@@ -104,6 +85,9 @@ internal class VoiceProcessor(
 
     private val pcmBuffer = ByteArrayOutputStream()
     private var isCollectingPcm = false
+    @Volatile private var nextCapturePurpose = CapturePurpose.AI_QUERY
+    @Volatile private var activeCapturePurpose = CapturePurpose.AI_QUERY
+    @Volatile private var cancelCurrentRecording = false
     private var recordingStartedAtElapsedMs = 0L
     /** Wall-clock start of the current BLE recording (for gesture diag correlation). */
     private var recordingStartedAtWallMs = 0L
@@ -179,7 +163,14 @@ internal class VoiceProcessor(
 
     private fun handleBleRecordingStarted() {
         if (BleConnectionService.voiceState.value == VoiceState.RECORDING) return
-        EvenG2ReadingSession.clearDisplay()
+        activeCapturePurpose = nextCapturePurpose
+        nextCapturePurpose = CapturePurpose.AI_QUERY
+        cancelCurrentRecording = false
+        if (activeCapturePurpose == CapturePurpose.MODE_SWITCH) {
+            EvenG2ReadingSession.publishResponse("モードを指示してください\nダブルタップで決定")
+        } else {
+            EvenG2ReadingSession.clearDisplay()
+        }
         readingSourceContext = null
         readingPageTurnGesture = PageTurnGesture.UNKNOWN
         pcmBuffer.reset()
@@ -198,7 +189,7 @@ internal class VoiceProcessor(
         if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) tts?.stop()
         BleConnectionService.setVoiceState(VoiceState.RECORDING)
         recordingCuePlayer.playStarted()
-        startHarnessScreenCapture()
+        if (activeCapturePurpose == CapturePurpose.AI_QUERY) startHarnessScreenCapture()
         Log.d(
             TAG,
             "BLE recording started (firmware-initiated), glasses=${EvenG2ReadingSession.uiSmartGlassesState()}"
@@ -315,6 +306,8 @@ internal class VoiceProcessor(
         capturePendingGestureDiags()
         recordingStartedAtWallMs = 0L
         val pcmData = pcmBuffer.toByteArray()
+        val capturePurpose = activeCapturePurpose
+        activeCapturePurpose = CapturePurpose.AI_QUERY
         val pcmDurationMs = pcmData.size * 1_000L /
             (PCM_SAMPLE_RATE * PCM_CHANNELS * (PCM_BITS_PER_SAMPLE / 8))
         pcmBuffer.reset()
@@ -327,6 +320,23 @@ internal class VoiceProcessor(
 
         tts?.stop()
         recordingCuePlayer.playStopped()
+
+        if (cancelCurrentRecording) {
+            cancelCurrentRecording = false
+            pendingGestureDiags = emptyList()
+            recordingStoppedAtWallMs = 0L
+            clearPendingHarnessScreen()
+            BleConnectionService.setTranscription("")
+            BleConnectionService.setResponse("")
+            BleConnectionService.setErrorMessage("")
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            return
+        }
+
+        if (capturePurpose == CapturePurpose.MODE_SWITCH) {
+            processModeSwitchRecording(pcmData, recordingDurationMs, pcmDurationMs)
+            return
+        }
 
         if (BleConnectionService.readingPassthroughEnabled.value) {
             pipelineTiming.start(SystemClock.elapsedRealtime())
@@ -412,6 +422,82 @@ internal class VoiceProcessor(
             }
             transcribeAndRespondOnDevice(wavFile)
         }
+    }
+
+    private fun processModeSwitchRecording(
+        pcmData: ByteArray,
+        recordingDurationMs: Long,
+        pcmDurationMs: Long,
+    ) {
+        clearPendingHarnessScreen()
+        pendingGestureDiags = emptyList()
+        recordingStoppedAtWallMs = 0L
+        if (!isBlePcmCaptureComplete(recordingDurationMs, pcmDurationMs) || !hasSpeechInPcm(pcmData)) {
+            showModeSwitchError("モード指示を認識できませんでした")
+            return
+        }
+        BleConnectionService.setVoiceState(VoiceState.TRANSCRIBING)
+        harnessPipelineJob = scope.launch(Dispatchers.IO) {
+            val trimmed = PcmSilenceTrimmer.trim(pcmData, PCM_SAMPLE_RATE)
+            val wav = buildWavFile(trimmed)
+            if (wav == null) {
+                showModeSwitchError("モード指示を処理できませんでした")
+                return@launch
+            }
+            try {
+                aiBackend.ensureReady().getOrThrow()
+                val result = aiBackend.transcribe(
+                    wav,
+                    listOf(
+                        AsrVocabularyTerm("ハーバーモード"),
+                        AsrVocabularyTerm("AI対話モード"),
+                        AsrVocabularyTerm("リーダーモード"),
+                        AsrVocabularyTerm("Terminal Harbor"),
+                    ),
+                ).getOrThrow()
+                val raw = result.text.trim()
+                BleConnectionService.setTranscription(raw)
+                val mode = parseInteractionMode(raw)
+                if (mode == null) {
+                    showModeSwitchError("モードを特定できませんでした")
+                    return@launch
+                }
+                if (!BleConnectionService.setInteractionMode(appContext, mode)) {
+                    BleConnectionService.setVoiceState(VoiceState.READY)
+                    return@launch
+                }
+                BleConnectionService.setResponse(
+                    when (mode) {
+                        InteractionMode.AI -> "AI対話モードに切り替えました"
+                        InteractionMode.READER -> "リーダーモードに切り替えました"
+                        InteractionMode.HARBOR -> "Harborモードに切り替えました"
+                    }
+                )
+                if (mode == InteractionMode.READER) {
+                    startReadingPassthroughFromCurrentScreen(
+                        command = "音声指示でリーダーモード開始",
+                        silentFailure = false,
+                    )
+                } else {
+                    BleConnectionService.setVoiceState(VoiceState.READY)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                showModeSwitchError("モード指示の文字起こしに失敗しました")
+            } finally {
+                runCatching { wav.delete() }
+                BleConnectionService.pauseHarborMirror(false)
+            }
+        }
+    }
+
+    private fun showModeSwitchError(message: String) {
+        BleConnectionService.setErrorMessage(message)
+        BleConnectionService.setResponse(message)
+        EvenG2ReadingSession.publishResponse(message)
+        BleConnectionService.setVoiceState(VoiceState.READY)
+        BleConnectionService.pauseHarborMirror(false)
     }
 
     // --- Shared transcription + chat logic ---
@@ -1268,7 +1354,7 @@ internal class VoiceProcessor(
      */
     internal fun handleSingleTap() {
         val command = singleTapRecordingCommand(
-            readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
+            interactionMode = BleConnectionService.interactionMode.value,
             state = BleConnectionService.voiceState.value,
         )
         if (command == null) {
@@ -1281,6 +1367,7 @@ internal class VoiceProcessor(
             return
         }
         Log.i(TAG, "Single tap: host-authorized recording start (stop-then-start)")
+        nextCapturePurpose = CapturePurpose.AI_QUERY
         BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
         scope.launch {
             delay(HOST_START_RESYNC_DELAY_MS)
@@ -1288,8 +1375,8 @@ internal class VoiceProcessor(
                 Log.d(TAG, "Single tap start skipped: already recording")
                 return@launch
             }
-            if (BleConnectionService.readingPassthroughEnabled.value) {
-                Log.d(TAG, "Single tap start skipped: reader mode enabled")
+            if (BleConnectionService.interactionMode.value != InteractionMode.AI) {
+                Log.d(TAG, "Single tap start skipped: interaction mode changed")
                 return@launch
             }
             BleConnectionService.sendCommand(BLE_RX_START_RECORDING)
@@ -1302,35 +1389,20 @@ internal class VoiceProcessor(
             interruptHarnessPipeline(voiceState)
             return
         }
-        when (
-            readerModeDoubleTapAction(
-                readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
-                g2ClientActive = EvenG2ReadingSession.isClientActive(),
-                state = voiceState,
-            )
-        ) {
-            ReaderModeDoubleTapAction.DISABLE -> {
-                BleConnectionService.setReadingPassthroughEnabled(appContext, false)
-                BleConnectionService.setResponse("リーダーモードを終了しました")
-                BleConnectionService.setErrorMessage("")
-                Log.i(TAG, "Double tap: reader mode disabled")
-            }
-            ReaderModeDoubleTapAction.ENABLE -> {
-                val enabled = BleConnectionService.setReadingPassthroughEnabled(appContext, true)
-                if (!enabled) {
-                    Log.i(TAG, "Double tap: reader mode enable refused (G2 inactive)")
-                    return
-                }
-                scope.launch(Dispatchers.IO) {
-                    startReadingPassthroughFromCurrentScreen(
-                        command = "ダブルタップでリーダーモード開始",
-                        silentFailure = false,
-                    )
-                }
-                Log.i(TAG, "Double tap: reader mode enabled")
-            }
-            ReaderModeDoubleTapAction.NONE -> {
-                Log.d(TAG, "Double tap ignored")
+        if (voiceState == VoiceState.RECORDING) {
+            if (activeCapturePurpose != CapturePurpose.MODE_SWITCH) cancelCurrentRecording = true
+            BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
+            return
+        }
+        nextCapturePurpose = CapturePurpose.MODE_SWITCH
+        BleConnectionService.pauseHarborMirror(true)
+        BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
+        scope.launch {
+            delay(HOST_START_RESYNC_DELAY_MS)
+            if (BleConnectionService.voiceState.value == VoiceState.READY ||
+                BleConnectionService.voiceState.value == VoiceState.ERROR
+            ) {
+                BleConnectionService.sendCommand(BLE_RX_START_RECORDING)
             }
         }
     }

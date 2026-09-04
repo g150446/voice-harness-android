@@ -9,6 +9,7 @@ internal enum class EvenG2DisplayMode {
     IDLE,
     RESPONSE,
     READING,
+    HARBOR,
 }
 
 internal data class EvenG2ReadingSnapshot(
@@ -16,6 +17,7 @@ internal data class EvenG2ReadingSnapshot(
     val active: Boolean,
     val mode: EvenG2DisplayMode,
     val revision: Long,
+    val title: String? = null,
     val bodyText: String?,
     val loading: Boolean,
     val error: String?,
@@ -40,6 +42,7 @@ internal object EvenG2ReadingSession {
         val active: Boolean = false,
         val mode: EvenG2DisplayMode = EvenG2DisplayMode.IDLE,
         val revision: Long = 0L,
+        val title: String? = null,
         val bodyText: String? = null,
         val loading: Boolean = false,
         val error: String? = null,
@@ -60,6 +63,7 @@ internal object EvenG2ReadingSession {
                     active = false,
                     mode = EvenG2DisplayMode.IDLE,
                     revision = current.revision + 1L,
+                    title = null,
                     bodyText = null,
                     loading = false,
                     error = null,
@@ -78,6 +82,7 @@ internal object EvenG2ReadingSession {
                 active = true,
                 mode = EvenG2DisplayMode.READING,
                 revision = current.revision + 1L,
+                title = null,
                 bodyText = normalized,
                 loading = false,
                 error = null,
@@ -92,6 +97,7 @@ internal object EvenG2ReadingSession {
                 active = true,
                 mode = EvenG2DisplayMode.RESPONSE,
                 revision = current.revision + 1L,
+                title = null,
                 bodyText = normalized,
                 loading = false,
                 error = null,
@@ -109,6 +115,32 @@ internal object EvenG2ReadingSession {
         publishResponse(message)
     }
 
+    fun publishHarbor(title: String?, text: String?, error: String?) {
+        val normalizedTitle = title?.trim()?.takeIf(String::isNotEmpty)
+        val normalizedText = text?.replace("\r\n", "\n")?.replace('\r', '\n')?.trimEnd()
+            ?.takeIf(String::isNotEmpty)
+        val normalizedError = error?.trim()?.takeIf(String::isNotEmpty)
+        state.update { current ->
+            if (
+                current.active && current.mode == EvenG2DisplayMode.HARBOR &&
+                current.title == normalizedTitle && current.bodyText == normalizedText &&
+                current.error == normalizedError
+            ) {
+                current
+            } else {
+                current.copy(
+                    active = true,
+                    mode = EvenG2DisplayMode.HARBOR,
+                    revision = current.revision + 1L,
+                    title = normalizedTitle,
+                    bodyText = normalizedText,
+                    loading = false,
+                    error = normalizedError,
+                )
+            }
+        }
+    }
+
     fun clearDisplay() {
         state.update { current ->
             if (!current.active && current.mode == EvenG2DisplayMode.IDLE && current.bodyText == null) {
@@ -118,6 +150,7 @@ internal object EvenG2ReadingSession {
                     active = false,
                     mode = EvenG2DisplayMode.IDLE,
                     revision = current.revision + 1L,
+                    title = null,
                     bodyText = null,
                     loading = false,
                     error = null,
@@ -136,6 +169,7 @@ internal object EvenG2ReadingSession {
             active = current.active,
             mode = current.mode,
             revision = current.revision,
+            title = current.title,
             bodyText = current.bodyText,
             loading = current.loading,
             error = current.error,
@@ -154,7 +188,7 @@ internal object EvenG2ReadingSession {
             linked = clientActive || lastClientSeenElapsed > 0L,
             connected = clientActive,
             controlledByMe = clientActive,
-            displaying = responseActive,
+            displaying = responseActive || current.mode == EvenG2DisplayMode.HARBOR,
             deviceName = "Even G2",
             errorMessage = current.error,
             readingPassthroughActive = readingActive,

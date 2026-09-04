@@ -151,6 +151,7 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.vuzix:ultralite-sdk-android:1.9")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)

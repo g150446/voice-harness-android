@@ -18,6 +18,22 @@ HarnessNode → BLE PCM → ASR → Chat → response
                                                        → Even Hub plugin → G2
 ```
 
+G2表示には排他的な `AI対話`、`リーダー`、`Harbor` の3操作モードがある。ダブルタップで
+モード指示録音を開始し、モード名を話して再度ダブルタップするとASRだけで切り替える。
+モード指示はLLM、会話履歴、通常履歴へ送らない。
+
+### Harborモード
+
+Voice HarnessはTerminal Harborの `harbor://pair` URIからHMAC鍵を導出し、認証済みの
+`GET /v1/workspaces` と `GET /v1/workspaces/{id}/screen?lines=60` を使用する。Macで
+`selected=true` のワークスペースを1秒周期で追従する。取得した60論理行からEven Hub側が
+実ピクセル幅で折返しを測り、G2に収まる最長の接尾部分だけを表示する。ワークスペース名は
+切替時に約1秒だけ表示し、通常時は表示領域全体を端末本文に使う。
+
+初版は表示専用で、シングルタップ、G2スワイプによる端末操作は行わない。ペアリング鍵は
+Android Keystoreで暗号化し、端末本文とともに永続化・ログ出力しない。LAN HTTPは署名されるが
+暗号化されないため、Tailscale HTTPSを優先し、LANは信頼できるネットワークでのみ使用する。
+
 G2を選択しても返答は電話画面と履歴へ残る。Even Hubプラグインが bridge をポーリング中
 （`isClientActive`）なら表示成功としてTTSを抑止し、未接続なら同じ返答をTTSへ戻す。
 

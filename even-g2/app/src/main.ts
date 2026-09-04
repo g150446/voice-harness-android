@@ -6,6 +6,7 @@ import {
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
 import { paginate } from './paginate'
+import { measureTextWrap } from '@evenrealities/pretext'
 
 const BODY_WIDTH = 576
 const BODY_HEIGHT = 288
@@ -17,13 +18,14 @@ const CONTAINER_NAME = 'main'
 const READING_URL = 'http://127.0.0.1:8787/api/v1/reading'
 const ADVANCE_URL = 'http://127.0.0.1:8787/api/v1/reading/advance'
 
-type DisplayMode = 'idle' | 'response' | 'reading'
+type DisplayMode = 'idle' | 'response' | 'reading' | 'harbor'
 
 interface ReadingState {
   enabled: boolean
   active: boolean
   mode?: DisplayMode
   revision: number
+  title?: string | null
   bodyText: string | null
   loading: boolean
   error: string | null
@@ -57,14 +59,47 @@ let currentRevision = -1
 let currentMode: DisplayMode = 'idle'
 let lastSingleTapCount: number | null = null
 let awaitingAdvanceRevision: number | null = null
+let lastHarborTitle: string | null = null
 let rendering: Promise<unknown> = Promise.resolve()
 
 function resolveMode(state: ReadingState): DisplayMode {
-  if (state.mode === 'response' || state.mode === 'reading' || state.mode === 'idle') {
+  if (state.mode === 'response' || state.mode === 'reading' || state.mode === 'harbor' || state.mode === 'idle') {
     return state.mode
   }
   if (state.active && state.bodyText) return 'reading'
   return 'idle'
+}
+
+function harborTail(source: string): string {
+  const normalized = source.replace(/\r\n?/g, '\n').replace(/\s+$/u, '')
+  if (!normalized) return 'Terminal Harbor\n\n出力はありません'
+  const characters = Array.from(normalized)
+  const maxLines = Math.max(1, Math.floor(INNER_HEIGHT / 27))
+  let low = 1
+  let high = characters.length
+  let best = characters.length
+  while (low <= high) {
+    const length = Math.floor((low + high) / 2)
+    const candidate = characters.slice(characters.length - length).join('')
+    if (measureTail(candidate) <= maxLines) {
+      best = length
+      low = length + 1
+    } else {
+      high = length - 1
+    }
+  }
+  return characters.slice(characters.length - best).join('').replace(/^\n+/u, '')
+}
+
+function measureTail(value: string): number {
+  return measureTextLines(value)
+}
+
+function measureTextLines(value: string): number {
+  // Preserve single newlines for terminal rows; Pretext measures wrapping within each row.
+  return value.split('\n').reduce((total, row) => {
+    return total + Math.max(1, measureTextWrap(row || ' ', INNER_WIDTH).lineCount)
+  }, 0)
 }
 
 function idleMessage(state: ReadingState): string {
@@ -141,18 +176,34 @@ async function handleSingleTapCount(count: number): Promise<void> {
 
 async function renderState(state: ReadingState): Promise<void> {
   const mode = resolveMode(state)
+  if (mode !== 'harbor') lastHarborTitle = null
   const tapCount = singleTapCountOf(state)
   if (state.revision !== currentRevision) {
     currentRevision = state.revision
     currentMode = mode
     currentPage = 0
     awaitingAdvanceRevision = null
-    pages = state.active && state.bodyText ? paginate(state.bodyText, {
+    pages = mode === 'harbor' ? [] : state.active && state.bodyText ? paginate(state.bodyText, {
       width: INNER_WIDTH,
       height: INNER_HEIGHT,
     }) : []
     lastSingleTapCount = tapCount
-    if (pages.length > 0) {
+    if (mode === 'harbor') {
+      const revision = currentRevision
+      const titleChanged = Boolean(state.title) && state.title !== lastHarborTitle
+      lastHarborTitle = state.title ?? null
+      const content = state.error
+        ? `Terminal Harbor\n\n${state.error}`
+        : harborTail(state.bodyText ?? '')
+      if (titleChanged && state.title) {
+        await textUpgrade(`Harbor\n\n${state.title}`)
+        window.setTimeout(() => {
+          if (currentMode === 'harbor' && currentRevision === revision) void textUpgrade(content)
+        }, 1_000)
+      } else {
+        await textUpgrade(content)
+      }
+    } else if (pages.length > 0) {
       await textUpgrade(pages[0])
     } else {
       await textUpgrade(idleMessage(state))

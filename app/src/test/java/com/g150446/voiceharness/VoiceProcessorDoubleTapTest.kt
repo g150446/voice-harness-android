@@ -19,16 +19,16 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
-    fun `single tap recording is suppressed while reader mode is on`() {
+    fun `single tap recording is suppressed outside AI mode`() {
         assertNull(
             singleTapRecordingCommand(
-                readerModeEnabled = true,
+                interactionMode = InteractionMode.READER,
                 state = VoiceState.READY,
             ),
         )
         assertNull(
             singleTapRecordingCommand(
-                readerModeEnabled = true,
+                interactionMode = InteractionMode.HARBOR,
                 state = VoiceState.RECORDING,
             ),
         )
@@ -38,63 +38,15 @@ class VoiceProcessorDoubleTapTest {
     fun `single tap requests host start or stop when reader mode is off`() {
         assertEquals(
             BLE_RX_START_RECORDING,
-            singleTapRecordingCommand(false, VoiceState.READY),
+            singleTapRecordingCommand(InteractionMode.AI, VoiceState.READY),
         )
         assertEquals(
             BLE_RX_STOP_RECORDING,
-            singleTapRecordingCommand(false, VoiceState.RECORDING),
+            singleTapRecordingCommand(InteractionMode.AI, VoiceState.RECORDING),
         )
         assertEquals(
             BLE_RX_START_RECORDING,
-            singleTapRecordingCommand(false, VoiceState.SPEAKING),
-        )
-    }
-
-    @Test
-    fun `double tap toggles reader mode when idle and G2 is connected`() {
-        assertEquals(
-            ReaderModeDoubleTapAction.ENABLE,
-            readerModeDoubleTapAction(
-                readerModeEnabled = false,
-                g2ClientActive = true,
-                state = VoiceState.READY,
-            ),
-        )
-        assertEquals(
-            ReaderModeDoubleTapAction.DISABLE,
-            readerModeDoubleTapAction(
-                readerModeEnabled = true,
-                g2ClientActive = true,
-                state = VoiceState.READY,
-            ),
-        )
-        assertEquals(
-            ReaderModeDoubleTapAction.DISABLE,
-            readerModeDoubleTapAction(
-                readerModeEnabled = true,
-                g2ClientActive = false,
-                state = VoiceState.READY,
-            ),
-        )
-        assertEquals(
-            ReaderModeDoubleTapAction.NONE,
-            readerModeDoubleTapAction(
-                readerModeEnabled = true,
-                g2ClientActive = true,
-                state = VoiceState.SPEAKING,
-            ),
-        )
-    }
-
-    @Test
-    fun `double tap does not enable reader mode without G2`() {
-        assertEquals(
-            ReaderModeDoubleTapAction.NONE,
-            readerModeDoubleTapAction(
-                readerModeEnabled = false,
-                g2ClientActive = false,
-                state = VoiceState.READY,
-            ),
+            singleTapRecordingCommand(InteractionMode.AI, VoiceState.SPEAKING),
         )
     }
 }

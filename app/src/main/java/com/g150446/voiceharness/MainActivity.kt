@@ -67,6 +67,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.g150446.voiceharness.ui.theme.HarnessVoiceTheme
 import com.g150446.voiceharness.assistant.AssistantRoleManager
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 
 private const val TAG = "MainActivity"
 
@@ -193,6 +196,8 @@ fun HomeScreen(
     val responseOutputTarget by viewModel.responseOutputTarget.collectAsState()
     val smartGlassesState by viewModel.smartGlassesState.collectAsState()
     val readingPassthroughEnabled by viewModel.readingPassthroughEnabled.collectAsState()
+    val interactionMode by viewModel.interactionMode.collectAsState()
+    val harborConnectionState by viewModel.harborConnectionState.collectAsState()
     val gestureCaptureEnabled by viewModel.gestureCaptureEnabled.collectAsState()
     val nodeGestureCaptureEnabled by viewModel.nodeGestureCaptureEnabled.collectAsState()
     val gestureDetectEnabled by viewModel.gestureDetectEnabled.collectAsState()
@@ -211,6 +216,8 @@ fun HomeScreen(
         mutableStateOf(isRingAccessibilityEnabled(context))
     }
     var accessibilitySettingsError by remember { mutableStateOf<String?>(null) }
+    var showHarborManualEntry by remember { mutableStateOf(false) }
+    var harborPairUri by remember { mutableStateOf("") }
     val assistantRoleLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -542,6 +549,113 @@ fun HomeScreen(
         HorizontalDivider(modifier = Modifier.padding(bottom = 12.dp))
 
         Text(
+            text = "操作モード",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            listOf(
+                InteractionMode.AI to "AI対話",
+                InteractionMode.READER to "リーダー",
+                InteractionMode.HARBOR to "Harbor",
+            ).forEach { (mode, label) ->
+                OutlinedButton(
+                    onClick = { viewModel.setInteractionMode(mode) },
+                    enabled = interactionMode != mode,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                ) { Text(label, fontSize = 11.sp) }
+            }
+        }
+        Text(
+            text = "ダブルタップで録音開始 → モード名を話す → ダブルタップで決定",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+        )
+
+        Text(
+            text = "Terminal Harbor",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        )
+        Text(
+            text = when {
+                harborConnectionState.error != null -> harborConnectionState.error!!
+                harborConnectionState.connected && harborConnectionState.workspaceName != null ->
+                    "接続中: ${harborConnectionState.workspaceName}"
+                harborConnectionState.paired ->
+                    "ペアリング済み: ${harborConnectionState.deviceName ?: "Terminal Harbor"}"
+                else -> "未ペアリング"
+            },
+            fontSize = 11.sp,
+            color = if (harborConnectionState.connected) Color(0xFF43A047)
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = {
+                    val options = GmsBarcodeScannerOptions.Builder()
+                        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                        .enableAutoZoom()
+                        .build()
+                    GmsBarcodeScanning.getClient(context, options).startScan()
+                        .addOnSuccessListener { barcode ->
+                            barcode.rawValue?.let(viewModel::pairTerminalHarbor)
+                        }
+                        .addOnFailureListener { error ->
+                            Log.w(TAG, "Terminal Harbor QR scan failed", error)
+                        }
+                },
+            ) { Text("QRでペアリング", fontSize = 11.sp) }
+            TextButton(onClick = { showHarborManualEntry = !showHarborManualEntry }) {
+                Text(if (showHarborManualEntry) "閉じる" else "URIを手入力", fontSize = 11.sp)
+            }
+        }
+        if (showHarborManualEntry) {
+            OutlinedTextField(
+                value = harborPairUri,
+                onValueChange = { harborPairUri = it },
+                label = { Text("harbor://pair URI") },
+                minLines = 2,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = {
+                        viewModel.pairTerminalHarbor(harborPairUri)
+                        harborPairUri = ""
+                        showHarborManualEntry = false
+                    },
+                    enabled = harborPairUri.isNotBlank(),
+                ) { Text("ペアリング") }
+                if (harborConnectionState.paired) {
+                    TextButton(onClick = viewModel::clearTerminalHarborPairing) {
+                        Text("解除")
+                    }
+                }
+            }
+        } else if (harborConnectionState.paired) {
+            TextButton(
+                onClick = viewModel::clearTerminalHarborPairing,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            ) { Text("Terminal Harborのペアリングを解除", fontSize = 11.sp) }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(bottom = 12.dp))
+
+        Text(
             text = "AI返答の出力先",
             fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
@@ -575,6 +689,7 @@ fun HomeScreen(
             !smartGlassesState.connected && !smartGlassesState.linked ->
                 "G2プラグイン未接続（Even Hubで起動）"
             !smartGlassesState.connected -> "G2プラグインが応答していません"
+            interactionMode == InteractionMode.HARBOR -> "G2でHarborモード中"
             smartGlassesState.readingPassthroughActive -> "G2でリーダーモード中"
             smartGlassesState.displaying -> "G2に返答を表示中"
             else -> "G2プラグイン接続済み"

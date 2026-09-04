@@ -60,6 +60,9 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
         BleConnectionService.smartGlassesState
     val readingPassthroughEnabled: StateFlow<Boolean> =
         BleConnectionService.readingPassthroughEnabled
+    val interactionMode: StateFlow<InteractionMode> = BleConnectionService.interactionMode
+    val harborConnectionState: StateFlow<HarborConnectionState> =
+        BleConnectionService.harborConnectionState
 
     val gestureCaptureEnabled: StateFlow<Boolean> =
         BleConnectionService.gestureCaptureEnabled
@@ -137,10 +140,25 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setReadingPassthroughEnabled(enabled: Boolean) {
-        val applied = BleConnectionService.setReadingPassthroughEnabled(getApplication(), enabled)
+        val applied = BleConnectionService.setInteractionMode(
+            getApplication(),
+            if (enabled) InteractionMode.READER else InteractionMode.AI,
+        )
         if (enabled && !applied) {
             BleConnectionService.setResponse("リーダーモードにはG2プラグインの接続が必要です")
         }
+    }
+
+    fun setInteractionMode(mode: InteractionMode) {
+        BleConnectionService.setInteractionMode(getApplication(), mode)
+    }
+
+    fun pairTerminalHarbor(rawUri: String) {
+        BleConnectionService.pairTerminalHarbor(rawUri)
+    }
+
+    fun clearTerminalHarborPairing() {
+        BleConnectionService.clearTerminalHarborPairing()
     }
 
     fun startBleScan() {
