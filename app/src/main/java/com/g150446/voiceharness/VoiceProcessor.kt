@@ -48,6 +48,19 @@ internal fun shouldInterruptOnDoubleTap(state: VoiceState): Boolean = when (stat
     VoiceState.READY, VoiceState.ERROR -> false
 }
 
+/** Ignore residual single-tap after a double-tap (vibration / FW bounce). */
+internal const val SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS = 1_000L
+
+internal fun shouldSuppressSingleTapAfterDouble(
+    nowElapsedMs: Long,
+    lastDoubleTapElapsedMs: Long,
+    windowMs: Long = SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS,
+): Boolean {
+    if (lastDoubleTapElapsedMs <= 0L) return false
+    val elapsed = nowElapsedMs - lastDoubleTapElapsedMs
+    return elapsed in 0 until windowMs
+}
+
 /**
  * Whether a single tap should ask the node to start or stop recording via RX.
  * Reader mode never uses single tap for recording (G2 page advance only).
@@ -128,6 +141,8 @@ internal class VoiceProcessor(
     private val harnessPipelineInterrupted = AtomicBoolean(false)
     /** After cancel-during-RECORDING, ignore the FW TX 0x02 stop so ASR does not run. */
     private val discardNextRecordingStop = AtomicBoolean(false)
+    /** elapsedRealtime of last double-tap; used to ignore residual singles. */
+    @Volatile private var lastDoubleTapElapsedMs = 0L
     private val reminderMutationLock = Any()
     private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
@@ -1291,6 +1306,11 @@ internal class VoiceProcessor(
      * (missed TX 0x01/0x02 after reconnect) cannot block the next start.
      */
     internal fun handleSingleTap() {
+        val now = SystemClock.elapsedRealtime()
+        if (shouldSuppressSingleTapAfterDouble(now, lastDoubleTapElapsedMs)) {
+            Log.i(TAG, "Single tap suppressed after recent double tap")
+            return
+        }
         val command = singleTapRecordingCommand(
             readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
             state = BleConnectionService.voiceState.value,
@@ -1308,6 +1328,14 @@ internal class VoiceProcessor(
         BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
         scope.launch {
             delay(HOST_START_RESYNC_DELAY_MS)
+            if (shouldSuppressSingleTapAfterDouble(
+                    SystemClock.elapsedRealtime(),
+                    lastDoubleTapElapsedMs,
+                )
+            ) {
+                Log.d(TAG, "Single tap start skipped: double tap suppress window")
+                return@launch
+            }
             if (BleConnectionService.voiceState.value == VoiceState.RECORDING) {
                 Log.d(TAG, "Single tap start skipped: already recording")
                 return@launch
@@ -1321,6 +1349,7 @@ internal class VoiceProcessor(
     }
 
     internal fun handleDoubleTap() {
+        lastDoubleTapElapsedMs = SystemClock.elapsedRealtime()
         val voiceState = BleConnectionService.voiceState.value
         if (shouldInterruptOnDoubleTap(voiceState)) {
             interruptHarnessPipeline(voiceState)

@@ -19,6 +19,16 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
+    fun `single tap is suppressed for one second after double tap`() {
+        assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_000L, lastDoubleTapElapsedMs = 0L))
+        assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_000L, lastDoubleTapElapsedMs = 5_000L))
+        assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_500L, lastDoubleTapElapsedMs = 5_000L))
+        assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_999L, lastDoubleTapElapsedMs = 5_000L))
+        assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 6_000L, lastDoubleTapElapsedMs = 5_000L))
+        assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 4_000L, lastDoubleTapElapsedMs = 5_000L))
+    }
+
+    @Test
     fun `single tap recording is suppressed while reader mode is on`() {
         assertNull(
             singleTapRecordingCommand(

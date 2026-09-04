@@ -220,6 +220,8 @@ Button A の single/double click）を使用する。Androidはタップ回数�
 
 double はリーダーモードのトグル（OFF→ON は G2 接続時のみ＋画面抽出 / ON→OFF）。
 切替は G2 にメッセージ表示。プラグイン切断で自動 OFF。処理中はパイプライン割り込み優先。
+double のあと **1 秒間**は single の録音 RX を送らない（残振動で single が続くのを防ぐ。
+UI のタップ回数は増えてよい）。
 ローカルで RECORDING を立てず、必ず TX `0x01`/`0x02` に追従する。
 **GATT 切断時**はアプリの `RECORDING`/`SPEAKING` を `READY` に戻し、録音オーバーレイが
 張り付かないようにする。
