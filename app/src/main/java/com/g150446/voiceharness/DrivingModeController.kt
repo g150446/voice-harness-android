@@ -72,7 +72,8 @@ class DrivingModeController(private val context: Context) {
         BleConnectionService.setDrivingMode(context, next)
     }
 
-    private fun override() = prefs.getInt(KEY_OVERRIDE, -1)
+    /** Default 0 = force NORMAL (no Activity Recognition). Auto is opt-in via setOverride(null). */
+    private fun override() = prefs.getInt(KEY_OVERRIDE, 0)
     private fun currentMode() = when (override()) { 1 -> DrivingMode.DRIVING; else -> DrivingMode.NORMAL }
     private fun pendingIntent(): PendingIntent = PendingIntent.getBroadcast(
         context, PI_REQUEST, Intent(context, DrivingActivityReceiver::class.java).setAction(ACTION_ACTIVITY),

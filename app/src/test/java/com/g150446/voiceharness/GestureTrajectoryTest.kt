@@ -56,6 +56,26 @@ class GestureTrajectoryTest {
     }
 
     @Test
+    fun `detect ack decodes`() {
+        assertEquals(
+            BleEvent.GestureDetectAck(enabled = true),
+            parseGestureDetectAck(byteArrayOf(0x00, 0x55, 0x3A, 0x01)),
+        )
+        assertEquals(
+            BleEvent.GestureDetectAck(enabled = false),
+            parseGestureDetectAck(byteArrayOf(0x00, 0x55, 0x3A, 0x00)),
+        )
+    }
+
+    @Test
+    fun `detect ack rejects truncated and foreign packets`() {
+        assertNull(parseGestureDetectAck(byteArrayOf(0x00, 0x55, 0x3A)))
+        assertNull(parseGestureDetectAck(byteArrayOf(0x00, 0x54, 0x3A, 0x01)))
+        assertNull(parseGestureDetectAck(byteArrayOf(0x00, 0x55, 0x39, 0x01)))
+        assertNull(parseSimpleBleEvent(byteArrayOf(0x00, 0x55, 0x3A)))
+    }
+
+    @Test
     fun `sample layout matches the firmware packing`() {
         assertEquals(27, TRAJECTORY_SAMPLE_BYTES)
         assertEquals(27, sample(0, 0, 0f).size)

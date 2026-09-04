@@ -158,6 +158,15 @@ class BleConnectionService : Service() {
         val nodeGestureCaptureEnabled: StateFlow<Boolean?> =
             _nodeGestureCaptureEnabled.asStateFlow()
 
+        /** Wrist-gesture start/stop; default off (tap-only). */
+        private val _gestureDetectEnabled = MutableStateFlow(false)
+        val gestureDetectEnabled: StateFlow<Boolean> = _gestureDetectEnabled.asStateFlow()
+
+        /** What the node reported over 0x3A, or null while unconfirmed. */
+        private val _nodeGestureDetectEnabled = MutableStateFlow<Boolean?>(null)
+        val nodeGestureDetectEnabled: StateFlow<Boolean?> =
+            _nodeGestureDetectEnabled.asStateFlow()
+
         // Internal setters used by VoiceProcessor (same module/package).
         internal fun setVoiceState(state: VoiceState) { _voiceState.value = state }
         internal fun setTranscription(text: String) { _transcription.value = text }
@@ -203,6 +212,32 @@ class BleConnectionService : Service() {
                 Log.w(
                     TAG,
                     "Gesture capture mismatch: app=${_gestureCaptureEnabled.value} " +
+                        "node=${ack.enabled}",
+                )
+            }
+        }
+
+        fun initializeGestureDetectEnabled(context: Context) {
+            _gestureDetectEnabled.value = GestureDetectPreferences(context).enabled()
+        }
+
+        fun setGestureDetectEnabled(context: Context, enabled: Boolean) {
+            GestureDetectPreferences(context).setEnabled(enabled)
+            _gestureDetectEnabled.value = enabled
+            sendGestureDetect(enabled)
+        }
+
+        /** Re-asserts the switch; the node holds it in RAM only. */
+        private fun sendGestureDetect(enabled: Boolean) {
+            instance?.bleManager?.sendToRx(byteArrayOf(0x07, if (enabled) 0x01 else 0x00))
+        }
+
+        internal fun onGestureDetectAck(ack: BleEvent.GestureDetectAck) {
+            _nodeGestureDetectEnabled.value = ack.enabled
+            if (ack.enabled != _gestureDetectEnabled.value) {
+                Log.w(
+                    TAG,
+                    "Gesture detect mismatch: app=${_gestureDetectEnabled.value} " +
                         "node=${ack.enabled}",
                 )
             }
@@ -301,20 +336,52 @@ class BleConnectionService : Service() {
         }
 
         fun initializeReadingPassthroughEnabled(context: Context) {
-            val enabled = ReadingPassthroughPreferences(context).enabled()
+            // Prefer prefs, but drop stale ON when G2 plugin is not currently connected.
+            val preferred = ReadingPassthroughPreferences(context).enabled()
+            val enabled = preferred && EvenG2ReadingSession.isClientActive()
+            if (preferred && !enabled) {
+                ReadingPassthroughPreferences(context).setEnabled(false)
+            }
             _readingPassthroughEnabled.value = enabled
             EvenG2ReadingSession.setEnabled(enabled)
         }
 
-        fun setReadingPassthroughEnabled(context: Context, enabled: Boolean) {
+        /**
+         * @return true when the requested state was applied (or already matched).
+         * Enabling requires an active Even G2 Voice Harness plugin.
+         */
+        fun setReadingPassthroughEnabled(
+            context: Context,
+            enabled: Boolean,
+            notifyG2: Boolean = true,
+        ): Boolean {
+            if (enabled && !EvenG2ReadingSession.isClientActive()) {
+                Log.i(TAG, "Reader mode enable refused: G2 plugin not connected")
+                return false
+            }
+            if (_readingPassthroughEnabled.value == enabled) {
+                if (enabled) EvenG2ReadingSession.setEnabled(true)
+                return true
+            }
             ReadingPassthroughPreferences(context).setEnabled(enabled)
             _readingPassthroughEnabled.value = enabled
             EvenG2ReadingSession.setEnabled(enabled)
-            if (!enabled) {
+            if (notifyG2 && EvenG2ReadingSession.isClientActive()) {
+                EvenG2ReadingSession.publishReaderModeStatus(enabled)
+            } else if (!enabled) {
                 EvenG2ReadingSession.clearDisplay()
-                instance?.publishEvenG2UiState()
-                setErrorMessage("")
             }
+            instance?.publishEvenG2UiState()
+            if (!enabled) setErrorMessage("")
+            return true
+        }
+
+        /** Drop reader mode when the G2 plugin stops polling (no auto-ON). */
+        fun syncReaderModeWithG2Client(context: Context) {
+            if (!_readingPassthroughEnabled.value) return
+            if (EvenG2ReadingSession.isClientActive()) return
+            Log.i(TAG, "Reader mode auto-off: G2 plugin inactive")
+            setReadingPassthroughEnabled(context, false, notifyG2 = false)
         }
 
         /** Kindle became the foreground app while accessibility is watching. */
@@ -434,6 +501,7 @@ class BleConnectionService : Service() {
         initializeResponseOutputTarget(applicationContext)
         initializeReadingPassthroughEnabled(applicationContext)
         initializeGestureCaptureEnabled(applicationContext)
+        initializeGestureDetectEnabled(applicationContext)
         // Create it up front: `run-as ... tar c files/gesture_trajectories` emits a
         // corrupt archive with no clear error when the directory is missing, and
         // that would surface at the end of a collection day.
@@ -444,6 +512,7 @@ class BleConnectionService : Service() {
         serviceScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(500)
+                syncReaderModeWithG2Client(applicationContext)
                 publishEvenG2UiState()
             }
         }
@@ -473,6 +542,7 @@ class BleConnectionService : Service() {
                             acquireWakeLock()
                             setDrivingMode(applicationContext, drivingModeController.mode.value)
                             sendGestureCapture(_gestureCaptureEnabled.value)
+                            sendGestureDetect(_gestureDetectEnabled.value)
                         }
                         BleConnectionState.SCANNING, BleConnectionState.CONNECTING -> acquireWakeLock()
                         BleConnectionState.DISCONNECTED -> {
@@ -480,6 +550,10 @@ class BleConnectionService : Service() {
                             _nodeDrivingMode.value = null
                             _nodePendingDrivingMode.value = null
                             _nodeGestureCaptureEnabled.value = null
+                            _nodeGestureDetectEnabled.value = null
+                            // Drop phantom RECORDING/SPEAKING so scan/reconnect UI stays usable
+                            // and the recording overlay cannot stick after a link drop.
+                            voiceProcessor?.onBleLinkLost()
                         }
                     }
                 }
@@ -498,6 +572,7 @@ class BleConnectionService : Service() {
                         val event = input.event
                         if (event is BleEvent.OperationModeAck) onOperationModeAck(event)
                         if (event is BleEvent.GestureCaptureAck) onGestureCaptureAck(event)
+                        if (event is BleEvent.GestureDetectAck) onGestureDetectAck(event)
                     }
                     voiceProcessor?.handleBleInput(input)
                 }

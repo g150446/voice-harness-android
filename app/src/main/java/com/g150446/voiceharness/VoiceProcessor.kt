@@ -10,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -46,13 +47,13 @@ internal fun shouldInterruptOnDoubleTap(state: VoiceState): Boolean = when (stat
 
 /**
  * Whether a single tap should ask the node to start or stop recording via RX.
- * Passthrough mode never uses single tap for recording (G2 page advance only).
+ * Reader mode never uses single tap for recording (G2 page advance only).
  */
 internal fun singleTapRecordingCommand(
-    passthroughEnabled: Boolean,
+    readerModeEnabled: Boolean,
     state: VoiceState,
 ): Byte? {
-    if (passthroughEnabled) return null
+    if (readerModeEnabled) return null
     return when (state) {
         VoiceState.RECORDING -> BLE_RX_STOP_RECORDING
         VoiceState.READY, VoiceState.ERROR, VoiceState.SPEAKING,
@@ -60,28 +61,31 @@ internal fun singleTapRecordingCommand(
     }
 }
 
-/** Passthrough double-tap: ON→OFF exit, OFF→ON enter (when not interrupting). */
-internal enum class PassthroughDoubleTapAction {
+/** Reader-mode double-tap: ON→OFF, OFF→ON only when G2 is connected (when not interrupting). */
+internal enum class ReaderModeDoubleTapAction {
     NONE,
     ENABLE,
     DISABLE,
 }
 
-internal fun passthroughDoubleTapAction(
-    passthroughEnabled: Boolean,
+internal fun readerModeDoubleTapAction(
+    readerModeEnabled: Boolean,
+    g2ClientActive: Boolean,
     state: VoiceState,
-): PassthroughDoubleTapAction {
-    if (shouldInterruptOnDoubleTap(state)) return PassthroughDoubleTapAction.NONE
-    return if (passthroughEnabled) {
-        PassthroughDoubleTapAction.DISABLE
-    } else {
-        PassthroughDoubleTapAction.ENABLE
+): ReaderModeDoubleTapAction {
+    if (shouldInterruptOnDoubleTap(state)) return ReaderModeDoubleTapAction.NONE
+    return when {
+        readerModeEnabled -> ReaderModeDoubleTapAction.DISABLE
+        g2ClientActive -> ReaderModeDoubleTapAction.ENABLE
+        else -> ReaderModeDoubleTapAction.NONE
     }
 }
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
 private const val KINDLE_CAPTURE_ATTEMPTS = 3
 private const val KINDLE_CAPTURE_DELAY_MS = 450L
+/** Let the node audio thread apply RX stop before RX start after a phantom session. */
+private const val HOST_START_RESYNC_DELAY_MS = 150L
 
 /**
  * Owns the audio processing pipeline: PCM buffering → VAD → on-device STT/LLM → TTS.
@@ -326,7 +330,7 @@ internal class VoiceProcessor(
 
         if (BleConnectionService.readingPassthroughEnabled.value) {
             pipelineTiming.start(SystemClock.elapsedRealtime())
-            BleConnectionService.setTranscription("パススルーモード")
+            BleConnectionService.setTranscription("リーダーモード")
             BleConnectionService.setResponse("")
             BleConnectionService.setErrorMessage("")
             BleConnectionService.setVoiceState(VoiceState.RESPONDING)
@@ -540,11 +544,23 @@ internal class VoiceProcessor(
                 ?.takeIf { resetParse.shouldReset && it.isNotEmpty() }
                 ?: transcribed
             val screenContext = takePendingHarnessScreen()
-            val readingPassthrough = ReadingPassthrough.isRequested(query)
-            if (readingPassthrough) {
-                BleConnectionService.setReadingPassthroughEnabled(appContext, true)
+            val readerModeRequested = ReadingPassthrough.isRequested(query)
+            if (readerModeRequested) {
+                val enabled = BleConnectionService.setReadingPassthroughEnabled(appContext, true)
+                if (!enabled) {
+                    val message = "リーダーモードにはG2プラグインの接続が必要です"
+                    BleConnectionService.setResponse(message)
+                    saveHistoryEntry(
+                        transcription = BleConnectionService.transcription.value,
+                        response = message,
+                        isSilent = false,
+                        errorMessage = message,
+                    )
+                    presentResponse(message)
+                    return
+                }
             }
-            if (readingPassthrough && screenContext?.isEmpty != false) {
+            if (readerModeRequested && screenContext?.isEmpty != false) {
                 val message = "画面の本文を取得できませんでした"
                 BleConnectionService.setResponse(message)
                 saveHistoryEntry(
@@ -558,7 +574,7 @@ internal class VoiceProcessor(
             }
             val chat = assistantGateway.submit(
                 AssistantRequest(
-                    text = if (readingPassthrough) {
+                    text = if (readerModeRequested) {
                         ReadingPassthrough.extractionPrompt(query)
                     } else {
                         query
@@ -594,7 +610,7 @@ internal class VoiceProcessor(
                 handleReminderToolCall(reminderCall.argumentsJson)
             } else {
                 val responseText = chatResult.text
-                if (readingPassthrough) {
+                if (readerModeRequested) {
                     // Screen-derived book text is transient: do not retain it in the shared
                     // conversation after the extraction turn.
                     assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
@@ -1096,7 +1112,7 @@ internal class VoiceProcessor(
         sourceContext: ScreenContext? = null,
         saveHistory: Boolean = true,
         silentFailure: Boolean = false,
-        successLabel: String = "読書パススルーを開始しました（G2）",
+        successLabel: String = "リーダーモードを開始しました（G2）",
     ) {
         commitPipelineTiming()
         if (!BleConnectionService.readingPassthroughEnabled.value) {
@@ -1115,7 +1131,7 @@ internal class VoiceProcessor(
                 speakResponse(message)
             } else {
                 BleConnectionService.setVoiceState(VoiceState.READY)
-                Log.w(TAG, "Auto passthrough extraction empty")
+                Log.w(TAG, "Auto reader-mode extraction empty")
             }
             return
         }
@@ -1137,7 +1153,7 @@ internal class VoiceProcessor(
             tts?.stop()
             BleConnectionService.setPhonePlaybackActive(false)
             BleConnectionService.setVoiceState(VoiceState.READY)
-            Log.d(TAG, "Reading passthrough started on Even G2 (${text.length} chars)")
+            Log.d(TAG, "Reader mode started on Even G2 (${text.length} chars)")
             return
         }
 
@@ -1151,12 +1167,12 @@ internal class VoiceProcessor(
             speakResponse(message)
         } else {
             BleConnectionService.setVoiceState(VoiceState.READY)
-            Log.w(TAG, "Auto passthrough skipped: $message")
+            Log.w(TAG, "Auto reader-mode skipped: $message")
         }
     }
 
     private suspend fun processArmedReadingPassthrough() {
-        val command = "ホーム画面からパススルーモード"
+        val command = "ホーム画面からリーダーモード"
         try {
             val screenContext = takePendingHarnessScreen()
             if (!BleConnectionService.readingPassthroughEnabled.value) {
@@ -1173,8 +1189,8 @@ internal class VoiceProcessor(
             }
             extractAndPresentReadingPassthrough(command, screenContext)
         } catch (error: Exception) {
-            Log.e(TAG, "Armed reading passthrough failed", error)
-            val message = "パススルーエラー: ${error.message}"
+            Log.e(TAG, "Armed reader mode failed", error)
+            val message = "リーダーモードエラー: ${error.message}"
             BleConnectionService.setResponse(message)
             BleConnectionService.setErrorMessage(message)
             saveHistoryEntry(command, message, isSilent = false, errorMessage = message)
@@ -1189,7 +1205,7 @@ internal class VoiceProcessor(
         command: String,
         screenContext: ScreenContext,
         silentFailure: Boolean = false,
-        successLabel: String = "読書パススルーを開始しました（G2）",
+        successLabel: String = "リーダーモードを開始しました（G2）",
     ) {
         val ready = aiBackend.ensureReady()
         if (ready.isFailure) {
@@ -1201,7 +1217,7 @@ internal class VoiceProcessor(
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
             } else {
                 BleConnectionService.setVoiceState(VoiceState.READY)
-                Log.w(TAG, "Auto passthrough model not ready: $message")
+                Log.w(TAG, "Auto reader-mode model not ready: $message")
             }
             return
         }
@@ -1238,30 +1254,46 @@ internal class VoiceProcessor(
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
             } else {
                 BleConnectionService.setVoiceState(VoiceState.READY)
-                Log.w(TAG, "Auto passthrough chat failed: $message")
+                Log.w(TAG, "Auto reader-mode chat failed: $message")
             }
         }
     }
 
     /**
      * Single tap (FW 0.0.94+ notify-only): host authorizes recording via RX,
-     * except in passthrough mode where G2 advances pages from singleTapCount.
+     * except in reader mode where G2 advances pages from singleTapCount.
+     *
+     * Start path sends stop then start so a phantom FW recording session
+     * (missed TX 0x01/0x02 after reconnect) cannot block the next start.
      */
     internal fun handleSingleTap() {
         val command = singleTapRecordingCommand(
-            passthroughEnabled = BleConnectionService.readingPassthroughEnabled.value,
+            readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
             state = BleConnectionService.voiceState.value,
         )
         if (command == null) {
-            Log.i(TAG, "Single tap: no recording command (passthrough or ignored state)")
+            Log.i(TAG, "Single tap: no recording command (reader mode or ignored state)")
             return
         }
-        Log.i(
-            TAG,
-            "Single tap: host-authorized recording " +
-                if (command == BLE_RX_START_RECORDING) "start" else "stop",
-        )
-        BleConnectionService.sendCommand(command)
+        if (command == BLE_RX_STOP_RECORDING) {
+            Log.i(TAG, "Single tap: host-authorized recording stop")
+            BleConnectionService.sendCommand(command)
+            return
+        }
+        Log.i(TAG, "Single tap: host-authorized recording start (stop-then-start)")
+        BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
+        scope.launch {
+            delay(HOST_START_RESYNC_DELAY_MS)
+            if (BleConnectionService.voiceState.value == VoiceState.RECORDING) {
+                Log.d(TAG, "Single tap start skipped: already recording")
+                return@launch
+            }
+            if (BleConnectionService.readingPassthroughEnabled.value) {
+                Log.d(TAG, "Single tap start skipped: reader mode enabled")
+                return@launch
+            }
+            BleConnectionService.sendCommand(BLE_RX_START_RECORDING)
+        }
     }
 
     internal fun handleDoubleTap() {
@@ -1271,47 +1303,52 @@ internal class VoiceProcessor(
             return
         }
         when (
-            passthroughDoubleTapAction(
-                passthroughEnabled = BleConnectionService.readingPassthroughEnabled.value,
+            readerModeDoubleTapAction(
+                readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
+                g2ClientActive = EvenG2ReadingSession.isClientActive(),
                 state = voiceState,
             )
         ) {
-            PassthroughDoubleTapAction.DISABLE -> {
+            ReaderModeDoubleTapAction.DISABLE -> {
                 BleConnectionService.setReadingPassthroughEnabled(appContext, false)
-                BleConnectionService.setResponse("パススルーモードを終了しました")
+                BleConnectionService.setResponse("リーダーモードを終了しました")
                 BleConnectionService.setErrorMessage("")
-                Log.i(TAG, "Double tap: passthrough disabled")
+                Log.i(TAG, "Double tap: reader mode disabled")
             }
-            PassthroughDoubleTapAction.ENABLE -> {
-                BleConnectionService.setReadingPassthroughEnabled(appContext, true)
+            ReaderModeDoubleTapAction.ENABLE -> {
+                val enabled = BleConnectionService.setReadingPassthroughEnabled(appContext, true)
+                if (!enabled) {
+                    Log.i(TAG, "Double tap: reader mode enable refused (G2 inactive)")
+                    return
+                }
                 scope.launch(Dispatchers.IO) {
                     startReadingPassthroughFromCurrentScreen(
-                        command = "ダブルタップでパススルー開始",
+                        command = "ダブルタップでリーダーモード開始",
                         silentFailure = false,
                     )
                 }
-                Log.i(TAG, "Double tap: passthrough enabled")
+                Log.i(TAG, "Double tap: reader mode enabled")
             }
-            PassthroughDoubleTapAction.NONE -> {
+            ReaderModeDoubleTapAction.NONE -> {
                 Log.d(TAG, "Double tap ignored")
             }
         }
     }
 
     /**
-     * Accessibility saw Kindle move to the foreground while passthrough is armed.
+     * Accessibility saw Kindle move to the foreground while reader mode is armed.
      * Starts extraction without a harness-node gesture. Failures stay silent.
      */
     internal fun onKindleBecameForeground() {
         if (!BleConnectionService.readingPassthroughEnabled.value) return
         val voiceState = BleConnectionService.voiceState.value
         if (voiceState != VoiceState.READY && voiceState != VoiceState.ERROR) {
-            Log.d(TAG, "Auto passthrough skipped: voiceState=$voiceState")
+            Log.d(TAG, "Auto reader-mode skipped: voiceState=$voiceState")
             return
         }
         val snapshot = EvenG2ReadingSession.snapshot(BleConnectionService.doubleTapStatus.value.count)
         if (snapshot.active && snapshot.mode == EvenG2DisplayMode.READING) {
-            Log.d(TAG, "Auto passthrough skipped: reading session already active")
+            Log.d(TAG, "Auto reader-mode skipped: reading session already active")
             return
         }
         scope.launch(Dispatchers.IO) {
@@ -1324,13 +1361,13 @@ internal class VoiceProcessor(
                 return@launch
             }
             if (!KindlePageTurnController.isKindlePackage(KindlePageTurnController.foregroundPackage())) {
-                Log.d(TAG, "Auto passthrough skipped: Kindle no longer foreground")
+                Log.d(TAG, "Auto reader-mode skipped: Kindle no longer foreground")
                 return@launch
             }
             startReadingPassthroughFromCurrentScreen(
-                command = "Kindle前面で自動パススルー",
+                command = "Kindle前面で自動リーダーモード",
                 silentFailure = true,
-                successLabel = "読書パススルーを開始しました（G2・自動）",
+                successLabel = "リーダーモードを開始しました（G2・自動）",
             )
         }
     }
@@ -1364,7 +1401,7 @@ internal class VoiceProcessor(
     private suspend fun startReadingPassthroughFromCurrentScreen(
         command: String,
         silentFailure: Boolean,
-        successLabel: String = "読書パススルーを開始しました（G2）",
+        successLabel: String = "リーダーモードを開始しました（G2）",
     ) {
         if (!readingInitialCaptureInFlight.compareAndSet(false, true)) {
             Log.d(TAG, "Reading capture ignored: already in flight")
@@ -1389,7 +1426,7 @@ internal class VoiceProcessor(
                     BleConnectionService.setResponse(message)
                     BleConnectionService.setErrorMessage(message)
                 } else {
-                    Log.w(TAG, "Auto passthrough capture empty")
+                    Log.w(TAG, "Auto reader-mode capture empty")
                 }
                 BleConnectionService.setVoiceState(VoiceState.READY)
                 return
@@ -1412,9 +1449,9 @@ internal class VoiceProcessor(
                 successLabel = successLabel,
             )
         } catch (error: Exception) {
-            Log.e(TAG, "Reading passthrough failed", error)
+            Log.e(TAG, "Reader mode failed", error)
             if (!silentFailure) {
-                val message = "パススルーエラー: ${error.message}"
+                val message = "リーダーモードエラー: ${error.message}"
                 BleConnectionService.setResponse(message)
                 BleConnectionService.setErrorMessage(message)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
@@ -1641,17 +1678,22 @@ internal class VoiceProcessor(
     }
 
     fun disconnect() {
+        onBleLinkLost()
+    }
+
+    /** BLE GATT dropped: abort live capture so UI is not stuck on Recording. */
+    internal fun onBleLinkLost() {
         tts?.stop()
         BleConnectionService.setPhonePlaybackActive(false)
-        EvenG2ReadingSession.clearDisplay()
-        readingSourceContext = null
-        readingPageTurnGesture = PageTurnGesture.UNKNOWN
         isCollectingPcm = false
         pcmBuffer.reset()
         sileroVad?.reset()
+        recordingStartedAtElapsedMs = 0L
+        recordingStartedAtWallMs = 0L
         BleConnectionService.setBleMode(false)
         val currentState = BleConnectionService.voiceState.value
         if (currentState == VoiceState.RECORDING || currentState == VoiceState.SPEAKING) {
+            Log.i(TAG, "BLE link lost while $currentState — resetting to READY")
             BleConnectionService.setVoiceState(VoiceState.READY)
         }
     }

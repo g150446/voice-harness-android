@@ -1,6 +1,6 @@
 # Even Realities G2 への移植可否検討
 
-> **実装ステータス（2026-09）:** AI返答表示と読書パススルーのランタイムは Even G2
+> **実装ステータス（2026-09）:** AI返答表示とリーダーモードのランタイムは Even G2
 > （`EvenG2ReadingSession` + loopback bridge + Even Hub プラグイン）へ切り替え済み。
 > Z100 の `SmartGlassesOutputManager` は実行パスから外し、コード/SDK依存のみ残置。
 

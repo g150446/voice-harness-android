@@ -45,21 +45,22 @@ Qwen3-ASR 対応済みの公式 llama.cpp Android arm64 release `b9637` を使�
 
 ```bash
 ./scripts/prepare-qwen-asr-native.sh
-./gradlew :app:assembleDebug
-./gradlew :app:installDebug
+./scripts/install-usb.sh
 ```
 
 ### Tailscale 経由の ADB（例: razr 50s）
 
-一度 USB で `adb tcpip 5555` を有効化したあと:
+**APK インストールは USB 推奨**（`./scripts/install-usb.sh`）。巨大 debug APK を
+Tailscale 経由で入れるとタイムアウトし、古いプロセスが残ることがある。
+
+一度 USB で `adb tcpip 5555` を有効化したあと（logcat 等）:
 
 ```bash
-adb connect 100.102.210.64:5555   # motorola-razr-50s の Tailscale IP
-./gradlew :app:installDebug
+./scripts/adb-tailscale.sh connect
+adb logcat -s VoiceProcessor BleManager
 ```
 
-再起動後に 5555 が閉じた場合は、再度 USB で `adb tcpip 5555` が必要。
-
+再起動後に 5555 が閉じた場合は、再度 USB で `./scripts/adb-tailscale.sh enable-usb`。
 ## 実行フロー
 
 ### HarnessNode（BLE）

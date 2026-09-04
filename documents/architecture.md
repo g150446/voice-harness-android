@@ -145,7 +145,7 @@ ROLE_ASSISTANT
 
 シングルタップ `0x14` / ダブルタップ `0x12` は同じ入力 Channel で受信し、Service が
 回数を UI と G2 ブリッジへ公開する。FW `0.0.94+` ではどちらも notify-only。
-single はホスト承認録音または G2 ページ送り、double はパススルー トグル／パイプライン割り込み。
+single はホスト承認録音または G2 ページ送り、double はリーダーモード トグル／パイプライン割り込み。
 
 ### バックグラウンド動作の仕組み
 
@@ -185,15 +185,16 @@ nRF52840                        Android
 
 アプリ状態は常に TX `0x01`/`0x02` に追従する。開始のきっかけは次のいずれか:
 
-| 経路 | FW `0.0.94+` | Android |
+| 経路 | FW `0.0.95+` | Android |
 |---|---|---|
-| 手首ジェスチャー | 自律で `0x01`/`0x02` | 追従のみ |
-| シングルタップ (`0x14`) | **notify-only** | パススルー OFF 時に RX `0x01`/`0x00` でホスト承認 |
-| パススルー ON の single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
-| ダブルタップ (`0x12`) | notify-only | パススルー ON/OFF トグル（処理中は割り込み） |
+| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | リーダーモード OFF 時に RX `0x01`/`0x00` でホスト承認 |
+| 手首ジェスチャー | 検出スイッチ ON 時のみ自律 `0x01`/`0x02`（**既定 OFF**） | ホーム「ジェスチャー録音」→ RX `0x07` |
+| リーダーモード ON の single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
+| ダブルタップ (`0x12`) | notify-only | リーダーモード ON/OFF（ON は G2 接続時のみ。処理中は割り込み） |
 
 無音による RX `0x00` 自動停止は廃止済み。  
-詳細は [`ble_protocol.md`](ble_protocol.md) / [`smart_glasses_output.md`](smart_glasses_output.md)。
+詳細は [`ble_protocol.md`](ble_protocol.md) / [`gesture_detect_default_off.md`](gesture_detect_default_off.md) /
+[`smart_glasses_output.md`](smart_glasses_output.md)。
 
 1秒以上の録音では、16 kHz / 16-bit / monoから算出したPCM時間が壁時計の録音時間の
 70%未満ならASRへ進めない。これは欠落音声による無関係な文字列生成を防ぐ境界であり、

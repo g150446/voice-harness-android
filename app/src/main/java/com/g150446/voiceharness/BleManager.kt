@@ -67,6 +67,12 @@ sealed class BleEvent {
      * request still holds.
      */
     data class GestureCaptureAck(val enabled: Boolean) : BleEvent()
+
+    /**
+     * Gesture detect switch ack (event 0x3A). Independent of driving mode and
+     * of trajectory capture. Default off on the node; RAM only.
+     */
+    data class GestureDetectAck(val enabled: Boolean) : BleEvent()
     /** Live milestone/reject sample (event 0x30). Not used for voice pipeline. */
     data class GestureDiag(
         val stage: Int,
@@ -108,6 +114,13 @@ internal fun parseGestureCaptureAck(data: ByteArray): BleEvent.GestureCaptureAck
     return BleEvent.GestureCaptureAck(enabled = data[3].toInt() != 0)
 }
 
+/** Parses the gesture detect ack (event 0x3A, 4 bytes fixed). */
+internal fun parseGestureDetectAck(data: ByteArray): BleEvent.GestureDetectAck? {
+    if (data.size < 4 || (data[1].toInt() and 0xFF) != 0x55) return null
+    if ((data[2].toInt() and 0xFF) != 0x3A) return null
+    return BleEvent.GestureDetectAck(enabled = data[3].toInt() != 0)
+}
+
 /**
  * Parses the operation mode ack (event 0x40, 5 bytes fixed). Kept out of
  * [parseSimpleBleEvent], which only handles payload-free events.
@@ -146,7 +159,33 @@ class BleManager(
         val BATTERY_SERVICE_UUID: UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
         val BATTERY_LEVEL_CHAR_UUID: UUID = UUID.fromString("00002A19-0000-1000-8000-00805f9b34fb")
         const val SCAN_TIMEOUT_MS = 30_000L
+        /** Exact XIAO name; Echo advertises `HarnessNode-Echo` (prefix match). */
         const val DEVICE_NAME = "HarnessNode"
+
+        fun isHarnessNodeName(name: String): Boolean =
+            name == DEVICE_NAME || name.startsWith("$DEVICE_NAME-")
+
+        /**
+         * Whether a scan hit should satisfy an auto-reconnect target.
+         * Exact MAC wins; otherwise a HarnessNode name match covers RPA rotation.
+         */
+        fun matchesReconnectTarget(
+            resultAddress: String,
+            resultName: String,
+            targetAddress: String?,
+            preferredName: String?,
+        ): Boolean {
+            if (targetAddress != null && resultAddress.equals(targetAddress, ignoreCase = true)) {
+                return true
+            }
+            if (targetAddress == null) return false
+            if (!isHarnessNodeName(resultName)) return false
+            val preferred = preferredName?.trim().orEmpty()
+            return preferred.isEmpty() ||
+                preferred == resultName ||
+                isHarnessNodeName(preferred) ||
+                preferred == DEVICE_NAME
+        }
     }
 
     private val preferences = BleConnectionPreferences(context)
@@ -365,7 +404,7 @@ class BleManager(
             val uuids = result.scanRecord?.serviceUuids
             val deviceName = result.device.name ?: result.scanRecord?.deviceName ?: ""
             val hasServiceUuid = uuids != null && uuids.contains(ParcelUuid(SERVICE_UUID))
-            val hasDeviceName = deviceName == DEVICE_NAME
+            val hasDeviceName = isHarnessNodeName(deviceName)
 
             Log.v(TAG, "Scan result: addr=${result.device.address} name=$deviceName uuid=$hasServiceUuid")
 
@@ -376,12 +415,45 @@ class BleManager(
             Log.d(TAG, "HarnessNode found: addr=${result.device.address} name=$deviceName uuid=$hasServiceUuid")
             updateScannedDevice(result)
             val targetAddress = pendingTargetAddress
-            if (targetAddress != null && result.device.address == targetAddress) {
+            val preferred = _preferredDevice.value
+            val shouldConnect =
+                when (scanPurpose) {
+                    ScanPurpose.AUTO_CONNECT, ScanPurpose.MANUAL_CONNECT ->
+                        matchesReconnectTarget(
+                            resultAddress = result.device.address,
+                            resultName = deviceName,
+                            targetAddress = targetAddress,
+                            preferredName = preferred?.name,
+                        )
+                    ScanPurpose.MANUAL_SCAN, null -> false
+                }
+            if (shouldConnect) {
+                val addressMatch =
+                    targetAddress != null &&
+                        result.device.address.equals(targetAddress, ignoreCase = true)
+                if (!addressMatch && targetAddress != null) {
+                    Log.i(
+                        TAG,
+                        "Preferred node MAC changed: $targetAddress → ${result.device.address} " +
+                            "(name=$deviceName); updating preferred and connecting",
+                    )
+                    val updated = BleDeviceInfo(
+                        address = result.device.address,
+                        name = deviceName.ifBlank { preferred?.name ?: DEVICE_NAME },
+                        rssi = result.rssi,
+                    )
+                    preferences.savePreferredDevice(updated, autoReconnectEnabled = true)
+                    _preferredDevice.value = updated
+                }
                 scanTimeoutJob?.cancel()
                 bluetoothManager?.let { stopScan(it) }
                 connectGatt(result.device, scanPurpose ?: ScanPurpose.MANUAL_CONNECT)
             } else if (targetAddress != null) {
-                Log.w(TAG, "Address mismatch: expected=$targetAddress found=${result.device.address}")
+                Log.w(
+                    TAG,
+                    "Address mismatch: expected=$targetAddress found=${result.device.address} " +
+                        "name=$deviceName (listed for manual connect)",
+                )
             }
         }
 
@@ -594,18 +666,7 @@ class BleManager(
                     Log.d(TAG, "Battery level: $level%")
                     _batteryLevel.value = level
                 }
-                // Only claim primary when the preference is ANDROID.
-                // In MAC_HANDY mode we must NOT send 0x02 here, because the retry
-                // sends (300 ms / 600 ms) would race against and override the 0x03
-                // yield that the 0x31 handler issues when Handy connects.
-                val priority = preferences.connectionPriority()
-                if (priority != ConnectionPriority.MAC_HANDY) {
-                    sendToRxWithRetry(0x02.toByte())
-                    _isPrimary.value = true
-                    Log.d(TAG, "Role declared: primary (preference=$priority)")
-                } else {
-                    Log.d(TAG, "Role: not claiming primary (preference=MAC_HANDY)")
-                }
+                claimPrimaryAndResetRecording()
             }
         }
 
@@ -622,17 +683,30 @@ class BleManager(
                     Log.d(TAG, "Battery level: $level%")
                     _batteryLevel.value = level
                 }
-                // Only claim primary when the preference is ANDROID (see sibling override above).
-                val priority = preferences.connectionPriority()
-                if (priority != ConnectionPriority.MAC_HANDY) {
-                    sendToRxWithRetry(0x02.toByte())
-                    _isPrimary.value = true
-                    Log.d(TAG, "Role declared: primary (preference=$priority)")
-                } else {
-                    Log.d(TAG, "Role: not claiming primary (preference=MAC_HANDY)")
-                }
+                claimPrimaryAndResetRecording()
             }
         }
+    }
+
+    /**
+     * Claim primary (unless Mac Handy owns audio) and clear any stuck FW recording
+     * session left over from a missed TX 0x01/0x02 after reconnect.
+     */
+    private fun claimPrimaryAndResetRecording() {
+        // In MAC_HANDY mode we must NOT send 0x02 here, because the retry
+        // sends (300 ms / 600 ms) would race against and override the 0x03
+        // yield that the 0x31 handler issues when Handy connects.
+        val priority = preferences.connectionPriority()
+        if (priority != ConnectionPriority.MAC_HANDY) {
+            sendToRxWithRetry(0x02.toByte())
+            _isPrimary.value = true
+            Log.d(TAG, "Role declared: primary (preference=$priority)")
+        } else {
+            Log.d(TAG, "Role: not claiming primary (preference=MAC_HANDY)")
+        }
+        // Always clear a phantom recording so the next host-authorized start works.
+        sendToRx(byteArrayOf(0x00))
+        Log.d(TAG, "Sent RX stop to clear any stuck node recording state")
     }
 
     private fun handleCharacteristicData(uuid: UUID, data: ByteArray) {
@@ -824,6 +898,7 @@ class BleManager(
                         BleEvent.PeerDisconnected
                     }
                     0x39 -> parseGestureCaptureAck(data)
+                    0x3A -> parseGestureDetectAck(data)
                     0x40 -> parseOperationModeAck(data)
                     else -> null
                 } ?: return

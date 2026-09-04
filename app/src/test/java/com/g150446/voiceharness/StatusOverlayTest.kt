@@ -22,7 +22,7 @@ class StatusOverlayTest {
             glassesState = readingState(page = 2, pageCount = 4),
         )
         assertEquals(HarnessOverlayStatus.ReadingPassthrough(2, 4), status)
-        assertEquals("パススルー 2/4", readingPassthroughOverlayLabel(2, 4))
+        assertEquals("リーダー 2/4", readingPassthroughOverlayLabel(2, 4))
     }
 
     @Test

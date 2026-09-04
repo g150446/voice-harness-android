@@ -8,10 +8,16 @@ import org.junit.Test
 
 class ReadingPassthroughTest {
     @Test
-    fun `recognizes explicit Japanese and English passthrough commands`() {
-        assertTrue(ReadingPassthrough.isRequested("パススルーモードに入って"))
-        assertTrue(ReadingPassthrough.isRequested("Start passthrough mode"))
+    fun `recognizes explicit Japanese and English reader mode commands`() {
+        assertTrue(ReadingPassthrough.isRequested("リーダーモードに入って"))
+        assertTrue(ReadingPassthrough.isRequested("Start reader mode"))
         assertTrue(ReadingPassthrough.isRequested("画面の本文をVuzixに表示して"))
+    }
+
+    @Test
+    fun `does not recognize legacy passthrough phrasing`() {
+        assertFalse(ReadingPassthrough.isRequested("パススルーモードに入って"))
+        assertFalse(ReadingPassthrough.isRequested("Start passthrough mode"))
     }
 
     @Test

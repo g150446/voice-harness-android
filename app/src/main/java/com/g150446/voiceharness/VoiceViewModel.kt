@@ -66,6 +66,12 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     val nodeGestureCaptureEnabled: StateFlow<Boolean?> =
         BleConnectionService.nodeGestureCaptureEnabled
+
+    val gestureDetectEnabled: StateFlow<Boolean> =
+        BleConnectionService.gestureDetectEnabled
+
+    val nodeGestureDetectEnabled: StateFlow<Boolean?> =
+        BleConnectionService.nodeGestureDetectEnabled
     val lastPipelineMs: StateFlow<Long> = BleConnectionService.lastPipelineMs
     val modelStatus: StateFlow<ModelStatus> = ModelManager.status
 
@@ -131,7 +137,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setReadingPassthroughEnabled(enabled: Boolean) {
-        BleConnectionService.setReadingPassthroughEnabled(getApplication(), enabled)
+        val applied = BleConnectionService.setReadingPassthroughEnabled(getApplication(), enabled)
+        if (enabled && !applied) {
+            BleConnectionService.setResponse("リーダーモードにはG2プラグインの接続が必要です")
+        }
     }
 
     fun startBleScan() {
@@ -185,6 +194,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setGestureCaptureEnabled(enabled: Boolean) {
         BleConnectionService.setGestureCaptureEnabled(getApplication(), enabled)
+    }
+
+    fun setGestureDetectEnabled(enabled: Boolean) {
+        BleConnectionService.setGestureDetectEnabled(getApplication(), enabled)
     }
 
     fun openReminders() {

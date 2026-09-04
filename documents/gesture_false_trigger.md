@@ -3,6 +3,12 @@
 2026-08-31、内科外来中（10:00–12:00）の録音開始4件が全て誤発火であることをユーザーが確認した。
 その解析結果と、Android 側に入れた対策の記録。
 
+> **2026-09-04 追記:** 閾値では分離できない結論を受け、日常利用ではジェスチャー自体を
+> **既定オフ（タップのみ）** にした。FW `0.0.95` の検出スイッチ（RX `0x07`）と
+> アプリの「ジェスチャー録音」Switch。詳細は
+> [`gesture_detect_default_off.md`](gesture_detect_default_off.md)。
+> 発話ゲート・IMU 軌跡収集（学習用）は引き続き有効。
+
 ## 解析: 閾値では分離できない
 
 端末の履歴100件（`shared_prefs/voice_history_prefs.xml`、各エントリに FW ジェスチャー診断が
@@ -115,7 +121,7 @@ blockedIntent=0 / 32     passedJunk=0 / 22
 TTSを停止して状態を `READY` に戻し、画面と履歴に「中断しました」を残す。
 
 `RECORDING` は対象外で、録音停止は従来どおりジェスチャーが担う。処理中でない場合の
-処理中でない double は読書パススルーの ON/OFF トグル（G2 ページ送りは single）。
+処理中でない double はリーダーモードの ON/OFF トグル（ON は G2 接続時のみ。G2 ページ送りは single）。
 詳細は [`smart_glasses_output.md`](smart_glasses_output.md)。
 
 リマインダーは永続化とAlarmManager登録が短い同期区間にあるため、Jobキャンセルだけでは

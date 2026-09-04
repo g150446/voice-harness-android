@@ -66,8 +66,8 @@ class UtteranceIntentGateTest {
     @Test
     fun `intentional commands pass`() {
         listOf(
-            "ホーム画面からパススルーモード",
-            "パススルーモードに入って",
+            "ホーム画面からリーダーモード",
+            "リーダーモードに入って",
             "リンゴと一言言って",
             "みかんと一言答えてる",
             "玉ねぎと一言だけ答えて",

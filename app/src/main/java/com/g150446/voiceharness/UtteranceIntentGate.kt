@@ -69,7 +69,7 @@ object UtteranceIntentGate {
     )
 
     /** Phrases that drive app features; the LLM resolves them into tool calls. */
-    private val appCommand = Regex("(パススルー|ホーム画面|リマインダー|コンテキスト)")
+    private val appCommand = Regex("(リーダー|ホーム画面|リマインダー|コンテキスト)")
 
     /**
      * Filler that carries no request. Matched greedily against the whole

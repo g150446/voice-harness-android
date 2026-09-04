@@ -6,9 +6,9 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 
 ```
 [Harness Node]
-  ・手首ジェスチャー → FW 自律 TX 0x01 / 0x02
-  ・シングルタップ (0x14) → ホストが RX 0x01/0x00（パススルー中はページ送りのみ）
-  ・ダブルタップ (0x12) → パススルー ON/OFF（処理中はパイプライン割り込み）
+  ・シングルタップ (0x14) → ホストが RX 0x01/0x00（既定の録音操作・リーダーモード中はページ送りのみ）
+  ・手首ジェスチャー → オプション（既定OFF）。ON 時のみ FW 自律 TX 0x01 / 0x02
+  ・ダブルタップ (0x12) → リーダーモード ON/OFF（ON は G2 接続時のみ。処理中はパイプライン割り込み）
         │ BLE TX 0x01 (録音開始)
         ▼
 [Android: PCM 蓄積]
@@ -29,7 +29,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
         ▼
 [Android TTS or Even G2] → 出力
 
-[読書パススルー]
+[リーダーモード]
+  ・G2 プラグイン接続中のみ ON 可。切断で自動 OFF。切替は G2 に表示
   ・ホームのユーザー補助（Accessibility）必須（Kindle 自動／ページめくり）
   ・G2 プラグインが本文をページ分割、Node シングルタップで送り
 
@@ -72,14 +73,15 @@ OpenRouter は明示オプトイン（API キー + モデル選択が必須）�
 git clone https://github.com/g150446/voice-harness-android.git
 cd voice-harness-android
 ./scripts/prepare-qwen-asr-native.sh
-./gradlew :app:installDebug
+# Large debug APK: prefer USB (Tailscale install often times out and leaves a stale process)
+./scripts/install-usb.sh
 ```
 
-Tailscale 経由の例（razr 50s、事前に `adb tcpip 5555` 済み）:
+Tailscale は **logcat / 小ファイル向け**。APK インストールは USB を推奨:
 
 ```bash
-adb connect 100.102.210.64:5555
-./gradlew :app:installDebug
+./scripts/install-usb.sh          # USB install + tcpip 5555
+./scripts/adb-tailscale.sh connect
 ```
 
 ### 初期設定
@@ -110,19 +112,22 @@ adb connect 100.102.210.64:5555
 
 ## 使い方
 
-### BLE 録音（nRF52840 ジェスチャー）
+### BLE 録音（nRF52840）
 
-1. nRF52840 で録音ジェスチャーを行う
+既定は **シングルタップのみ**（ジェスチャー録音・IMU収集・運転自動判定はいずれもオフ）。
+ホームの「ジェスチャー録音」を ON にすると手首ジェスチャーも使える（Node FW `0.0.95+`）。
+
+1. Node をシングルタップ（またはジェスチャー ON 時は録音ジェスチャー）
 2. **開始キュー音**（上昇2音）が鳴り、PCM を蓄積
    - 他アプリ上では赤いマイク **オーバーレイ**（許可時）と通知「録音中…」
    - 自アプリ UI では **Recording (BLE)...**
-3. 停止ジェスチャーで **終了キュー音**（下降2音）→ `Silero VAD` で音声判定し、必要に応じて FFT フォールバック / rescue → テキスト化・AI 応答・読み上げ
+3. 再度タップ（または停止ジェスチャー）で **終了キュー音**（下降2音）→ `Silero VAD` で音声判定し、必要に応じて FFT フォールバック / rescue → テキスト化・AI 応答・読み上げ
 4. デフォルトアシスタント設定時、録音開始時点の **他アプリ画面**（Assist テキスト + スクショ）を LLM に添付
    - 自アプリ画面・ロック・画面オフでは添付しない
    - JPEG は OpenRouter の画像対応モデルのみ。他バックエンドは画面テキストのみ
 5. 結果は **履歴** に保存される。ジェスチャ時は FW 診断（`0x30`）も同じ履歴に付く
 
-AI が読み上げ中に再度ジェスチャーを行うと、読み上げを中断して新しい対話を開始できる。
+AI が読み上げ中に再度録音操作を行うと、読み上げを中断して新しい対話を開始できる。
 
 キュー音は **メディア音量**（TTS と同じ経路）。マナーモードで通知音が消えていても聞こえる。
 
@@ -165,8 +170,8 @@ QR/URLと`npm run dev`はプラグイン開発時だけ使用する。配布パ�
 # デバッグビルド
 ./gradlew :app:assembleDebug
 
-# デバイスへインストール
-./gradlew :app:installDebug
+# デバイスへインストール（~180MB debug APK は USB 推奨）
+./scripts/install-usb.sh
 
 # ログ確認（VAD・BLE・録音 UI / キュー音）
 adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
@@ -176,10 +181,13 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 ### ADB（USB / Tailscale）
 
 ```bash
-# 初回または再起動後: USB を挿した状態で TCP 5555 を有効化し Tailscale 接続
+# APK インストールは常に USB（不完全インストールで BLE 状態が壊れやすい）
+./scripts/install-usb.sh
+
+# 初回または再起動後: USB で TCP 5555 を有効化し Tailscale 接続
 ./scripts/adb-tailscale.sh enable-usb
 
-# USB を抜いたあと / 別 Mac から: Tailscale IP で再接続のみ
+# USB を抜いたあと / 別 Mac から: Tailscale IP で再接続のみ（logcat 等）
 ./scripts/adb-tailscale.sh connect
 
 ./scripts/adb-tailscale.sh status
@@ -190,7 +198,7 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 - 既定ポート: `5555`
 - 同一 LAN / テザリングのみなら従来どおり `./scripts/adb-wireless.sh`
 - Tailscale 上で端末が online であること（`tailscale status`）
-
+- **APK を Tailscale 経由で入れない**（タイムアウトで古いプロセスが残ることがある）
 
 ### VAD / ASR 幻覚対策メモ
 
@@ -233,6 +241,8 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 ## 詳細ドキュメント
 
 - [`documents/ble_protocol.md`](documents/ble_protocol.md) — BLE パケット仕様（ジェスチャ診断 `0x30` 含む）
+- [`documents/gesture_detect_default_off.md`](documents/gesture_detect_default_off.md) — ジェスチャー/IMU/運転判定の既定 OFF（0.0.95）
+- [`documents/gesture_false_trigger.md`](documents/gesture_false_trigger.md) — 誤発火解析と発話ゲート
 - [`documents/history_feature.md`](documents/history_feature.md) — 会話履歴とジェスチャ判定の保存・UI
 - [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
 - [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Even G2 出力（現行）と Vuzix Z100 アーカイブ仕様
