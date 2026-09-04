@@ -2,13 +2,13 @@ package com.g150446.voiceharness
 
 import org.json.JSONObject
 
-/** Voice intent and text handling for the smart-glasses reading passthrough mode. */
+/** Voice intent and text handling for smart-glasses reader mode. */
 internal object ReadingPassthrough {
     const val NO_READABLE_TEXT = "[NO_READABLE_TEXT]"
 
     private val explicitCommands = listOf(
-        Regex("パス[・ ー-]*スルー(?:モード)?", RegexOption.IGNORE_CASE),
-        Regex("(?:passthrough|pass[ -]?through)(?: mode)?", RegexOption.IGNORE_CASE),
+        Regex("リーダー(?:モード)?", RegexOption.IGNORE_CASE),
+        Regex("reader(?: mode)?", RegexOption.IGNORE_CASE),
     )
 
     private val screenWords = listOf("画面", "表示内容", "本文", "電子書籍", "kindle", "本")
@@ -25,7 +25,7 @@ internal object ReadingPassthrough {
     }
 
     fun extractionPrompt(userCommand: String): String = """
-        Enter reading passthrough mode for the user's command: "$userCommand"
+        Enter reader mode for the user's command: "$userCommand"
         Extract the main ebook or article body that is visible in the supplied screen context.
         Also judge the visible writing direction of that body:
         - VERTICAL = tategaki / columns top-to-bottom, lines progressing right-to-left

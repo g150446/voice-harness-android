@@ -336,20 +336,52 @@ class BleConnectionService : Service() {
         }
 
         fun initializeReadingPassthroughEnabled(context: Context) {
-            val enabled = ReadingPassthroughPreferences(context).enabled()
+            // Prefer prefs, but drop stale ON when G2 plugin is not currently connected.
+            val preferred = ReadingPassthroughPreferences(context).enabled()
+            val enabled = preferred && EvenG2ReadingSession.isClientActive()
+            if (preferred && !enabled) {
+                ReadingPassthroughPreferences(context).setEnabled(false)
+            }
             _readingPassthroughEnabled.value = enabled
             EvenG2ReadingSession.setEnabled(enabled)
         }
 
-        fun setReadingPassthroughEnabled(context: Context, enabled: Boolean) {
+        /**
+         * @return true when the requested state was applied (or already matched).
+         * Enabling requires an active Even G2 Voice Harness plugin.
+         */
+        fun setReadingPassthroughEnabled(
+            context: Context,
+            enabled: Boolean,
+            notifyG2: Boolean = true,
+        ): Boolean {
+            if (enabled && !EvenG2ReadingSession.isClientActive()) {
+                Log.i(TAG, "Reader mode enable refused: G2 plugin not connected")
+                return false
+            }
+            if (_readingPassthroughEnabled.value == enabled) {
+                if (enabled) EvenG2ReadingSession.setEnabled(true)
+                return true
+            }
             ReadingPassthroughPreferences(context).setEnabled(enabled)
             _readingPassthroughEnabled.value = enabled
             EvenG2ReadingSession.setEnabled(enabled)
-            if (!enabled) {
+            if (notifyG2 && EvenG2ReadingSession.isClientActive()) {
+                EvenG2ReadingSession.publishReaderModeStatus(enabled)
+            } else if (!enabled) {
                 EvenG2ReadingSession.clearDisplay()
-                instance?.publishEvenG2UiState()
-                setErrorMessage("")
             }
+            instance?.publishEvenG2UiState()
+            if (!enabled) setErrorMessage("")
+            return true
+        }
+
+        /** Drop reader mode when the G2 plugin stops polling (no auto-ON). */
+        fun syncReaderModeWithG2Client(context: Context) {
+            if (!_readingPassthroughEnabled.value) return
+            if (EvenG2ReadingSession.isClientActive()) return
+            Log.i(TAG, "Reader mode auto-off: G2 plugin inactive")
+            setReadingPassthroughEnabled(context, false, notifyG2 = false)
         }
 
         /** Kindle became the foreground app while accessibility is watching. */
@@ -480,6 +512,7 @@ class BleConnectionService : Service() {
         serviceScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(500)
+                syncReaderModeWithG2Client(applicationContext)
                 publishEvenG2UiState()
             }
         }
@@ -518,6 +551,9 @@ class BleConnectionService : Service() {
                             _nodePendingDrivingMode.value = null
                             _nodeGestureCaptureEnabled.value = null
                             _nodeGestureDetectEnabled.value = null
+                            // Drop phantom RECORDING/SPEAKING so scan/reconnect UI stays usable
+                            // and the recording overlay cannot stick after a link drop.
+                            voiceProcessor?.onBleLinkLost()
                         }
                     }
                 }

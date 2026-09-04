@@ -11,18 +11,20 @@ if ! adb get-state >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Building app..."
-"$ROOT_DIR/gradlew" :app:assembleDebug --no-daemon
-
-echo "Installing app..."
-adb install -r "$ROOT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+echo "Installing app via USB helper..."
+"$ROOT_DIR/scripts/install-usb.sh" --no-launch
 
 echo "Pushing models..."
 "$ROOT_DIR/scripts/push-all-models.sh"
 
 echo ""
 echo "Launching app..."
-adb shell am start -n com.g150446.voiceharness/.MainActivity
+SERIAL="$(adb devices -l | awk '/device usb:/{print $1; exit}')"
+if [[ -n "${SERIAL:-}" ]]; then
+  adb -s "$SERIAL" shell am start -n com.g150446.voiceharness/.MainActivity
+else
+  adb shell am start -n com.g150446.voiceharness/.MainActivity
+fi
 
 echo ""
 echo "Done. Open the app, then navigate to モデル設定 to check model status."

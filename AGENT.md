@@ -25,7 +25,8 @@ This file provides guidance to AI agents when working with code in this reposito
 ### Installing
 ```bash
 # Install phone app
-./gradlew :app:installDebug
+./scripts/install-usb.sh          # preferred (large debug APK)
+./gradlew :app:installDebug       # USB device required
 
 # Install wear app
 ./gradlew :wear:installDebug

@@ -6,9 +6,9 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 
 ```
 [Harness Node]
-  ・シングルタップ (0x14) → ホストが RX 0x01/0x00（既定の録音操作・パススルー中はページ送りのみ）
+  ・シングルタップ (0x14) → ホストが RX 0x01/0x00（既定の録音操作・リーダーモード中はページ送りのみ）
   ・手首ジェスチャー → オプション（既定OFF）。ON 時のみ FW 自律 TX 0x01 / 0x02
-  ・ダブルタップ (0x12) → パススルー ON/OFF（処理中はパイプライン割り込み）
+  ・ダブルタップ (0x12) → リーダーモード ON/OFF（ON は G2 接続時のみ。処理中はパイプライン割り込み）
         │ BLE TX 0x01 (録音開始)
         ▼
 [Android: PCM 蓄積]
@@ -29,7 +29,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
         ▼
 [Android TTS or Even G2] → 出力
 
-[読書パススルー]
+[リーダーモード]
+  ・G2 プラグイン接続中のみ ON 可。切断で自動 OFF。切替は G2 に表示
   ・ホームのユーザー補助（Accessibility）必須（Kindle 自動／ページめくり）
   ・G2 プラグインが本文をページ分割、Node シングルタップで送り
 
@@ -72,14 +73,15 @@ OpenRouter は明示オプトイン（API キー + モデル選択が必須）�
 git clone https://github.com/g150446/voice-harness-android.git
 cd voice-harness-android
 ./scripts/prepare-qwen-asr-native.sh
-./gradlew :app:installDebug
+# Large debug APK: prefer USB (Tailscale install often times out and leaves a stale process)
+./scripts/install-usb.sh
 ```
 
-Tailscale 経由の例（razr 50s、事前に `adb tcpip 5555` 済み）:
+Tailscale は **logcat / 小ファイル向け**。APK インストールは USB を推奨:
 
 ```bash
-adb connect 100.102.210.64:5555
-./gradlew :app:installDebug
+./scripts/install-usb.sh          # USB install + tcpip 5555
+./scripts/adb-tailscale.sh connect
 ```
 
 ### 初期設定
@@ -169,8 +171,8 @@ Hub の QR/URL プロトタイプや `npm run dev` を使い終わったら、**
 # デバッグビルド
 ./gradlew :app:assembleDebug
 
-# デバイスへインストール
-./gradlew :app:installDebug
+# デバイスへインストール（~180MB debug APK は USB 推奨）
+./scripts/install-usb.sh
 
 # ログ確認（VAD・BLE・録音 UI / キュー音）
 adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
@@ -180,10 +182,13 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 ### ADB（USB / Tailscale）
 
 ```bash
-# 初回または再起動後: USB を挿した状態で TCP 5555 を有効化し Tailscale 接続
+# APK インストールは常に USB（不完全インストールで BLE 状態が壊れやすい）
+./scripts/install-usb.sh
+
+# 初回または再起動後: USB で TCP 5555 を有効化し Tailscale 接続
 ./scripts/adb-tailscale.sh enable-usb
 
-# USB を抜いたあと / 別 Mac から: Tailscale IP で再接続のみ
+# USB を抜いたあと / 別 Mac から: Tailscale IP で再接続のみ（logcat 等）
 ./scripts/adb-tailscale.sh connect
 
 ./scripts/adb-tailscale.sh status
@@ -194,7 +199,7 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 - 既定ポート: `5555`
 - 同一 LAN / テザリングのみなら従来どおり `./scripts/adb-wireless.sh`
 - Tailscale 上で端末が online であること（`tailscale status`）
-
+- **APK を Tailscale 経由で入れない**（タイムアウトで古いプロセスが残ることがある）
 
 ### VAD / ASR 幻覚対策メモ
 

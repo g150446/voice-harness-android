@@ -69,7 +69,7 @@ function resolveMode(state: ReadingState): DisplayMode {
 
 function idleMessage(state: ReadingState): string {
   if (state.error) return `Voice Harness\n\n${state.error}`
-  if (state.enabled) return 'Voice Harness\n\nEven G2\nWaiting for reading gesture…'
+  if (state.enabled) return 'Voice Harness\n\nリーダーモード待機中'
   return 'Voice Harness\n\nEven G2\nPlugin connected'
 }
 

@@ -96,7 +96,7 @@ cmd_connect() {
   adb devices -l
   if adb -s "$target" shell true 2>/dev/null; then
     echo "OK: wireless adb ready ($target)"
-    echo "Install: ./gradlew :app:installDebug"
+    echo "Install (USB preferred for ~180MB APK): ./scripts/install-usb.sh"
     echo "Logcat:  adb -s $target logcat -s VoiceProcessor BleManager"
   else
     echo "ERROR: connected but shell failed. Re-run with USB:" >&2

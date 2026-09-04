@@ -40,10 +40,10 @@ internal fun overlayStatusFor(
 }
 
 internal fun readingPassthroughOverlayLabel(page: Int, pageCount: Int): String =
-    "パススルー $page/$pageCount"
+    "リーダー $page/$pageCount"
 
 /**
- * Floating recording / reading-passthrough indicator over other apps.
+ * Floating recording / reader-mode indicator over other apps.
  * Requires [Settings.canDrawOverlays]. Does not intercept touches.
  */
 class RecordingOverlayController(context: Context) {
@@ -118,7 +118,7 @@ class RecordingOverlayController(context: Context) {
             }
             title = when (status) {
                 HarnessOverlayStatus.Recording -> "Harness recording"
-                is HarnessOverlayStatus.ReadingPassthrough -> "Harness passthrough"
+                is HarnessOverlayStatus.ReadingPassthrough -> "Harness reader mode"
             }
         }
 

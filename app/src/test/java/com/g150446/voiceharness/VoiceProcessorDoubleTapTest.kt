@@ -19,23 +19,23 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
-    fun `single tap recording is suppressed while passthrough is on`() {
+    fun `single tap recording is suppressed while reader mode is on`() {
         assertNull(
             singleTapRecordingCommand(
-                passthroughEnabled = true,
+                readerModeEnabled = true,
                 state = VoiceState.READY,
             ),
         )
         assertNull(
             singleTapRecordingCommand(
-                passthroughEnabled = true,
+                readerModeEnabled = true,
                 state = VoiceState.RECORDING,
             ),
         )
     }
 
     @Test
-    fun `single tap requests host start or stop when passthrough is off`() {
+    fun `single tap requests host start or stop when reader mode is off`() {
         assertEquals(
             BLE_RX_START_RECORDING,
             singleTapRecordingCommand(false, VoiceState.READY),
@@ -51,18 +51,50 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
-    fun `double tap toggles passthrough when idle`() {
+    fun `double tap toggles reader mode when idle and G2 is connected`() {
         assertEquals(
-            PassthroughDoubleTapAction.ENABLE,
-            passthroughDoubleTapAction(passthroughEnabled = false, state = VoiceState.READY),
+            ReaderModeDoubleTapAction.ENABLE,
+            readerModeDoubleTapAction(
+                readerModeEnabled = false,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
         )
         assertEquals(
-            PassthroughDoubleTapAction.DISABLE,
-            passthroughDoubleTapAction(passthroughEnabled = true, state = VoiceState.READY),
+            ReaderModeDoubleTapAction.DISABLE,
+            readerModeDoubleTapAction(
+                readerModeEnabled = true,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
         )
         assertEquals(
-            PassthroughDoubleTapAction.NONE,
-            passthroughDoubleTapAction(passthroughEnabled = true, state = VoiceState.SPEAKING),
+            ReaderModeDoubleTapAction.DISABLE,
+            readerModeDoubleTapAction(
+                readerModeEnabled = true,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            ReaderModeDoubleTapAction.NONE,
+            readerModeDoubleTapAction(
+                readerModeEnabled = true,
+                g2ClientActive = true,
+                state = VoiceState.SPEAKING,
+            ),
+        )
+    }
+
+    @Test
+    fun `double tap does not enable reader mode without G2`() {
+        assertEquals(
+            ReaderModeDoubleTapAction.NONE,
+            readerModeDoubleTapAction(
+                readerModeEnabled = false,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
         )
     }
 }

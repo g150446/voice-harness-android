@@ -121,7 +121,7 @@ blockedIntent=0 / 32     passedJunk=0 / 22
 TTSを停止して状態を `READY` に戻し、画面と履歴に「中断しました」を残す。
 
 `RECORDING` は対象外で、録音停止は従来どおりジェスチャーが担う。処理中でない場合の
-処理中でない double は読書パススルーの ON/OFF トグル（G2 ページ送りは single）。
+処理中でない double はリーダーモードの ON/OFF トグル（ON は G2 接続時のみ。G2 ページ送りは single）。
 詳細は [`smart_glasses_output.md`](smart_glasses_output.md)。
 
 リマインダーは永続化とAlarmManager登録が短い同期区間にあるため、Jobキャンセルだけでは

@@ -51,10 +51,21 @@ internal object EvenG2ReadingSession {
 
     fun setEnabled(enabled: Boolean) {
         state.update { current ->
-            if (enabled) current.copy(enabled = true)
-            else State(revision = current.revision + 1L)
+            if (enabled) {
+                current.copy(enabled = true)
+            } else {
+                // Keep lastClientSeenElapsed so disable does not look like G2 disconnect.
+                current.copy(
+                    enabled = false,
+                    active = false,
+                    mode = EvenG2DisplayMode.IDLE,
+                    revision = current.revision + 1L,
+                    bodyText = null,
+                    loading = false,
+                    error = null,
+                )
+            }
         }
-        if (!enabled) lastClientSeenElapsed = 0L
     }
 
     fun publishBody(text: String) = publishReading(text)
@@ -86,6 +97,16 @@ internal object EvenG2ReadingSession {
                 error = null,
             )
         }
+    }
+
+    /** Short mode-switch banner on G2 (response mode until reading body arrives). */
+    fun publishReaderModeStatus(enabled: Boolean) {
+        val message = if (enabled) {
+            "リーダーモード\nON"
+        } else {
+            "リーダーモード\nOFF"
+        }
+        publishResponse(message)
     }
 
     fun clearDisplay() {

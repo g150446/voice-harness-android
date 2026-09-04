@@ -302,7 +302,7 @@ fun HomeScreen(
                 Text("状態オーバーレイの表示を許可")
             }
             Text(
-                text = "他アプリ表示中に録音・パススルー状態を画面に出すために必要です",
+                text = "他アプリ表示中に録音・リーダーモード状態を画面に出すために必要です",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 8.dp),
@@ -339,7 +339,7 @@ fun HomeScreen(
                 Text("ユーザー補助を有効にする")
             }
             Text(
-                text = "パススルーのKindle自動表示とページめくりに必要です",
+                text = "リーダーモードのKindle自動表示とページめくりに必要です",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 4.dp),
@@ -575,7 +575,7 @@ fun HomeScreen(
             !smartGlassesState.connected && !smartGlassesState.linked ->
                 "G2プラグイン未接続（Even Hubで起動）"
             !smartGlassesState.connected -> "G2プラグインが応答していません"
-            smartGlassesState.readingPassthroughActive -> "G2で読書パススルー中"
+            smartGlassesState.readingPassthroughActive -> "G2でリーダーモード中"
             smartGlassesState.displaying -> "G2に返答を表示中"
             else -> "G2プラグイン接続済み"
         }
@@ -599,7 +599,7 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = "パススルーモード",
+                text = "リーダーモード",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -608,7 +608,9 @@ fun HomeScreen(
                 onCheckedChange = viewModel::setReadingPassthroughEnabled,
             )
         }
-        val passthroughStatus = when {
+        val readerModeStatus = when {
+            !readingPassthroughEnabled && !smartGlassesState.connected ->
+                "オフ — G2プラグイン接続中のみONできます"
             !readingPassthroughEnabled -> "オフ"
             !accessibilityEnabled ->
                 "待機中 — ユーザー補助を有効にするとKindle自動表示が使えます（ダブルタップでも開始可）"
@@ -618,7 +620,7 @@ fun HomeScreen(
             else -> "待機中 — 電子書籍を開くか、Harness Nodeをダブルタップしてください"
         }
         Text(
-            text = passthroughStatus,
+            text = readerModeStatus,
             fontSize = 11.sp,
             color = when {
                 !readingPassthroughEnabled -> MaterialTheme.colorScheme.onSurfaceVariant

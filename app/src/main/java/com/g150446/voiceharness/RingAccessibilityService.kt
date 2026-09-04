@@ -98,7 +98,7 @@ class RingAccessibilityService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastKindleForegroundNotifyAtMs < KINDLE_FOREGROUND_DEBOUNCE_MS) return
         lastKindleForegroundNotifyAtMs = now
-        Log.i(TAG, "Kindle foreground while passthrough armed")
+        Log.i(TAG, "Kindle foreground while reader mode armed")
         BleConnectionService.onKindleBecameForeground()
     }
 

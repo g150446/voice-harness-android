@@ -137,7 +137,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setReadingPassthroughEnabled(enabled: Boolean) {
-        BleConnectionService.setReadingPassthroughEnabled(getApplication(), enabled)
+        val applied = BleConnectionService.setReadingPassthroughEnabled(getApplication(), enabled)
+        if (enabled && !applied) {
+            BleConnectionService.setResponse("リーダーモードにはG2プラグインの接続が必要です")
+        }
     }
 
     fun startBleScan() {

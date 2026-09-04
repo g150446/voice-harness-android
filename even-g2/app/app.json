@@ -8,7 +8,7 @@
   "permissions": [
     {
       "name": "network",
-      "desc": "Displays AI replies and reading passthrough text from the Voice Harness app on this phone.",
+      "desc": "Displays AI replies and reader-mode text from the Voice Harness app on this phone.",
       "whitelist": ["http://127.0.0.1:8787"]
     }
   ],

@@ -150,7 +150,7 @@ Nodeは `[0x00, 0x55, 0x39, enabled]` を `notify_all_conns()` で返す。
 **重要**: 録音セッションの開始/終了は TX `0x01`/`0x02` のみでアプリ状態を動かす。
 Node（`0.0.94+`）は single (`0x14`) / double (`0x12`) を **notify-only** とする。
 シングルタップの録音 start/stop は Android が RX `0x01`/`0x00` で指示する
-（パススルー中は RX を送らず G2 ページ送りのみ）。手首ジェスチャーは
+（リーダーモード中は RX を送らず G2 ページ送りのみ）。手首ジェスチャーは
 **ジェスチャー検出スイッチが ON かつ通常モード**のときのみ Node 自律で
 `0x01`/`0x02`（FW `0.0.95+` では検出は既定 OFF＝タップのみ）。
 `0x11` (motion_settled) も通知のみ。
@@ -210,13 +210,28 @@ Button A の single/double click）を使用する。Androidはタップ回数�
 
 | 条件 | 動作 |
 |---|---|
-| パススルー ON | RX なし。`singleTapCount` で G2 ページ送り |
-| パススルー OFF・録音中 | RX `0x00`（停止） |
-| パススルー OFF・それ以外 | RX `0x01`（開始） |
+| リーダーモード ON | RX なし。`singleTapCount` で G2 ページ送り |
+| リーダーモード OFF・録音中 | RX `0x00`（停止） |
+| リーダーモード OFF・それ以外 | RX `0x00` の後 ~150ms で RX `0x01`（開始） |
 
-double はパススルーのトグル（OFF→ON+画面抽出 / ON→OFF）。処理中はパイプライン割り込み優先。
+開始は **stop→start**。切断後に Node 側だけ録音中のまま残る「幽霊セッション」を
+クリアしてから開始する（単発の `0x01` では Node が既に `is_recording` だと無視される）。
+接続確立後にも RX `0x00` を1回送り、状態を揃える。
+
+double はリーダーモードのトグル（OFF→ON は G2 接続時のみ＋画面抽出 / ON→OFF）。
+切替は G2 にメッセージ表示。プラグイン切断で自動 OFF。処理中はパイプライン割り込み優先。
 ローカルで RECORDING を立てず、必ず TX `0x01`/`0x02` に追従する。
+**GATT 切断時**はアプリの `RECORDING`/`SPEAKING` を `READY` に戻し、録音オーバーレイが
+張り付かないようにする。
 
+### 自動再接続と MAC 変動
+
+優先デバイスは address + name を prefs に保存する。auto-connect スキャンでは:
+
+- 保存 address と一致 → 接続
+- address が変わっても `HarnessNode` / `HarnessNode-*` 名なら接続し、prefs の address を更新
+
+RPA / キャッシュ更新で MAC が変わっても「デバイスが見つからない」状態を避ける。
 FW `0.0.87+` の判定手順は次のとおり（Android側で意識すべき点は最後の2行）。
 
 1. 1打目の衝撃でIMUがINT1をassertする（single割り込みも INT1 に割り当てているため）。
