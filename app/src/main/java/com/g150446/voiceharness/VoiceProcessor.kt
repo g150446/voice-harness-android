@@ -48,8 +48,12 @@ internal fun shouldInterruptOnDoubleTap(state: VoiceState): Boolean = when (stat
     VoiceState.READY, VoiceState.ERROR -> false
 }
 
-/** Ignore residual single-tap after a double-tap (vibration / FW bounce). */
-internal const val SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS = 1_000L
+/**
+ * Ignore residual single-tap after a double-tap (vibration / FW bounce).
+ * Host uses receive-time (no device timestamps on BLE events); window is generous
+ * so delayed notifications still fall inside it.
+ */
+internal const val SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS = 2_000L
 
 internal fun shouldSuppressSingleTapAfterDouble(
     nowElapsedMs: Long,
@@ -141,8 +145,10 @@ internal class VoiceProcessor(
     private val harnessPipelineInterrupted = AtomicBoolean(false)
     /** After cancel-during-RECORDING, ignore the FW TX 0x02 stop so ASR does not run. */
     private val discardNextRecordingStop = AtomicBoolean(false)
-    /** elapsedRealtime of last double-tap; used to ignore residual singles. */
+    /** elapsedRealtime of last double-tap / cancel arm; used to ignore residual singles. */
     @Volatile private var lastDoubleTapElapsedMs = 0L
+    /** stop-then-start job; cancelled on double-tap so a prior single cannot start later. */
+    private var pendingSingleTapStartJob: Job? = null
     private val reminderMutationLock = Any()
     private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
@@ -335,6 +341,8 @@ internal class VoiceProcessor(
             recordingStartedAtWallMs = 0L
             BleConnectionService.setBleMode(false)
             clearPendingHarnessScreen()
+            // FW may emit residual singles around the forced stop; keep suppress armed.
+            armSingleTapSuppress("discarded-stop-after-cancel")
             if (BleConnectionService.voiceState.value == VoiceState.RECORDING) {
                 BleConnectionService.setVoiceState(VoiceState.READY)
             }
@@ -1326,7 +1334,8 @@ internal class VoiceProcessor(
         }
         Log.i(TAG, "Single tap: host-authorized recording start (stop-then-start)")
         BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
-        scope.launch {
+        pendingSingleTapStartJob?.cancel()
+        pendingSingleTapStartJob = scope.launch {
             delay(HOST_START_RESYNC_DELAY_MS)
             if (shouldSuppressSingleTapAfterDouble(
                     SystemClock.elapsedRealtime(),
@@ -1349,7 +1358,9 @@ internal class VoiceProcessor(
     }
 
     internal fun handleDoubleTap() {
-        lastDoubleTapElapsedMs = SystemClock.elapsedRealtime()
+        armSingleTapSuppress("double-tap")
+        pendingSingleTapStartJob?.cancel()
+        pendingSingleTapStartJob = null
         val voiceState = BleConnectionService.voiceState.value
         if (shouldInterruptOnDoubleTap(voiceState)) {
             interruptHarnessPipeline(voiceState)
@@ -1425,14 +1436,22 @@ internal class VoiceProcessor(
         }
     }
 
+    private fun armSingleTapSuppress(reason: String) {
+        lastDoubleTapElapsedMs = SystemClock.elapsedRealtime()
+        Log.d(TAG, "Single-tap suppress armed for ${SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS}ms ($reason)")
+    }
+
     private fun interruptHarnessPipeline(interruptedState: VoiceState) {
         harnessPipelineInterrupted.set(true)
         harnessPipelineJob?.cancel()
         harnessPipelineJob = null
+        pendingSingleTapStartJob?.cancel()
+        pendingSingleTapStartJob = null
         cancelAssistantRequest(activeAssistantRequestId)
         synchronized(reminderMutationLock) {
             activeReminderId.getAndSet(null)?.let(::rollbackInterruptedReminder)
         }
+        armSingleTapSuppress("interrupt-$interruptedState")
         if (interruptedState == VoiceState.RECORDING) {
             discardNextRecordingStop.set(true)
             isCollectingPcm = false

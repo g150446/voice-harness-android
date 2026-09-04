@@ -124,8 +124,9 @@ TTSを停止して状態を `READY` に戻し、画面と履歴に「中断し�
 処理中でない double はリーダーモードの ON/OFF トグル（ON は G2 接続時のみ。G2 ページ送りは
 single）。詳細は [`smart_glasses_output.md`](smart_glasses_output.md)。
 
-残振動で double 直後に single が飛びやすいため、double から **1 秒間**は single の録音
-コマンドを送らない（UI のタップ回数は増えてよい）。
+残振動で double 直後に single が飛びやすいため、ホストは double 受信から **2 秒間**
+single の録音コマンドを送らない（進行中の遅延 start Job も cancel）。Node は double
+検出から **1.5 秒** single を emit しない。UI のタップ回数は増えてよい。
 
 リマインダーは永続化とAlarmManager登録が短い同期区間にあるため、Jobキャンセルだけでは
 止められない。中断フラグと処理中IDを保持し、登録直前なら打ち切り、登録と中断が競合した

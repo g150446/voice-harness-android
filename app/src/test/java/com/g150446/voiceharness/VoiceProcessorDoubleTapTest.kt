@@ -19,13 +19,14 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
-    fun `single tap is suppressed for one second after double tap`() {
+    fun `single tap is suppressed for two seconds after double tap`() {
         assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_000L, lastDoubleTapElapsedMs = 0L))
         assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_000L, lastDoubleTapElapsedMs = 5_000L))
         assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_500L, lastDoubleTapElapsedMs = 5_000L))
-        assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_999L, lastDoubleTapElapsedMs = 5_000L))
-        assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 6_000L, lastDoubleTapElapsedMs = 5_000L))
+        assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 6_999L, lastDoubleTapElapsedMs = 5_000L))
+        assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 7_000L, lastDoubleTapElapsedMs = 5_000L))
         assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 4_000L, lastDoubleTapElapsedMs = 5_000L))
+        assertEquals(2_000L, SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS)
     }
 
     @Test
