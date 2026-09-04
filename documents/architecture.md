@@ -80,7 +80,8 @@ READY ──── 録音開始 ──▶ RECORDING ──── 停止 ──�
 
 | 要素 | 実装 | 備考 |
 |---|---|---|
-| 開始/終了音 | `RecordingCuePlayer` | `USAGE_MEDIA`（TTS と同じ）。SONIFICATION はマナーモードで無音になりやすい |
+| 開始/終了音 | `RecordingCuePlayer` | `USAGE_MEDIA`（TTS と同じ）。ホーム「録音キュー音」で ON/OFF（**既定オフ**） |
+| ダブルタップ中断 | `shouldInterruptOnDoubleTap` | RECORDING / TRANSCRIBING / RESPONDING / SPEAKING をキャンセル |
 | 画面オーバーレイ | `RecordingOverlayController` | `SYSTEM_ALERT_WINDOW`。未許可時は通知文言のみ |
 | 画面コンテキスト | `HeadlessScreenCapture` | 録音開始時。自アプリ/ロック/画面オフは破棄 |
 

@@ -41,8 +41,11 @@ enum class VoiceState {
 }
 
 internal fun shouldInterruptOnDoubleTap(state: VoiceState): Boolean = when (state) {
-    VoiceState.TRANSCRIBING, VoiceState.RESPONDING, VoiceState.SPEAKING -> true
-    VoiceState.READY, VoiceState.RECORDING, VoiceState.ERROR -> false
+    VoiceState.RECORDING,
+    VoiceState.TRANSCRIBING,
+    VoiceState.RESPONDING,
+    VoiceState.SPEAKING -> true
+    VoiceState.READY, VoiceState.ERROR -> false
 }
 
 /**
@@ -123,6 +126,8 @@ internal class VoiceProcessor(
     private var harnessScreenCaptureJob: Job? = null
     private var harnessPipelineJob: Job? = null
     private val harnessPipelineInterrupted = AtomicBoolean(false)
+    /** After cancel-during-RECORDING, ignore the FW TX 0x02 stop so ASR does not run. */
+    private val discardNextRecordingStop = AtomicBoolean(false)
     private val reminderMutationLock = Any()
     private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
@@ -188,6 +193,7 @@ internal class VoiceProcessor(
         recordingStartedAtWallMs = System.currentTimeMillis()
         pendingGestureDiags = emptyList()
         harnessPipelineInterrupted.set(false)
+        discardNextRecordingStop.set(false)
         recordingStoppedAtWallMs = 0L
         clearPendingHarnessScreen()
         isCollectingPcm = true
@@ -197,7 +203,9 @@ internal class VoiceProcessor(
         BleConnectionService.setErrorMessage("")
         if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) tts?.stop()
         BleConnectionService.setVoiceState(VoiceState.RECORDING)
-        recordingCuePlayer.playStarted()
+        if (BleConnectionService.recordingCueEnabled.value) {
+            recordingCuePlayer.playStarted()
+        }
         startHarnessScreenCapture()
         Log.d(
             TAG,
@@ -304,6 +312,20 @@ internal class VoiceProcessor(
     }
 
     private fun handleBleRecordingStopped(reason: String = "firmware") {
+        if (discardNextRecordingStop.compareAndSet(true, false)) {
+            isCollectingPcm = false
+            sileroVad?.reset()
+            pcmBuffer.reset()
+            recordingStartedAtElapsedMs = 0L
+            recordingStartedAtWallMs = 0L
+            BleConnectionService.setBleMode(false)
+            clearPendingHarnessScreen()
+            if (BleConnectionService.voiceState.value == VoiceState.RECORDING) {
+                BleConnectionService.setVoiceState(VoiceState.READY)
+            }
+            Log.i(TAG, "BLE recording stop discarded after double-tap cancel ($reason)")
+            return
+        }
         if (BleConnectionService.voiceState.value != VoiceState.RECORDING ||
             !BleConnectionService.bleMode.value
         ) return
@@ -326,7 +348,9 @@ internal class VoiceProcessor(
         )
 
         tts?.stop()
-        recordingCuePlayer.playStopped()
+        if (BleConnectionService.recordingCueEnabled.value) {
+            recordingCuePlayer.playStopped()
+        }
 
         if (BleConnectionService.readingPassthroughEnabled.value) {
             pipelineTiming.start(SystemClock.elapsedRealtime())
@@ -1379,6 +1403,19 @@ internal class VoiceProcessor(
         cancelAssistantRequest(activeAssistantRequestId)
         synchronized(reminderMutationLock) {
             activeReminderId.getAndSet(null)?.let(::rollbackInterruptedReminder)
+        }
+        if (interruptedState == VoiceState.RECORDING) {
+            discardNextRecordingStop.set(true)
+            isCollectingPcm = false
+            pcmBuffer.reset()
+            sileroVad?.reset()
+            recordingStartedAtElapsedMs = 0L
+            recordingStartedAtWallMs = 0L
+            clearPendingHarnessScreen()
+            harnessScreenCaptureJob?.cancel()
+            harnessScreenCaptureJob = null
+            BleConnectionService.setBleMode(false)
+            BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
         }
         val message = "中断しました"
         saveHistoryEntry(

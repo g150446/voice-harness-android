@@ -197,6 +197,7 @@ fun HomeScreen(
     val nodeGestureCaptureEnabled by viewModel.nodeGestureCaptureEnabled.collectAsState()
     val gestureDetectEnabled by viewModel.gestureDetectEnabled.collectAsState()
     val nodeGestureDetectEnabled by viewModel.nodeGestureDetectEnabled.collectAsState()
+    val recordingCueEnabled by viewModel.recordingCueEnabled.collectAsState()
     val modelStatus by viewModel.modelStatus.collectAsState()
     val lastPipelineMs by viewModel.lastPipelineMs.collectAsState()
     val context = LocalContext.current
@@ -662,6 +663,34 @@ fun HomeScreen(
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "録音キュー音",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Switch(
+                checked = recordingCueEnabled,
+                onCheckedChange = viewModel::setRecordingCueEnabled,
+            )
+        }
+        Text(
+            text = if (recordingCueEnabled) {
+                "オン — 開始・終了でビープ"
+            } else {
+                "オフ — 開始/終了音なし"
+            },
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 8.dp),

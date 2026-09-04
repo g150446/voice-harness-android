@@ -72,6 +72,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     val nodeGestureDetectEnabled: StateFlow<Boolean?> =
         BleConnectionService.nodeGestureDetectEnabled
+
+    val recordingCueEnabled: StateFlow<Boolean> =
+        BleConnectionService.recordingCueEnabled
+
     val lastPipelineMs: StateFlow<Long> = BleConnectionService.lastPipelineMs
     val modelStatus: StateFlow<ModelStatus> = ModelManager.status
 
@@ -198,6 +202,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setGestureDetectEnabled(enabled: Boolean) {
         BleConnectionService.setGestureDetectEnabled(getApplication(), enabled)
+    }
+
+    fun setRecordingCueEnabled(enabled: Boolean) {
+        BleConnectionService.setRecordingCueEnabled(getApplication(), enabled)
     }
 
     fun openReminders() {

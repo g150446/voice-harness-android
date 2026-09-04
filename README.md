@@ -12,8 +12,9 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
         │ BLE TX 0x01 (録音開始)
         ▼
 [Android: PCM 蓄積]
-  ・開始/終了キュー音（MEDIA 経路）
+  ・開始/終了キュー音（MEDIA 経路・ホームでトグル・既定オフ）
   ・他アプリ上の録音オーバーレイ（要 SYSTEM_ALERT_WINDOW）
+  ・ダブルタップで録音中／処理中をキャンセル
   ・ROLE_ASSISTANT 時はヘッドレス Assist で画面テキスト/スクショ取得
         │ BLE TX 0x02（録音停止）
         ▼
@@ -129,7 +130,7 @@ Tailscale は **logcat / 小ファイル向け**。APK インストールは USB
 
 AI が読み上げ中に再度録音操作を行うと、読み上げを中断して新しい対話を開始できる。
 
-キュー音は **メディア音量**（TTS と同じ経路）。マナーモードで通知音が消えていても聞こえる。
+キュー音は既定オフ。オン時は **メディア音量**（TTS と同じ経路）。マナーモードで通知音が消えていても聞こえる。
 
 ライブの診断ストリームはホームの **ジェスチャ診断**、仕様は `documents/history_feature.md` / `documents/ble_protocol.md`。
 
@@ -230,7 +231,7 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 | `assistant/*` | デジタルアシスタント Session / Activity / 画面コンテキスト |
 | `assistant/HeadlessScreenCapture.kt` | HarnessNode 用ヘッドレス Assist + スクショ取得 |
 | `RecordingOverlayController.kt` | 他アプリ上の録音中オーバーレイ |
-| `RecordingCuePlayer.kt` | 録音開始/終了キュー音（USAGE_MEDIA） |
+| `RecordingCuePlayer.kt` / `RecordingCuePreferences.kt` | 録音開始/終了キュー音（既定オフ・ホームでトグル） |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
 | `EvenG2ReadingSession.kt` / `EvenG2BridgeServer.kt` | Even G2 表示セッションと loopback ブリッジ |
 | `SmartGlassesOutputManager.kt` | Vuzix Z100 実装（実行未使用・将来再配線用アーカイブ） |

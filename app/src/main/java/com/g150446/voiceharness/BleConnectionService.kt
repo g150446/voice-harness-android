@@ -167,6 +167,10 @@ class BleConnectionService : Service() {
         val nodeGestureDetectEnabled: StateFlow<Boolean?> =
             _nodeGestureDetectEnabled.asStateFlow()
 
+        /** Recording start/stop beeps; default off. */
+        private val _recordingCueEnabled = MutableStateFlow(false)
+        val recordingCueEnabled: StateFlow<Boolean> = _recordingCueEnabled.asStateFlow()
+
         // Internal setters used by VoiceProcessor (same module/package).
         internal fun setVoiceState(state: VoiceState) { _voiceState.value = state }
         internal fun setTranscription(text: String) { _transcription.value = text }
@@ -225,6 +229,15 @@ class BleConnectionService : Service() {
             GestureDetectPreferences(context).setEnabled(enabled)
             _gestureDetectEnabled.value = enabled
             sendGestureDetect(enabled)
+        }
+
+        fun initializeRecordingCueEnabled(context: Context) {
+            _recordingCueEnabled.value = RecordingCuePreferences(context).enabled()
+        }
+
+        fun setRecordingCueEnabled(context: Context, enabled: Boolean) {
+            RecordingCuePreferences(context).setEnabled(enabled)
+            _recordingCueEnabled.value = enabled
         }
 
         /** Re-asserts the switch; the node holds it in RAM only. */
@@ -502,6 +515,7 @@ class BleConnectionService : Service() {
         initializeReadingPassthroughEnabled(applicationContext)
         initializeGestureCaptureEnabled(applicationContext)
         initializeGestureDetectEnabled(applicationContext)
+        initializeRecordingCueEnabled(applicationContext)
         // Create it up front: `run-as ... tar c files/gesture_trajectories` emits a
         // corrupt archive with no clear error when the directory is missing, and
         // that would surface at the end of a collection day.

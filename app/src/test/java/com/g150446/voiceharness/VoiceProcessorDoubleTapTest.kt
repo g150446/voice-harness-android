@@ -9,9 +9,9 @@ import org.junit.Test
 class VoiceProcessorDoubleTapTest {
 
     @Test
-    fun `double tap interrupts only post-recording pipeline states`() {
+    fun `double tap interrupts recording and post-recording pipeline states`() {
         assertFalse(shouldInterruptOnDoubleTap(VoiceState.READY))
-        assertFalse(shouldInterruptOnDoubleTap(VoiceState.RECORDING))
+        assertTrue(shouldInterruptOnDoubleTap(VoiceState.RECORDING))
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.TRANSCRIBING))
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.RESPONDING))
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.SPEAKING))
