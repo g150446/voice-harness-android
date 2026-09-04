@@ -80,7 +80,8 @@ READY ──── 録音開始 ──▶ RECORDING ──── 停止 ──�
 
 | 要素 | 実装 | 備考 |
 |---|---|---|
-| 開始/終了音 | `RecordingCuePlayer` | `USAGE_MEDIA`（TTS と同じ）。SONIFICATION はマナーモードで無音になりやすい |
+| 開始/終了音 | `RecordingCuePlayer` | `USAGE_MEDIA`（TTS と同じ）。ホーム「録音キュー音」で ON/OFF（**既定オフ**） |
+| ダブルタップ中断 | `shouldInterruptOnDoubleTap` | 通常の RECORDING / TRANSCRIBING / RESPONDING / SPEAKING をキャンセル。モード指示録音は確定。直後 2s は single 録音コマンド抑制＋遅延 start Job cancel |
 | 画面オーバーレイ | `RecordingOverlayController` | `SYSTEM_ALERT_WINDOW`。未許可時は通知文言のみ |
 | 画面コンテキスト | `HeadlessScreenCapture` | 録音開始時。自アプリ/ロック/画面オフは破棄 |
 
@@ -190,7 +191,7 @@ nRF52840                        Android
 | シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | リーダーモード OFF 時に RX `0x01`/`0x00` でホスト承認 |
 | 手首ジェスチャー | 検出スイッチ ON 時のみ自律 `0x01`/`0x02`（**既定 OFF**） | ホーム「ジェスチャー録音」→ RX `0x07` |
 | リーダーモード ON の single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
-| ダブルタップ (`0x12`) | notify-only | リーダーモード ON/OFF（ON は G2 接続時のみ。処理中は割り込み） |
+| ダブルタップ (`0x12`) | notify-only | 待機中はモード指示録音を開始、同録音中は確定、通常の処理中は割り込み |
 
 無音による RX `0x00` 自動停止は廃止済み。  
 詳細は [`ble_protocol.md`](ble_protocol.md) / [`gesture_detect_default_off.md`](gesture_detect_default_off.md) /

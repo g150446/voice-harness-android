@@ -9,13 +9,30 @@ import org.junit.Test
 class VoiceProcessorDoubleTapTest {
 
     @Test
-    fun `double tap interrupts only post-recording pipeline states`() {
+    fun `double tap interrupts recording and post-recording pipeline states`() {
         assertFalse(shouldInterruptOnDoubleTap(VoiceState.READY))
-        assertFalse(shouldInterruptOnDoubleTap(VoiceState.RECORDING))
+        assertTrue(shouldInterruptOnDoubleTap(VoiceState.RECORDING))
+        assertFalse(
+            shouldInterruptOnDoubleTap(
+                VoiceState.RECORDING,
+                CapturePurpose.MODE_SWITCH,
+            ),
+        )
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.TRANSCRIBING))
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.RESPONDING))
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.SPEAKING))
         assertFalse(shouldInterruptOnDoubleTap(VoiceState.ERROR))
+    }
+
+    @Test
+    fun `single tap is suppressed for two seconds after double tap`() {
+        assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_000L, lastDoubleTapElapsedMs = 0L))
+        assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_000L, lastDoubleTapElapsedMs = 5_000L))
+        assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 5_500L, lastDoubleTapElapsedMs = 5_000L))
+        assertTrue(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 6_999L, lastDoubleTapElapsedMs = 5_000L))
+        assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 7_000L, lastDoubleTapElapsedMs = 5_000L))
+        assertFalse(shouldSuppressSingleTapAfterDouble(nowElapsedMs = 4_000L, lastDoubleTapElapsedMs = 5_000L))
+        assertEquals(2_000L, SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS)
     }
 
     @Test

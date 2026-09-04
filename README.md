@@ -8,12 +8,13 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 [Harness Node]
   ・シングルタップ (0x14) → ホストが RX 0x01/0x00（既定の録音操作・リーダーモード中はページ送りのみ）
   ・手首ジェスチャー → オプション（既定OFF）。ON 時のみ FW 自律 TX 0x01 / 0x02
-  ・ダブルタップ (0x12) → リーダーモード ON/OFF（ON は G2 接続時のみ。処理中はパイプライン割り込み）
+  ・ダブルタップ (0x12) → モード指示録音を開始／確定（通常の処理中はパイプライン割り込み）
         │ BLE TX 0x01 (録音開始)
         ▼
 [Android: PCM 蓄積]
-  ・開始/終了キュー音（MEDIA 経路）
+  ・開始/終了キュー音（MEDIA 経路・ホームでトグル・既定オフ）
   ・他アプリ上の録音オーバーレイ（要 SYSTEM_ALERT_WINDOW）
+  ・ダブルタップで通常録音／処理をキャンセル（モード指示録音中は確定）
   ・ROLE_ASSISTANT 時はヘッドレス Assist で画面テキスト/スクショ取得
         │ BLE TX 0x02（録音停止）
         ▼
@@ -123,10 +124,12 @@ Tailscale は **logcat / 小ファイル向け**。APK インストールは USB
 ホームの「ジェスチャー録音」を ON にすると手首ジェスチャーも使える（Node FW `0.0.95+`）。
 
 1. Node をシングルタップ（またはジェスチャー ON 時は録音ジェスチャー）
-2. **開始キュー音**（上昇2音）が鳴り、PCM を蓄積
+2. PCM を蓄積（ホーム「録音キュー音」がオンのときのみ **開始キュー音**）
    - 他アプリ上では赤いマイク **オーバーレイ**（許可時）と通知「録音中…」
    - 自アプリ UI では **Recording (BLE)...**
-3. 再度タップ（または停止ジェスチャー）で **終了キュー音**（下降2音）→ `Silero VAD` で音声判定し、必要に応じて FFT フォールバック / rescue → テキスト化・AI 応答・読み上げ
+3. 再度タップ（または停止ジェスチャー）で録音終了（オン時のみ **終了キュー音**）→ `Silero VAD` → テキスト化・AI 応答・読み上げ
+   通常録音中〜応答中の **ダブルタップ** はキャンセル（「中断しました」）。モード指示録音中は確定する。
+   double 直後 **2 秒**は single を無視（遅延 start Job も cancel。残振動による再録音防止）
 4. デフォルトアシスタント設定時、録音開始時点の **他アプリ画面**（Assist テキスト + スクショ）を LLM に添付
    - 自アプリ画面・ロック・画面オフでは添付しない
    - JPEG は OpenRouter の画像対応モデルのみ。他バックエンドは画面テキストのみ
@@ -134,7 +137,7 @@ Tailscale は **logcat / 小ファイル向け**。APK インストールは USB
 
 AI が読み上げ中に再度録音操作を行うと、読み上げを中断して新しい対話を開始できる。
 
-キュー音は **メディア音量**（TTS と同じ経路）。マナーモードで通知音が消えていても聞こえる。
+キュー音は **既定オフ**（ホームでトグル）。オン時は **メディア音量**（TTS と同じ経路）。
 
 ライブの診断ストリームはホームの **ジェスチャ診断**、仕様は `documents/history_feature.md` / `documents/ble_protocol.md`。
 
@@ -246,7 +249,7 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 | `assistant/*` | デジタルアシスタント Session / Activity / 画面コンテキスト |
 | `assistant/HeadlessScreenCapture.kt` | HarnessNode 用ヘッドレス Assist + スクショ取得 |
 | `RecordingOverlayController.kt` | 他アプリ上の録音中オーバーレイ |
-| `RecordingCuePlayer.kt` | 録音開始/終了キュー音（USAGE_MEDIA） |
+| `RecordingCuePlayer.kt` / `RecordingCuePreferences.kt` | 録音開始/終了キュー音（既定オフ・ホームでトグル） |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
 | `EvenG2ReadingSession.kt` / `EvenG2BridgeServer.kt` | Even G2 表示セッションと loopback ブリッジ |
 | `SmartGlassesOutputManager.kt` | Vuzix Z100 実装（実行未使用・将来再配線用アーカイブ） |

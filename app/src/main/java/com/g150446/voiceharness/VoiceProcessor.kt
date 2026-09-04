@@ -40,9 +40,32 @@ enum class VoiceState {
     ERROR
 }
 
-internal fun shouldInterruptOnDoubleTap(state: VoiceState): Boolean = when (state) {
-    VoiceState.TRANSCRIBING, VoiceState.RESPONDING, VoiceState.SPEAKING -> true
-    VoiceState.READY, VoiceState.RECORDING, VoiceState.ERROR -> false
+internal fun shouldInterruptOnDoubleTap(
+    state: VoiceState,
+    capturePurpose: CapturePurpose = CapturePurpose.AI_QUERY,
+): Boolean = when (state) {
+    VoiceState.RECORDING -> capturePurpose != CapturePurpose.MODE_SWITCH
+    VoiceState.TRANSCRIBING,
+    VoiceState.RESPONDING,
+    VoiceState.SPEAKING -> true
+    VoiceState.READY, VoiceState.ERROR -> false
+}
+
+/**
+ * Ignore residual single-tap after a double-tap (vibration / FW bounce).
+ * Host uses receive-time (no device timestamps on BLE events); window is generous
+ * so delayed notifications still fall inside it.
+ */
+internal const val SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS = 2_000L
+
+internal fun shouldSuppressSingleTapAfterDouble(
+    nowElapsedMs: Long,
+    lastDoubleTapElapsedMs: Long,
+    windowMs: Long = SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS,
+): Boolean {
+    if (lastDoubleTapElapsedMs <= 0L) return false
+    val elapsed = nowElapsedMs - lastDoubleTapElapsedMs
+    return elapsed in 0 until windowMs
 }
 
 /**
@@ -87,7 +110,6 @@ internal class VoiceProcessor(
     private var isCollectingPcm = false
     @Volatile private var nextCapturePurpose = CapturePurpose.AI_QUERY
     @Volatile private var activeCapturePurpose = CapturePurpose.AI_QUERY
-    @Volatile private var cancelCurrentRecording = false
     private var recordingStartedAtElapsedMs = 0L
     /** Wall-clock start of the current BLE recording (for gesture diag correlation). */
     private var recordingStartedAtWallMs = 0L
@@ -107,6 +129,12 @@ internal class VoiceProcessor(
     private var harnessScreenCaptureJob: Job? = null
     private var harnessPipelineJob: Job? = null
     private val harnessPipelineInterrupted = AtomicBoolean(false)
+    /** After cancel-during-RECORDING, ignore the FW TX 0x02 stop so ASR does not run. */
+    private val discardNextRecordingStop = AtomicBoolean(false)
+    /** elapsedRealtime of last double-tap / cancel arm; used to ignore residual singles. */
+    @Volatile private var lastDoubleTapElapsedMs = 0L
+    /** stop-then-start job; cancelled on double-tap so a prior single cannot start later. */
+    private var pendingSingleTapStartJob: Job? = null
     private val reminderMutationLock = Any()
     private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
@@ -165,7 +193,6 @@ internal class VoiceProcessor(
         if (BleConnectionService.voiceState.value == VoiceState.RECORDING) return
         activeCapturePurpose = nextCapturePurpose
         nextCapturePurpose = CapturePurpose.AI_QUERY
-        cancelCurrentRecording = false
         if (activeCapturePurpose == CapturePurpose.MODE_SWITCH) {
             EvenG2ReadingSession.publishResponse("モードを指示してください\nダブルタップで決定")
         } else {
@@ -179,6 +206,7 @@ internal class VoiceProcessor(
         recordingStartedAtWallMs = System.currentTimeMillis()
         pendingGestureDiags = emptyList()
         harnessPipelineInterrupted.set(false)
+        discardNextRecordingStop.set(false)
         recordingStoppedAtWallMs = 0L
         clearPendingHarnessScreen()
         isCollectingPcm = true
@@ -188,7 +216,9 @@ internal class VoiceProcessor(
         BleConnectionService.setErrorMessage("")
         if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) tts?.stop()
         BleConnectionService.setVoiceState(VoiceState.RECORDING)
-        recordingCuePlayer.playStarted()
+        if (BleConnectionService.recordingCueEnabled.value) {
+            recordingCuePlayer.playStarted()
+        }
         if (activeCapturePurpose == CapturePurpose.AI_QUERY) startHarnessScreenCapture()
         Log.d(
             TAG,
@@ -295,6 +325,22 @@ internal class VoiceProcessor(
     }
 
     private fun handleBleRecordingStopped(reason: String = "firmware") {
+        if (discardNextRecordingStop.compareAndSet(true, false)) {
+            isCollectingPcm = false
+            sileroVad?.reset()
+            pcmBuffer.reset()
+            recordingStartedAtElapsedMs = 0L
+            recordingStartedAtWallMs = 0L
+            BleConnectionService.setBleMode(false)
+            clearPendingHarnessScreen()
+            // FW may emit residual singles around the forced stop; keep suppress armed.
+            armSingleTapSuppress("discarded-stop-after-cancel")
+            if (BleConnectionService.voiceState.value == VoiceState.RECORDING) {
+                BleConnectionService.setVoiceState(VoiceState.READY)
+            }
+            Log.i(TAG, "BLE recording stop discarded after double-tap cancel ($reason)")
+            return
+        }
         if (BleConnectionService.voiceState.value != VoiceState.RECORDING ||
             !BleConnectionService.bleMode.value
         ) return
@@ -319,18 +365,8 @@ internal class VoiceProcessor(
         )
 
         tts?.stop()
-        recordingCuePlayer.playStopped()
-
-        if (cancelCurrentRecording) {
-            cancelCurrentRecording = false
-            pendingGestureDiags = emptyList()
-            recordingStoppedAtWallMs = 0L
-            clearPendingHarnessScreen()
-            BleConnectionService.setTranscription("")
-            BleConnectionService.setResponse("")
-            BleConnectionService.setErrorMessage("")
-            BleConnectionService.setVoiceState(VoiceState.READY)
-            return
+        if (BleConnectionService.recordingCueEnabled.value) {
+            recordingCuePlayer.playStopped()
         }
 
         if (capturePurpose == CapturePurpose.MODE_SWITCH) {
@@ -1353,6 +1389,11 @@ internal class VoiceProcessor(
      * (missed TX 0x01/0x02 after reconnect) cannot block the next start.
      */
     internal fun handleSingleTap() {
+        val now = SystemClock.elapsedRealtime()
+        if (shouldSuppressSingleTapAfterDouble(now, lastDoubleTapElapsedMs)) {
+            Log.i(TAG, "Single tap suppressed after recent double tap")
+            return
+        }
         val command = singleTapRecordingCommand(
             interactionMode = BleConnectionService.interactionMode.value,
             state = BleConnectionService.voiceState.value,
@@ -1369,8 +1410,17 @@ internal class VoiceProcessor(
         Log.i(TAG, "Single tap: host-authorized recording start (stop-then-start)")
         nextCapturePurpose = CapturePurpose.AI_QUERY
         BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
-        scope.launch {
+        pendingSingleTapStartJob?.cancel()
+        pendingSingleTapStartJob = scope.launch {
             delay(HOST_START_RESYNC_DELAY_MS)
+            if (shouldSuppressSingleTapAfterDouble(
+                    SystemClock.elapsedRealtime(),
+                    lastDoubleTapElapsedMs,
+                )
+            ) {
+                Log.d(TAG, "Single tap start skipped: double tap suppress window")
+                return@launch
+            }
             if (BleConnectionService.voiceState.value == VoiceState.RECORDING) {
                 Log.d(TAG, "Single tap start skipped: already recording")
                 return@launch
@@ -1384,13 +1434,17 @@ internal class VoiceProcessor(
     }
 
     internal fun handleDoubleTap() {
+        armSingleTapSuppress("double-tap")
+        pendingSingleTapStartJob?.cancel()
+        pendingSingleTapStartJob = null
         val voiceState = BleConnectionService.voiceState.value
-        if (shouldInterruptOnDoubleTap(voiceState)) {
+        if (shouldInterruptOnDoubleTap(voiceState, activeCapturePurpose)) {
             interruptHarnessPipeline(voiceState)
             return
         }
         if (voiceState == VoiceState.RECORDING) {
-            if (activeCapturePurpose != CapturePurpose.MODE_SWITCH) cancelCurrentRecording = true
+            // A second double-tap confirms a mode command. Ordinary recordings
+            // were handled by interruptHarnessPipeline above and are discarded.
             BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
             return
         }
@@ -1444,13 +1498,34 @@ internal class VoiceProcessor(
         }
     }
 
+    private fun armSingleTapSuppress(reason: String) {
+        lastDoubleTapElapsedMs = SystemClock.elapsedRealtime()
+        Log.d(TAG, "Single-tap suppress armed for ${SINGLE_TAP_SUPPRESS_AFTER_DOUBLE_MS}ms ($reason)")
+    }
+
     private fun interruptHarnessPipeline(interruptedState: VoiceState) {
         harnessPipelineInterrupted.set(true)
         harnessPipelineJob?.cancel()
         harnessPipelineJob = null
+        pendingSingleTapStartJob?.cancel()
+        pendingSingleTapStartJob = null
         cancelAssistantRequest(activeAssistantRequestId)
         synchronized(reminderMutationLock) {
             activeReminderId.getAndSet(null)?.let(::rollbackInterruptedReminder)
+        }
+        armSingleTapSuppress("interrupt-$interruptedState")
+        if (interruptedState == VoiceState.RECORDING) {
+            discardNextRecordingStop.set(true)
+            isCollectingPcm = false
+            pcmBuffer.reset()
+            sileroVad?.reset()
+            recordingStartedAtElapsedMs = 0L
+            recordingStartedAtWallMs = 0L
+            clearPendingHarnessScreen()
+            harnessScreenCaptureJob?.cancel()
+            harnessScreenCaptureJob = null
+            BleConnectionService.setBleMode(false)
+            BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
         }
         val message = "中断しました"
         saveHistoryEntry(

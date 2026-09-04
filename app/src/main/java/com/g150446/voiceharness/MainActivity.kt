@@ -202,6 +202,7 @@ fun HomeScreen(
     val nodeGestureCaptureEnabled by viewModel.nodeGestureCaptureEnabled.collectAsState()
     val gestureDetectEnabled by viewModel.gestureDetectEnabled.collectAsState()
     val nodeGestureDetectEnabled by viewModel.nodeGestureDetectEnabled.collectAsState()
+    val recordingCueEnabled by viewModel.recordingCueEnabled.collectAsState()
     val modelStatus by viewModel.modelStatus.collectAsState()
     val lastPipelineMs by viewModel.lastPipelineMs.collectAsState()
     val context = LocalContext.current
@@ -728,11 +729,11 @@ fun HomeScreen(
                 "オフ — G2プラグイン接続中のみONできます"
             !readingPassthroughEnabled -> "オフ"
             !accessibilityEnabled ->
-                "待機中 — ユーザー補助を有効にするとKindle自動表示が使えます（ダブルタップでも開始可）"
+                "待機中 — ユーザー補助を有効にするとKindle自動表示が使えます"
             smartGlassesState.readingPageLoading -> "次ページ取得中…"
             smartGlassesState.readingPassthroughActive ->
                 "動作中 ${smartGlassesState.readingPage}/${smartGlassesState.readingPageCount}"
-            else -> "待機中 — 電子書籍を開くか、Harness Nodeをダブルタップしてください"
+            else -> "待機中 — Kindleを開くと自動で本文を取得します"
         }
         Text(
             text = readerModeStatus,
@@ -777,6 +778,34 @@ fun HomeScreen(
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "録音キュー音",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Switch(
+                checked = recordingCueEnabled,
+                onCheckedChange = viewModel::setRecordingCueEnabled,
+            )
+        }
+        Text(
+            text = if (recordingCueEnabled) {
+                "オン — 開始・終了でビープ"
+            } else {
+                "オフ — 開始/終了音なし"
+            },
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 8.dp),
