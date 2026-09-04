@@ -92,6 +92,8 @@ Byte 0  Byte 1  Byte 2      Bytes 3+
 | `0x37` | IMU軌跡 chunk | session, u16 start, count + 27 B×count |
 | `0x38` | IMU軌跡 end | session, u16 sent, flags（7 B） |
 | `0x39` | IMU収集スイッチ ack | enabled（4 B） |
+| `0x3A` | ジェスチャー検出スイッチ ack | enabled（4 B）。FW `0.0.95+` |
+| `0x40` | 運転モード ack | effective, pending（5 B） |
 | `0xD0` | タップ診断（レジスタ値、接続確立時に1回） | read_ret i8 + レジスタ8 B + u16 + i8（15 B） |
 | `0xD1` | 生 `TAP_SRC`（タップ1回につき1件） | TAP_SRC u8 + read_ret i8（5 B） |
 | `0xD2` | IMUレジスタ応答（RX `0x50`/`0x51`） | reg, value, ret（6 B） |
@@ -148,14 +150,29 @@ Nodeは `[0x00, 0x55, 0x39, enabled]` を `notify_all_conns()` で返す。
 **重要**: 録音セッションの開始/終了は TX `0x01`/`0x02` のみでアプリ状態を動かす。
 Node（`0.0.94+`）は single (`0x14`) / double (`0x12`) を **notify-only** とする。
 シングルタップの録音 start/stop は Android が RX `0x01`/`0x00` で指示する
-（パススルー中は RX を送らず G2 ページ送りのみ）。手首ジェスチャーは従来どおり
-Node 自律で `0x01`/`0x02`。`0x11` (motion_settled) も通知のみ。
+（パススルー中は RX を送らず G2 ページ送りのみ）。手首ジェスチャーは
+**ジェスチャー検出スイッチが ON かつ通常モード**のときのみ Node 自律で
+`0x01`/`0x02`（FW `0.0.95+` では検出は既定 OFF＝タップのみ）。
+`0x11` (motion_settled) も通知のみ。
 
 デバイス名: `HarnessNode`（XIAO）および `HarnessNode-Echo`（Atom Echo）。サービス UUID 共通。
+
+## ジェスチャー検出スイッチ（FW `0.0.95+`）
+
+手首ジェスチャーによる録音 start/stop の実行可否。**運転モードとは独立**。
+Android は RX へ `[0x07, 0x00/0x01]`（`CMD_SET_GESTURE_DETECT`）を書く。
+Node は `[0x00, 0x55, 0x3A, enabled]` を返す。
+
+- **既定オフ**（ブート時 / リセット後）。日常利用はシングルタップのみ。
+- Node はこのスイッチを **RAM にしか持たない**。接続のたびに Android が再送する。
+- OFF のときジェスチャー状態機械は進まず、ライブ診断 `0x30` も出ない。
+- ON かつ通常モードで従来どおりジェスチャー録音。運転モード中は検出 ON でもジェスチャー停止。
+- IMU軌跡収集（`0x06`）とは別。収集は従来どおり既定オフ。
 
 ## 運転モード
 
 AndroidはRXへ `[0x05, 0x00]`（通常）または `[0x05, 0x01]`（運転）を送る。録音中の切替はNodeが現在の録音終了後に適用する。NodeはTXへ `[0x00, 0x55, 0x40, effective, pending]` を返す。運転モードではジェスチャー検出を停止する。録音トグルはホスト承認の **single tap/click**（double ではない）。
+Android の Activity Recognition による自動運転判定は**既定オフ**（通知の「運転判定」で opt-in）。
 
 `0x40` の扱い（FW `0.0.88+`、Android対応済み）:
 
@@ -166,7 +183,8 @@ AndroidはRXへ `[0x05, 0x00]`（通常）または `[0x05, 0x01]`（運転）�
   Mac Handy に primary を譲っている間も Android がモードを追える（`0.0.87` までは
   primary 1本にしか飛ばず、secondary の Android には届かなかった）。
 - 接続確立時にも primary / secondary のどちらでも現在のモードを1回送る
-  （FW `0.0.91+` では収集スイッチの現在値 `0x39` も同時に送る）。
+  （FW `0.0.91+` では収集スイッチの現在値 `0x39`、`0.0.95+` では検出スイッチ
+  `0x3A` も同時に送る）。
 - `pending == 0xff` は保留なし。`effective` / `pending` はいずれも 0=通常、1=運転。
 
 **接続時の `0x40` / `0xD0` は購読完了後に届く（FW `0.0.90+`）。** GATT接続から
@@ -267,7 +285,8 @@ Android は `GestureDiagStore` に蓄積する。停止直後にバッチが届�
 
 ## RX コマンド（Android → nRF）
 
-手首ジェスチャーの録音開始・停止はファームウェア自律（TX `0x01` / `0x02`）。
+手首ジェスチャーの録音開始・停止は、検出スイッチ ON かつ通常モードのとき
+ファームウェア自律（TX `0x01` / `0x02`）。
 シングルタップ録音はホスト承認（FW `0.0.94+`）で Android が RX を送る。
 無音による自動停止（RX `0x00`）は廃止済み。
 
@@ -275,6 +294,9 @@ Android は `GestureDiagStore` に蓄積する。停止直後にバッチが届�
 |---|---|
 | `0x01` | 録音開始（single tap ホスト承認） |
 | `0x00` | 録音停止（single tap ホスト承認） |
+| `[0x05, m]` | 運転モード（0=通常, 1=運転） |
+| `[0x06, e]` | IMU軌跡収集（0=off, 1=on）。既定 off |
+| `[0x07, e]` | ジェスチャー検出（0=off, 1=on）。既定 off。FW `0.0.95+` |
 
 ## 再接続ロジック
 

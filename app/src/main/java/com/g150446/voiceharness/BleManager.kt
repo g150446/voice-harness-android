@@ -67,6 +67,12 @@ sealed class BleEvent {
      * request still holds.
      */
     data class GestureCaptureAck(val enabled: Boolean) : BleEvent()
+
+    /**
+     * Gesture detect switch ack (event 0x3A). Independent of driving mode and
+     * of trajectory capture. Default off on the node; RAM only.
+     */
+    data class GestureDetectAck(val enabled: Boolean) : BleEvent()
     /** Live milestone/reject sample (event 0x30). Not used for voice pipeline. */
     data class GestureDiag(
         val stage: Int,
@@ -108,6 +114,13 @@ internal fun parseGestureCaptureAck(data: ByteArray): BleEvent.GestureCaptureAck
     return BleEvent.GestureCaptureAck(enabled = data[3].toInt() != 0)
 }
 
+/** Parses the gesture detect ack (event 0x3A, 4 bytes fixed). */
+internal fun parseGestureDetectAck(data: ByteArray): BleEvent.GestureDetectAck? {
+    if (data.size < 4 || (data[1].toInt() and 0xFF) != 0x55) return null
+    if ((data[2].toInt() and 0xFF) != 0x3A) return null
+    return BleEvent.GestureDetectAck(enabled = data[3].toInt() != 0)
+}
+
 /**
  * Parses the operation mode ack (event 0x40, 5 bytes fixed). Kept out of
  * [parseSimpleBleEvent], which only handles payload-free events.
@@ -146,7 +159,11 @@ class BleManager(
         val BATTERY_SERVICE_UUID: UUID = UUID.fromString("0000180F-0000-1000-8000-00805f9b34fb")
         val BATTERY_LEVEL_CHAR_UUID: UUID = UUID.fromString("00002A19-0000-1000-8000-00805f9b34fb")
         const val SCAN_TIMEOUT_MS = 30_000L
+        /** Exact XIAO name; Echo advertises `HarnessNode-Echo` (prefix match). */
         const val DEVICE_NAME = "HarnessNode"
+
+        fun isHarnessNodeName(name: String): Boolean =
+            name == DEVICE_NAME || name.startsWith("$DEVICE_NAME-")
     }
 
     private val preferences = BleConnectionPreferences(context)
@@ -365,7 +382,7 @@ class BleManager(
             val uuids = result.scanRecord?.serviceUuids
             val deviceName = result.device.name ?: result.scanRecord?.deviceName ?: ""
             val hasServiceUuid = uuids != null && uuids.contains(ParcelUuid(SERVICE_UUID))
-            val hasDeviceName = deviceName == DEVICE_NAME
+            val hasDeviceName = isHarnessNodeName(deviceName)
 
             Log.v(TAG, "Scan result: addr=${result.device.address} name=$deviceName uuid=$hasServiceUuid")
 
@@ -824,6 +841,7 @@ class BleManager(
                         BleEvent.PeerDisconnected
                     }
                     0x39 -> parseGestureCaptureAck(data)
+                    0x3A -> parseGestureDetectAck(data)
                     0x40 -> parseOperationModeAck(data)
                     else -> null
                 } ?: return

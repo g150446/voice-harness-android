@@ -185,15 +185,16 @@ nRF52840                        Android
 
 アプリ状態は常に TX `0x01`/`0x02` に追従する。開始のきっかけは次のいずれか:
 
-| 経路 | FW `0.0.94+` | Android |
+| 経路 | FW `0.0.95+` | Android |
 |---|---|---|
-| 手首ジェスチャー | 自律で `0x01`/`0x02` | 追従のみ |
-| シングルタップ (`0x14`) | **notify-only** | パススルー OFF 時に RX `0x01`/`0x00` でホスト承認 |
+| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | パススルー OFF 時に RX `0x01`/`0x00` でホスト承認 |
+| 手首ジェスチャー | 検出スイッチ ON 時のみ自律 `0x01`/`0x02`（**既定 OFF**） | ホーム「ジェスチャー録音」→ RX `0x07` |
 | パススルー ON の single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
 | ダブルタップ (`0x12`) | notify-only | パススルー ON/OFF トグル（処理中は割り込み） |
 
 無音による RX `0x00` 自動停止は廃止済み。  
-詳細は [`ble_protocol.md`](ble_protocol.md) / [`smart_glasses_output.md`](smart_glasses_output.md)。
+詳細は [`ble_protocol.md`](ble_protocol.md) / [`gesture_detect_default_off.md`](gesture_detect_default_off.md) /
+[`smart_glasses_output.md`](smart_glasses_output.md)。
 
 1秒以上の録音では、16 kHz / 16-bit / monoから算出したPCM時間が壁時計の録音時間の
 70%未満ならASRへ進めない。これは欠落音声による無関係な文字列生成を防ぐ境界であり、
