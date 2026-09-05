@@ -55,10 +55,12 @@ G2を選択しても返答は電話画面と履歴へ残る。Even Hubプラグ�
 4. 活性なら Started（TTSなし）。否则 clear して Failed → TTSフォールバック
 5. 新しい録音開始 / 出力先を音声へ戻す / リーダーモードOFF で `clearDisplay()`
 
-リーダーモードは `mode=reading`。G2プラグインがページ分割し、Harness Node の**シングルタップ**
-（`singleTapCount` / `0x14`）で G2 内送りを行う。リーダーモード中の single は録音に使わない
-（FW `0.0.94+` は notify-only、Android も RX を送らない）。末尾では
-`/api/v1/reading/advance` 経由で Kindle を1ページめくる。LLM が `writing_direction` を判定し、
+リーダーモードは `mode=reading`。G2プラグインが実ピクセル幅と句読点でページ分割し、Harness Node の
+**シングルタップ**（`singleTapCount` / `0x14`）で G2 内送りを行う。リーダーモード中の single は
+録音に使わない（FW `0.0.94+` は notify-only、Android も RX を送らない）。次のG2画面を満たす本文が
+不足すると、短い画面を確定する前に `/api/v1/reading/advance` 経由で Kindle をめくり、次ページ本文を
+未消費本文へ結合する。文末を優先し、長い一文だけ読点または表示容量で分割する。取得失敗時は残り本文を
+短い画面として表示する。LLM が `writing_direction` を判定し、
 縦書きは左→右（`SWIPE_RIGHT`）、横書きは右→左（`SWIPE_LEFT`）。Z100フォールバックは行わない。
 
 **ダブルタップ**は操作モード指示に使う。待機中の1回目で録音を開始し、モード名を話した後の
@@ -77,7 +79,7 @@ G2を選択しても返答は電話画面と履歴へ残る。Even Hubプラグ�
 | Path | 用途 |
 |---|---|
 | `GET /api/v1/reading` | `enabled/active/mode/revision/bodyText/loading/error/doubleTapCount` |
-| `POST /api/v1/reading/advance` | 読書モード末尾でのKindle次ページ要求 |
+| `POST /api/v1/reading/advance` | 次のG2画面を満たす本文が不足したときのKindle次ページ要求 |
 | `GET /api/v1/double-tap` | 診断用ダブルタップカウンタ |
 
 プラグイン手順は [`even-g2/app/README.md`](../even-g2/app/README.md)

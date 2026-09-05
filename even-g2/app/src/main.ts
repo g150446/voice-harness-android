@@ -5,7 +5,7 @@ import {
   TextContainerUpgrade,
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
-import { paginate } from './paginate'
+import { IncrementalReadingPaginator, paginate } from './paginate'
 import { measureTextWrap } from '@evenrealities/pretext'
 
 const BODY_WIDTH = 576
@@ -59,8 +59,14 @@ let currentRevision = -1
 let currentMode: DisplayMode = 'idle'
 let lastSingleTapCount: number | null = null
 let awaitingAdvanceRevision: number | null = null
+let blockedAdvanceRevision: number | null = null
+let pendingReadingPage = false
 let lastHarborTitle: string | null = null
 let rendering: Promise<unknown> = Promise.resolve()
+const readingPaginator = new IncrementalReadingPaginator({
+  width: INNER_WIDTH,
+  height: INNER_HEIGHT,
+})
 
 function resolveMode(state: ReadingState): DisplayMode {
   if (state.mode === 'response' || state.mode === 'reading' || state.mode === 'harbor' || state.mode === 'idle') {
@@ -132,7 +138,11 @@ async function showPage(index: number): Promise<void> {
 
 async function requestNextKindlePage(): Promise<void> {
   if (currentMode !== 'reading') return
-  if (awaitingAdvanceRevision === currentRevision || currentRevision < 0) return
+  if (
+    awaitingAdvanceRevision === currentRevision ||
+    blockedAdvanceRevision === currentRevision ||
+    currentRevision < 0
+  ) return
   awaitingAdvanceRevision = currentRevision
   try {
     const response = await fetch(ADVANCE_URL, {
@@ -144,8 +154,44 @@ async function requestNextKindlePage(): Promise<void> {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
   } catch (error) {
     console.warn('Could not request the next Kindle page:', error)
-    awaitingAdvanceRevision = null
+    await finishReadingPageWithRemainder()
   }
+}
+
+async function requestReadingPage(): Promise<void> {
+  if (currentMode !== 'reading' || pendingReadingPage) return
+  pendingReadingPage = true
+  await fulfillReadingPage()
+}
+
+async function fulfillReadingPage(): Promise<void> {
+  if (currentMode !== 'reading' || !pendingReadingPage) return
+  const page = readingPaginator.takeNextPage()
+  if (page == null) {
+    if (blockedAdvanceRevision === currentRevision) {
+      pendingReadingPage = false
+      return
+    }
+    if (pages.length === 0 && awaitingAdvanceRevision === null) {
+      await textUpgrade('Kindle\n\n次ページを取得中…')
+    }
+    await requestNextKindlePage()
+    return
+  }
+  pages.push(page)
+  pendingReadingPage = false
+  await showPage(pages.length - 1)
+}
+
+async function finishReadingPageWithRemainder(): Promise<void> {
+  blockedAdvanceRevision = currentRevision
+  awaitingAdvanceRevision = null
+  if (!pendingReadingPage) return
+  const remainder = readingPaginator.flushRemainder()
+  pendingReadingPage = false
+  if (remainder == null) return
+  pages.push(remainder)
+  await showPage(pages.length - 1)
 }
 
 function singleTapCountOf(state: ReadingState): number {
@@ -166,7 +212,7 @@ async function handleSingleTapCount(count: number): Promise<void> {
   for (let index = 0; index < delta; index += 1) {
     if (currentPage < pages.length - 1) await showPage(currentPage + 1)
     else if (currentMode === 'reading') {
-      await requestNextKindlePage()
+      await requestReadingPage()
       break
     } else {
       break
@@ -179,16 +225,20 @@ async function renderState(state: ReadingState): Promise<void> {
   if (mode !== 'harbor') lastHarborTitle = null
   const tapCount = singleTapCountOf(state)
   if (state.revision !== currentRevision) {
+    const previousRevision = currentRevision
+    const expectedReadingAdvance = mode === 'reading' &&
+      currentMode === 'reading' &&
+      awaitingAdvanceRevision === previousRevision
     currentRevision = state.revision
     currentMode = mode
-    currentPage = 0
     awaitingAdvanceRevision = null
-    pages = mode === 'harbor' ? [] : state.active && state.bodyText ? paginate(state.bodyText, {
-      width: INNER_WIDTH,
-      height: INNER_HEIGHT,
-    }) : []
+    blockedAdvanceRevision = null
     lastSingleTapCount = tapCount
     if (mode === 'harbor') {
+      pages = []
+      currentPage = 0
+      pendingReadingPage = false
+      readingPaginator.reset('')
       const revision = currentRevision
       const titleChanged = Boolean(state.title) && state.title !== lastHarborTitle
       lastHarborTitle = state.title ?? null
@@ -203,9 +253,30 @@ async function renderState(state: ReadingState): Promise<void> {
       } else {
         await textUpgrade(content)
       }
-    } else if (pages.length > 0) {
+    } else if (mode === 'reading' && state.active && state.bodyText) {
+      if (expectedReadingAdvance) {
+        readingPaginator.append(state.bodyText)
+      } else {
+        pages = []
+        currentPage = -1
+        pendingReadingPage = true
+        readingPaginator.reset(state.bodyText)
+      }
+      await fulfillReadingPage()
+    } else if (state.active && state.bodyText) {
+      pendingReadingPage = false
+      readingPaginator.reset('')
+      pages = paginate(state.bodyText, {
+        width: INNER_WIDTH,
+        height: INNER_HEIGHT,
+      })
+      currentPage = 0
       await textUpgrade(pages[0])
     } else {
+      pages = []
+      currentPage = 0
+      pendingReadingPage = false
+      readingPaginator.reset('')
       await textUpgrade(idleMessage(state))
     }
   } else {
@@ -213,6 +284,13 @@ async function renderState(state: ReadingState): Promise<void> {
   }
   await handleSingleTapCount(tapCount)
   if (state.active && state.loading) return
+  if (
+    currentMode === 'reading' &&
+    state.error &&
+    awaitingAdvanceRevision === currentRevision
+  ) {
+    await finishReadingPageWithRemainder()
+  }
   if (state.error && pages.length === 0) await textUpgrade(idleMessage(state))
 }
 
@@ -245,7 +323,7 @@ const unsubscribe = bridge.onEvenHubEvent((event) => {
   }
   if (textType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
     if (currentPage < pages.length - 1) void showPage(currentPage + 1)
-    else void requestNextKindlePage()
+    else if (currentMode === 'reading') void requestReadingPage()
     return
   }
   if (sysType === OsEventTypeList.SYSTEM_EXIT_EVENT || sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT) {

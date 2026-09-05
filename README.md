@@ -33,7 +33,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 [リーダーモード]
   ・G2 プラグイン接続中のみ ON 可。切断で自動 OFF。切替は G2 に表示
   ・ホームのユーザー補助（Accessibility）必須（Kindle 自動／ページめくり）
-  ・G2 プラグインが本文をページ分割、Node シングルタップで送り
+  ・G2 プラグインが実表示幅と句読点で本文を分割、Node シングルタップで送り
+  ・次のG2画面に本文が足りない場合はKindleを自動でめくり、次ページ本文を結合
 
 [Terminal Harborモード]
   ・Terminal Harborの既存モバイルブリッジとQR/HMACでペアリング
