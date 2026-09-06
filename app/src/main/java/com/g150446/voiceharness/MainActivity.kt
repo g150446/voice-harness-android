@@ -578,12 +578,21 @@ fun HomeScreen(
             modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
         )
 
-        Text(
-            text = "Terminal Harbor",
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
+        Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-        )
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = "Terminal Harbor",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Switch(
+                checked = interactionMode == InteractionMode.HARBOR,
+                onCheckedChange = viewModel::setHarborModeEnabled,
+            )
+        }
         Text(
             text = when {
                 harborConnectionState.error != null -> harborConnectionState.error!!

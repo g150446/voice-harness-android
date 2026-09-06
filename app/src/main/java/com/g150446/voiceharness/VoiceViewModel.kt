@@ -157,6 +157,13 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
         BleConnectionService.setInteractionMode(getApplication(), mode)
     }
 
+    fun setHarborModeEnabled(enabled: Boolean) {
+        BleConnectionService.setInteractionMode(
+            getApplication(),
+            if (enabled) InteractionMode.HARBOR else InteractionMode.AI,
+        )
+    }
+
     fun pairTerminalHarbor(rawUri: String) {
         BleConnectionService.pairTerminalHarbor(rawUri)
     }

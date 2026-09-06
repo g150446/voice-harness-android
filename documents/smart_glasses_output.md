@@ -31,8 +31,14 @@ Voice HarnessはTerminal Harborの `harbor://pair` URIからHMAC鍵を導出し�
 切替時に約1秒だけ表示し、通常時は表示領域全体を端末本文に使う。
 
 初版は表示専用で、シングルタップ、G2スワイプによる端末操作は行わない。ペアリング鍵は
-Android Keystoreで暗号化し、端末本文とともに永続化・ログ出力しない。LAN HTTPは署名されるが
-暗号化されないため、Tailscale HTTPSを優先し、LANは信頼できるネットワークでのみ使用する。
+Android Keystoreで暗号化し、端末本文とともに永続化・ログ出力しない。ブリッジは動的な
+Tailscale/LANアドレス上のHTTPを広告するため、Android Manifestでcleartext通信を許可する。
+接続先はTailscaleを優先する。HMACは相互認証と改ざん検出を担うが通信自体は暗号化されないため、
+LANフォールバックは信頼できるネットワークでのみ使用する。
+
+ホームの「Terminal Harbor」トグルをONにするとHarborモード、OFFにするとAI対話モードへ戻る。
+ONにはG2プラグイン接続とTerminal Harborのペアリングが必要で、上部の操作モードボタン、音声指示、
+ペアリング解除によるモード変更もトグルへ反映される。リーダーとHarborは排他的に動作する。
 
 G2を選択しても返答は電話画面と履歴へ残る。Even Hubプラグインが bridge をポーリング中
 （`isClientActive`）なら表示成功としてTTSを抑止し、未接続なら同じ返答をTTSへ戻す。
