@@ -69,6 +69,29 @@ class EvenG2BridgeServerTest {
     }
 
     @Test
+    fun `harbor summary and action are encoded separately`() {
+        val json = evenG2ReadingJson(
+            EvenG2ReadingSnapshot(
+                enabled = false,
+                active = true,
+                mode = EvenG2DisplayMode.HARBOR,
+                revision = 9,
+                bodyText = null,
+                harborSummaryText = "テストまで完了しました。",
+                harborActionText = "続行しますか？\n1. はい\n2. いいえ",
+                loading = false,
+                error = null,
+                doubleTapCount = 0,
+            )
+        )
+        org.json.JSONObject(json).also {
+            assertEquals("テストまで完了しました。", it.getString("harborSummaryText"))
+            assertEquals("続行しますか？\n1. はい\n2. いいえ", it.getString("harborActionText"))
+            assertTrue(it.isNull("bodyText"))
+        }
+    }
+
+    @Test
     fun `response mode is encoded for AI answers`() {
         val json = evenG2ReadingJson(
             EvenG2ReadingSnapshot(

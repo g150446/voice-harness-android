@@ -21,6 +21,8 @@ internal fun evenG2ReadingJson(snapshot: EvenG2ReadingSnapshot): String =
         put("revision", snapshot.revision)
         put("title", snapshot.title ?: JSONObject.NULL)
         put("bodyText", snapshot.bodyText ?: JSONObject.NULL)
+        put("harborSummaryText", snapshot.harborSummaryText ?: JSONObject.NULL)
+        put("harborActionText", snapshot.harborActionText ?: JSONObject.NULL)
         put("loading", snapshot.loading)
         put("error", snapshot.error ?: JSONObject.NULL)
         put("doubleTapCount", snapshot.doubleTapCount)

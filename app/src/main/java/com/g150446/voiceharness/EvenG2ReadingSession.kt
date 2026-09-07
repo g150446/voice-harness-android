@@ -19,6 +19,8 @@ internal data class EvenG2ReadingSnapshot(
     val revision: Long,
     val title: String? = null,
     val bodyText: String?,
+    val harborSummaryText: String? = null,
+    val harborActionText: String? = null,
     val loading: Boolean,
     val error: String?,
     val doubleTapCount: Long,
@@ -44,6 +46,8 @@ internal object EvenG2ReadingSession {
         val revision: Long = 0L,
         val title: String? = null,
         val bodyText: String? = null,
+        val harborSummaryText: String? = null,
+        val harborActionText: String? = null,
         val loading: Boolean = false,
         val error: String? = null,
     )
@@ -65,6 +69,8 @@ internal object EvenG2ReadingSession {
                     revision = current.revision + 1L,
                     title = null,
                     bodyText = null,
+                    harborSummaryText = null,
+                    harborActionText = null,
                     loading = false,
                     error = null,
                 )
@@ -84,6 +90,8 @@ internal object EvenG2ReadingSession {
                 revision = current.revision + 1L,
                 title = null,
                 bodyText = normalized,
+                harborSummaryText = null,
+                harborActionText = null,
                 loading = false,
                 error = null,
             )
@@ -99,6 +107,8 @@ internal object EvenG2ReadingSession {
                 revision = current.revision + 1L,
                 title = null,
                 bodyText = normalized,
+                harborSummaryText = null,
+                harborActionText = null,
                 loading = false,
                 error = null,
             )
@@ -115,16 +125,25 @@ internal object EvenG2ReadingSession {
         publishResponse(message)
     }
 
-    fun publishHarbor(title: String?, text: String?, error: String?) {
+    fun publishHarbor(
+        title: String?,
+        text: String?,
+        error: String?,
+        summaryText: String? = null,
+        actionText: String? = null,
+    ) {
         val normalizedTitle = title?.trim()?.takeIf(String::isNotEmpty)
         val normalizedText = text?.replace("\r\n", "\n")?.replace('\r', '\n')?.trimEnd()
             ?.takeIf(String::isNotEmpty)
         val normalizedError = error?.trim()?.takeIf(String::isNotEmpty)
+        val normalizedSummary = normalize(summaryText.orEmpty())
+        val normalizedAction = normalize(actionText.orEmpty())
         state.update { current ->
             if (
                 current.active && current.mode == EvenG2DisplayMode.HARBOR &&
                 current.title == normalizedTitle && current.bodyText == normalizedText &&
-                current.error == normalizedError
+                current.harborSummaryText == normalizedSummary &&
+                current.harborActionText == normalizedAction && current.error == normalizedError
             ) {
                 current
             } else {
@@ -134,6 +153,8 @@ internal object EvenG2ReadingSession {
                     revision = current.revision + 1L,
                     title = normalizedTitle,
                     bodyText = normalizedText,
+                    harborSummaryText = normalizedSummary,
+                    harborActionText = normalizedAction,
                     loading = false,
                     error = normalizedError,
                 )
@@ -152,6 +173,8 @@ internal object EvenG2ReadingSession {
                     revision = current.revision + 1L,
                     title = null,
                     bodyText = null,
+                    harborSummaryText = null,
+                    harborActionText = null,
                     loading = false,
                     error = null,
                 )
@@ -171,6 +194,8 @@ internal object EvenG2ReadingSession {
             revision = current.revision,
             title = current.title,
             bodyText = current.bodyText,
+            harborSummaryText = current.harborSummaryText,
+            harborActionText = current.harborActionText,
             loading = current.loading,
             error = current.error,
             doubleTapCount = doubleTapCount,

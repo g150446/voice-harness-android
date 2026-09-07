@@ -146,7 +146,9 @@ ROLE_ASSISTANT
 
 シングルタップ `0x14` / ダブルタップ `0x12` は同じ入力 Channel で受信し、Service が
 回数を UI と G2 ブリッジへ公開する。FW `0.0.94+` ではどちらも notify-only。
-single はホスト承認録音または G2 ページ送り、double はリーダーモード トグル／パイプライン割り込み。
+ホームの設定で single / double のどちらをホスト承認録音に使うか選べる（既定 single）。
+リーダー / Harbor 中の single は G2 ページ送り。G2 接続中の double はモード指示録音で、
+未接続時の double はホーム設定に従う。通常処理中の double はパイプライン割り込み。
 
 ### バックグラウンド動作の仕組み
 
@@ -184,14 +186,22 @@ nRF52840                        Android
     │                               │   ASR → Chat → TTS or Even G2
 ```
 
+### 優先接続（Android / Mac Handy）
+
+両方同時接続すると、PCM と TX `0x01`/`0x02` は Node の primary 1本にしか届かない。
+タップは全接続へ飛ぶ。ホーム「優先接続」が Android のとき、`BleManager` は
+Handy の接続 800 ms 後 claim より後（0 / 1000 / 1600 ms）に RX `0x02` を再送し、
+ホスト承認の録音開始前にも `0x02` を書く。Mac Handy 優先なら `0x31` で `0x03` yield。
+詳細は [`ble_protocol.md`](ble_protocol.md) の「デュアル接続と優先接続」。
+
 アプリ状態は常に TX `0x01`/`0x02` に追従する。開始のきっかけは次のいずれか:
 
 | 経路 | FW `0.0.95+` | Android |
 |---|---|---|
-| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | リーダーモード OFF 時に RX `0x01`/`0x00` でホスト承認 |
+| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | ホームで single 選択かつ AI 対話モード時に RX `0x01`/`0x00` でホスト承認 |
 | 手首ジェスチャー | 検出スイッチ ON 時のみ自律 `0x01`/`0x02`（**既定 OFF**） | ホーム「ジェスチャー録音」→ RX `0x07` |
-| リーダーモード ON の single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
-| ダブルタップ (`0x12`) | notify-only | 待機中はモード指示録音を開始、同録音中は確定、通常の処理中は割り込み |
+| リーダー / Harbor の single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
+| ダブルタップ (`0x12`) | notify-only | G2 接続中はモード指示録音（確定／通常処理は割り込み）。未接続時はホームの double 選択時だけ録音 start/stop |
 
 無音による RX `0x00` 自動停止は廃止済み。  
 詳細は [`ble_protocol.md`](ble_protocol.md) / [`gesture_detect_default_off.md`](gesture_detect_default_off.md) /

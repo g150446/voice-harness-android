@@ -6,6 +6,7 @@ import {
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
 import { IncrementalReadingPaginator, paginate } from './paginate'
+import { paginateHarborSummary } from './harbor'
 import { measureTextWrap } from '@evenrealities/pretext'
 
 const BODY_WIDTH = 576
@@ -27,6 +28,8 @@ interface ReadingState {
   revision: number
   title?: string | null
   bodyText: string | null
+  harborSummaryText?: string | null
+  harborActionText?: string | null
   loading: boolean
   error: string | null
   doubleTapCount?: number
@@ -62,6 +65,7 @@ let awaitingAdvanceRevision: number | null = null
 let blockedAdvanceRevision: number | null = null
 let pendingReadingPage = false
 let lastHarborTitle: string | null = null
+let currentHarborPaged = false
 let rendering: Promise<unknown> = Promise.resolve()
 const readingPaginator = new IncrementalReadingPaginator({
   width: INNER_WIDTH,
@@ -207,7 +211,11 @@ async function handleSingleTapCount(count: number): Promise<void> {
   }
   const delta = count - lastSingleTapCount
   lastSingleTapCount = count
-  if (currentMode !== 'reading' && currentMode !== 'response') return
+  if (
+    currentMode !== 'reading' &&
+    currentMode !== 'response' &&
+    !(currentMode === 'harbor' && currentHarborPaged)
+  ) return
   if (currentRevision < 0 || awaitingAdvanceRevision !== null) return
   for (let index = 0; index < delta; index += 1) {
     if (currentPage < pages.length - 1) await showPage(currentPage + 1)
@@ -222,7 +230,10 @@ async function handleSingleTapCount(count: number): Promise<void> {
 
 async function renderState(state: ReadingState): Promise<void> {
   const mode = resolveMode(state)
-  if (mode !== 'harbor') lastHarborTitle = null
+  if (mode !== 'harbor') {
+    lastHarborTitle = null
+    currentHarborPaged = false
+  }
   const tapCount = singleTapCountOf(state)
   if (state.revision !== currentRevision) {
     const previousRevision = currentRevision
@@ -235,7 +246,14 @@ async function renderState(state: ReadingState): Promise<void> {
     blockedAdvanceRevision = null
     lastSingleTapCount = tapCount
     if (mode === 'harbor') {
-      pages = []
+      currentHarborPaged = Boolean(state.harborSummaryText || state.harborActionText)
+      pages = currentHarborPaged
+        ? paginateHarborSummary(
+            state.harborSummaryText ?? '',
+            state.harborActionText ?? '',
+            { width: INNER_WIDTH, height: INNER_HEIGHT },
+          )
+        : []
       currentPage = 0
       pendingReadingPage = false
       readingPaginator.reset('')
@@ -244,6 +262,8 @@ async function renderState(state: ReadingState): Promise<void> {
       lastHarborTitle = state.title ?? null
       const content = state.error
         ? `Terminal Harbor\n\n${state.error}`
+        : currentHarborPaged
+          ? pages[0]
         : harborTail(state.bodyText ?? '')
       if (titleChanged && state.title) {
         await textUpgrade(`Harbor\n\n${state.title}`)

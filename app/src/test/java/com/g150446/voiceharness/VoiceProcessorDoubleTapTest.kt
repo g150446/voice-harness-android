@@ -9,6 +9,14 @@ import org.junit.Test
 class VoiceProcessorDoubleTapTest {
 
     @Test
+    fun `recording tap mode storage defaults to single and restores known values`() {
+        assertEquals(RecordingTapMode.SINGLE, RecordingTapMode.fromStorage(null))
+        assertEquals(RecordingTapMode.SINGLE, RecordingTapMode.fromStorage("unknown"))
+        assertEquals(RecordingTapMode.SINGLE, RecordingTapMode.fromStorage("SINGLE"))
+        assertEquals(RecordingTapMode.DOUBLE, RecordingTapMode.fromStorage("DOUBLE"))
+    }
+
+    @Test
     fun `double tap interrupts recording and post-recording pipeline states`() {
         assertFalse(shouldInterruptOnDoubleTap(VoiceState.READY))
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.RECORDING))
@@ -64,6 +72,139 @@ class VoiceProcessorDoubleTapTest {
         assertEquals(
             BLE_RX_START_RECORDING,
             singleTapRecordingCommand(InteractionMode.AI, VoiceState.SPEAKING),
+        )
+    }
+
+    @Test
+    fun `single mode routes single tap to recording and ignores double without G2`() {
+        assertEquals(
+            RecordingTapAction.START_RECORDING,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.STOP_RECORDING,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.RECORDING,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.NONE,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.RECORDING,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.NONE,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
+        )
+    }
+
+    @Test
+    fun `double mode without G2 starts or stops recording and ignores single`() {
+        assertEquals(
+            RecordingTapAction.NONE,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.START_RECORDING,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.STOP_RECORDING,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.RECORDING,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.INTERRUPT,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.TRANSCRIBING,
+            ),
+        )
+    }
+
+    @Test
+    fun `G2 connection uses double tap for mode-switch recording`() {
+        assertEquals(
+            RecordingTapAction.START_MODE_SWITCH,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.START_MODE_SWITCH,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.STOP_RECORDING,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = true,
+                state = VoiceState.RECORDING,
+                capturePurpose = CapturePurpose.MODE_SWITCH,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.INTERRUPT,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = true,
+                state = VoiceState.RECORDING,
+            ),
         )
     }
 }

@@ -118,6 +118,45 @@ data class HarborConnectionState(
 
 internal data class HarborWorkspace(val id: String, val name: String, val selected: Boolean)
 internal data class HarborScreen(val text: String)
+internal data class HarborG2View(
+    val summary: Boolean,
+    val text: String = "",
+    val summaryText: String = "",
+    val question: String = "",
+    val options: List<String> = emptyList(),
+)
+
+internal fun filterHarborDisplayText(text: String): String {
+    val separators = "-_.=~‐‑‒–—―·•⋅⋯…─━│┃┄┅┆┇┈┉┊┋╌╍╎╏┌┐└┘├┤┬┴┼╭╮╰╯"
+    return text.lineSequence()
+        .map(String::trimEnd)
+        .filter { line ->
+            val trimmed = line.trim()
+            trimmed.isNotEmpty() && !trimmed.all { it.isWhitespace() || separators.contains(it) }
+        }
+        .joinToString("\n")
+}
+
+internal fun parseHarborG2View(json: JSONObject): HarborG2View {
+    if (json.optString("view") != "summary") {
+        return HarborG2View(
+            summary = false,
+            text = filterHarborDisplayText(json.optString("text")),
+        )
+    }
+    val optionsJson = json.optJSONArray("options") ?: JSONArray()
+    val options = buildList {
+        for (index in 0 until optionsJson.length()) {
+            optionsJson.optString(index).trim().takeIf(String::isNotEmpty)?.let(::add)
+        }
+    }
+    return HarborG2View(
+        summary = true,
+        summaryText = json.optString("summary").trim(),
+        question = json.optString("question").trim(),
+        options = options,
+    )
+}
 
 internal class HarborCredentialsStore(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -214,6 +253,11 @@ internal class HarborApiClient(
         .writeTimeout(3, TimeUnit.SECONDS)
         .build(),
 ) {
+    private val g2Http = http.newBuilder()
+        .readTimeout(35, TimeUnit.SECONDS)
+        .callTimeout(40, TimeUnit.SECONDS)
+        .build()
+
     fun pair(payload: HarborPairPayload): HarborCredentials {
         val clientId = UUID.randomUUID().toString()
         val nonceBytes = ByteArray(32).also(SecureRandom()::nextBytes)
@@ -284,10 +328,24 @@ internal class HarborApiClient(
         return HarborScreen(JSONObject(String(response.body)).optString("text"))
     }
 
+    fun fetchG2View(credentials: HarborCredentials, workspaceId: String): HarborG2View {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/g2-view"
+        val response = authorized(credentials, "POST", path, "{}".toByteArray())
+        if (response.code == 404) {
+            return HarborG2View(
+                summary = false,
+                text = filterHarborDisplayText(fetchScreen(credentials, workspaceId).text),
+            )
+        }
+        checkOk(response)
+        return parseHarborG2View(JSONObject(String(response.body)))
+    }
+
     private fun authorized(
         credentials: HarborCredentials,
         method: String,
         path: String,
+        body: ByteArray = ByteArray(0),
     ): HarborResponse {
         val candidates = buildList {
             add(credentials.baseUrl)
@@ -300,7 +358,7 @@ internal class HarborApiClient(
                     baseUrl,
                     method,
                     path,
-                    ByteArray(0),
+                    body,
                     credentials.key,
                     clientId = credentials.clientId,
                 )
@@ -349,7 +407,8 @@ internal class HarborApiClient(
         if (clientId != null) builder.header("X-Harbor-Client-Id", clientId)
         if (body.isNotEmpty()) builder.header("Content-Type", "application/json")
         builder.method(method, if (method == "GET") null else body.toRequestBody(JSON))
-        http.newCall(builder.build()).execute().use { response ->
+        val requestClient = if (path.endsWith("/g2-view")) g2Http else http
+        requestClient.newCall(builder.build()).execute().use { response ->
             val bytes = response.body.bytes()
             val actual = response.header("X-Harbor-Response-Signature")
                 ?: error("認証されていない応答です")
@@ -449,13 +508,27 @@ internal class HarborMirrorController(
                         _state.value = _state.value.copy(connected = true, workspaceName = null, error = null)
                         EvenG2ReadingSession.publishHarbor(null, null, "選択中のワークスペースがありません")
                     } else {
-                        val screen = client.fetchScreen(creds, workspace.id)
+                        val view = client.fetchG2View(creds, workspace.id)
                         _state.value = _state.value.copy(
                             connected = true,
                             workspaceName = workspace.name,
                             error = null,
                         )
-                        EvenG2ReadingSession.publishHarbor(workspace.name, screen.text, null)
+                        if (view.summary) {
+                            val action = buildList {
+                                view.question.takeIf(String::isNotBlank)?.let(::add)
+                                addAll(view.options)
+                            }.joinToString("\n")
+                            EvenG2ReadingSession.publishHarbor(
+                                workspace.name,
+                                null,
+                                null,
+                                summaryText = view.summaryText,
+                                actionText = action,
+                            )
+                        } else {
+                            EvenG2ReadingSession.publishHarbor(workspace.name, view.text, null)
+                        }
                     }
                     failures = 0
                     delay(1_000L)

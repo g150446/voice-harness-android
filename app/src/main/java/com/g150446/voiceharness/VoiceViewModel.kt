@@ -50,6 +50,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     val isPrimary: StateFlow<Boolean> = BleConnectionService.isPrimary
     val doubleTapStatus: StateFlow<DoubleTapStatus> = BleConnectionService.doubleTapStatus
     val singleTapStatus: StateFlow<SingleTapStatus> = BleConnectionService.singleTapStatus
+    val recordingTapMode: StateFlow<RecordingTapMode> = BleConnectionService.recordingTapMode
     val drivingMode: StateFlow<DrivingMode> = BleConnectionService.drivingMode
     val nodeDrivingMode: StateFlow<DrivingMode?> = BleConnectionService.nodeDrivingMode
     val nodePendingDrivingMode: StateFlow<DrivingMode?> =
@@ -231,6 +232,10 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setRecordingCueEnabled(enabled: Boolean) {
         BleConnectionService.setRecordingCueEnabled(getApplication(), enabled)
+    }
+
+    fun setRecordingTapMode(mode: RecordingTapMode) {
+        BleConnectionService.setRecordingTapMode(getApplication(), mode)
     }
 
     fun openReminders() {

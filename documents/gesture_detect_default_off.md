@@ -20,7 +20,7 @@
 | IMU 軌跡収集（6 軸 dump） | **OFF**（従来どおり） | ホーム「ジェスチャーIMU収集」 | RX `[0x06, e]` → TX `0x39` |
 | ライブ診断 `0x30` | ジェスチャー OFF なら出ない | ジェスチャー ON 時に連動 | （検出 SM 連動） |
 | 運転モード自動判定（AR） | **OFF**（強制 NORMAL） | 通知「運転判定」で auto | RX `[0x05, m]` → TX `0x40` |
-| シングルタップ録音 | **ON**（ホスト承認） | 常時 | TX `0x14` → RX `0x01`/`0x00` |
+| タップ録音 | **single**（ホスト承認） | ホーム「ダブルタップで録音」で切替 | TX `0x14` / `0x12` → RX `0x01`/`0x00` |
 
 **運転モード（0x05）とジェスチャー検出（0x07）は独立。** 運転中は検出 ON でもジェスチャー停止。
 
@@ -62,6 +62,7 @@ OTA 実績（2026-09-04）:
 | `BleConnectionService` | StateFlow・接続時 `0x07` 再送・`0x3A` ack |
 | `BleManager` | `parseGestureDetectAck`（0x3A） |
 | `MainActivity` | Switch「ジェスチャー録音」+ ステータス文言 |
+| `RecordingTapPreferences` | prefs `recording_tap` / `mode`、既定 `SINGLE` |
 | `DrivingModeController` | `override` 既定 **0**（NORMAL 固定、AR しない）。auto は `setOverride(null)` |
 
 接続時の RX 再送順（`sendToRx` 直列化）:
@@ -77,7 +78,7 @@ OTA 実績（2026-09-04）:
 ### 日常（既定）
 
 1. Node `0.0.95+` + 本アプリ
-2. シングルタップで録音 start/stop
+2. シングルタップで録音 start/stop（ホーム設定でダブルタップへ変更可）
 3. ジェスチャーは発火しない
 
 ### ジェスチャー開発・収集時

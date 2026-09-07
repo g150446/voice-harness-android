@@ -84,6 +84,8 @@ Byte 0  Byte 1  Byte 2      Bytes 3+
 | `0x14` | シングルタップ検出 | なし |
 | `0x20` | ライトスリープ移行 | なし |
 | `0x21` | ライトスリープ復帰 | なし |
+| `0x31` | 2本目のクライアントが接続（**当時の primary にだけ** notify） | なし |
+| `0x32` | secondary が切断（残った primary に notify） | なし |
 | `0x30` | ジェスチャ診断（ライブ） | stage, reason, f32×3（17 B） |
 | `0x33` | ジェスチャ履歴 begin | count, session（5 B）。`GESTURE_DEBUG_HISTORY=1` のみ |
 | `0x34` | ジェスチャ履歴 entry | u16 t_ms, stage, reason, f32×3（19 B） |
@@ -111,7 +113,7 @@ Byte 0  Byte 1  Byte 2      Bytes 3+
 実際に踏んだ: 接続時ハンドラが運転モード `[0x05,0x00]` を送った直後に収集スイッチ
 `[0x06,0x01]` を送っており、後者が毎回消えていた（Node は `0x39` で `00` を報告し続け、
 アプリ側は `Gesture capture mismatch: app=true node=false` を出していた）。
-既存の `sendToRxWithRetry`（同じバイトを3回送る）は、この問題への場当たり対処だった。
+ロール宣言（RX `0x02` / `0x03`）は `scheduleRoleCommand` が遅延再送し、反対コマンドや切断でキャンセルする。一般の RX はキュー直列化だけで足りる。
 
 `BleManager` は RX 書き込みをキューで直列化し、`onCharacteristicWrite` で次を出す。
 スタックが書き込み自体を拒否したら警告を出して再試行し、コールバックが来ない
@@ -149,7 +151,7 @@ Nodeは `[0x00, 0x55, 0x39, enabled]` を `notify_all_conns()` で返す。
 
 **重要**: 録音セッションの開始/終了は TX `0x01`/`0x02` のみでアプリ状態を動かす。
 Node（`0.0.94+`）は single (`0x14`) / double (`0x12`) を **notify-only** とする。
-シングルタップの録音 start/stop は Android が RX `0x01`/`0x00` で指示する
+録音に使うタップは Android ホームで single（既定）/ double を選び、Android が RX `0x01`/`0x00` で指示する
 （リーダーモード中は RX を送らず G2 ページ送りのみ）。手首ジェスチャーは
 **ジェスチャー検出スイッチが ON かつ通常モード**のときのみ Node 自律で
 `0x01`/`0x02`（FW `0.0.95+` では検出は既定 OFF＝タップのみ）。
@@ -163,7 +165,7 @@ Node（`0.0.94+`）は single (`0x14`) / double (`0x12`) を **notify-only** と
 Android は RX へ `[0x07, 0x00/0x01]`（`CMD_SET_GESTURE_DETECT`）を書く。
 Node は `[0x00, 0x55, 0x3A, enabled]` を返す。
 
-- **既定オフ**（ブート時 / リセット後）。日常利用はシングルタップのみ。
+- **既定オフ**（ブート時 / リセット後）。日常利用は設定されたタップのみ。
 - Node はこのスイッチを **RAM にしか持たない**。接続のたびに Android が再送する。
 - OFF のときジェスチャー状態機械は進まず、ライブ診断 `0x30` も出ない。
 - ON かつ通常モードで従来どおりジェスチャー録音。運転モード中は検出 ON でもジェスチャー停止。
@@ -171,7 +173,7 @@ Node は `[0x00, 0x55, 0x3A, enabled]` を返す。
 
 ## 運転モード
 
-AndroidはRXへ `[0x05, 0x00]`（通常）または `[0x05, 0x01]`（運転）を送る。録音中の切替はNodeが現在の録音終了後に適用する。NodeはTXへ `[0x00, 0x55, 0x40, effective, pending]` を返す。運転モードではジェスチャー検出を停止する。録音トグルはホスト承認の **single tap/click**（double ではない）。
+AndroidはRXへ `[0x05, 0x00]`（通常）または `[0x05, 0x01]`（運転）を送る。録音中の切替はNodeが現在の録音終了後に適用する。NodeはTXへ `[0x00, 0x55, 0x40, effective, pending]` を返す。運転モードではジェスチャー検出を停止する。録音トグルはAndroidホームで選択した single / double tap/click をホスト承認する。
 Android の Activity Recognition による自動運転判定は**既定オフ**（通知の「運転判定」で opt-in）。
 
 `0x40` の扱い（FW `0.0.88+`、Android対応済み）:
@@ -210,15 +212,17 @@ Button A の single/double click）を使用する。Androidはタップ回数�
 
 | 条件 | 動作 |
 |---|---|
-| リーダーモード ON | RX なし。`singleTapCount` で G2 ページ送り |
-| リーダーモード OFF・録音中 | RX `0x00`（停止） |
-| リーダーモード OFF・それ以外 | RX `0x00` の後 ~150ms で RX `0x01`（開始） |
+| リーダー / Harbor | RX なし。`singleTapCount` で G2 ページ送り |
+| AI 対話・ホームが single・録音中 | RX `0x00`（停止） |
+| AI 対話・ホームが single・それ以外 | RX `0x00` の後 ~150ms で RX `0x01`（開始）。優先接続が Android ならその直前に RX `0x02` |
 
 開始は **stop→start**。切断後に Node 側だけ録音中のまま残る「幽霊セッション」を
 クリアしてから開始する（単発の `0x01` では Node が既に `is_recording` だと無視される）。
 接続確立後にも RX `0x00` を1回送り、状態を揃える。
+優先接続が Android のときは開始前に RX `0x02` で primary を取り直す（Handy が後から奪った場合の保険）。
 
-double はリーダーモードのトグル（OFF→ON は G2 接続時のみ＋画面抽出 / ON→OFF）。
+double は G2 接続中ならモード指示録音（同録音中は確定、通常処理中は割り込み）。
+未接続時はホームで double を選んだときだけ録音 start/stop。single 設定なら無視。
 切替は G2 にメッセージ表示。プラグイン切断で自動 OFF。処理中はパイプライン割り込み優先。
 double のあと **2 秒間**は single の録音 RX を送らない（受信時刻基準。進行中の
 stop→start 遅延 Job も cancel。UI のタップ回数は増えてよい）。
@@ -305,16 +309,43 @@ Android は `GestureDiagStore` に蓄積する。停止直後にバッチが届�
 
 手首ジェスチャーの録音開始・停止は、検出スイッチ ON かつ通常モードのとき
 ファームウェア自律（TX `0x01` / `0x02`）。
-シングルタップ録音はホスト承認（FW `0.0.94+`）で Android が RX を送る。
+タップ録音はホスト承認（FW `0.0.94+`）で Android が RX を送る。ホーム設定の既定は single で、double に変更できる。
 無音による自動停止（RX `0x00`）は廃止済み。
 
 | バイト | 意味 |
 |---|---|
-| `0x01` | 録音開始（single tap ホスト承認） |
-| `0x00` | 録音停止（single tap ホスト承認） |
+| `0x01` | 録音開始（選択中の tap をホスト承認） |
+| `0x00` | 録音停止（選択中の tap をホスト承認） |
+| `0x02` | **primary 宣言**（last-write-wins） |
+| `0x03` | **primary 譲渡**（自分以外の接続を primary にする） |
 | `[0x05, m]` | 運転モード（0=通常, 1=運転） |
 | `[0x06, e]` | IMU軌跡収集（0=off, 1=on）。既定 off |
 | `[0x07, e]` | ジェスチャー検出（0=off, 1=on）。既定 off。FW `0.0.95+` |
+
+値 `0x02` は「クライアントからの primary 宣言」と「TX 録音終了イベント」で共用。
+区別はパケット形式（イベントは `[0x00][0x55][code]`）で行う。
+
+## デュアル接続と優先接続
+
+HarnessNode は最大 2 本の BLE 接続を持ち、`primary_idx` が音声 PCM と
+録音開始/終了（TX `0x01`/`0x02`）の送り先。タップ `0x12`/`0x14` は
+`notify_all_conns()` なので secondary にも届く。そのため **ホームのタップ回数は
+増えるのに録音 UI が動かない**ときは、Mac Handy が primary を握っていることが多い。
+
+ホームの「優先接続: Mac Handy / Android」（既定 Android）がどちらが primary かを決める。
+
+| 優先 | 接続時 | TX `0x31`（peer 接続） | ホスト承認の録音開始 |
+|---|---|---|---|
+| Android | RX `0x02` を 0 / 1000 / 1600 ms | 同じ `0x02` 再宣言 | 直前に RX `0x02` |
+| Mac Handy | `0x02` を送らない | RX `0x03` で yield | claim しない |
+
+Handy は接続約 800 ms 後に必ず RX `0x02` を送る。Android 側の claim 再送は
+その後（1000 / 1600 ms）に置き、last-write-wins で Android 優先を維持する。
+反対のロールコマンドや GATT 切断では遅延再送をキャンセルする。
+
+`0x31` は**当時の primary にしか飛ばない**。Handy に既に奪われたあとの Android は
+`0x31` を受け取れないので、タップ録音開始前の `0x02` が必要。
+primary 切断時は Node が残接続を自動昇格し、`0x32` は secondary 切断時だけ残 primary へ飛ぶ。
 
 ## 再接続ロジック
 
