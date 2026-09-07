@@ -44,6 +44,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 
 **FW は `0.0.94+` を前提**（single/double は notify-only）。アプリとセットで更新する。
 
+Mac Handy と同時接続する場合、ホームの **優先接続** で音声の送り先（Node の primary）を選ぶ。既定は Android。タップ回数は secondary にも届くが、録音開始イベントと PCM は primary のみ。詳細は [`documents/ble_protocol.md`](documents/ble_protocol.md)。
+
 **モデル設定** で ASR と LLM を独立に選択する（旧プロファイルは初回のみ双方へコピー）:
 
 | 役割 | 選択肢 |

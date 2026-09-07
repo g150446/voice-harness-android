@@ -275,9 +275,11 @@ class BleConnectionService : Service() {
         }
 
         fun setRole(claimPrimary: Boolean) {
-            val cmd = if (claimPrimary) 0x02.toByte() else 0x03.toByte()
-            instance?.bleManager?.sendToRxWithRetry(cmd)
-            instance?.bleManager?.setIsPrimary(claimPrimary)
+            instance?.bleManager?.setPreferredRole(claimPrimary)
+        }
+
+        fun ensurePreferredPrimary() {
+            instance?.bleManager?.ensurePreferredPrimary()
         }
 
         fun startScan() {

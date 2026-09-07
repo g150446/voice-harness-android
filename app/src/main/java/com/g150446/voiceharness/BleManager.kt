@@ -83,6 +83,39 @@ sealed class BleEvent {
     ) : BleEvent()
 }
 
+internal const val BLE_RX_CLAIM_PRIMARY = 0x02.toByte()
+internal const val BLE_RX_YIELD_PRIMARY = 0x03.toByte()
+
+/** Handy claims primary ~800 ms after connect; later retries must outlast that. */
+internal val BLE_ROLE_CLAIM_DELAYS_MS = longArrayOf(0L, 1_000L, 1_600L)
+internal val BLE_ROLE_YIELD_DELAYS_MS = longArrayOf(0L, 300L, 600L)
+
+internal enum class BleRoleCommand { CLAIM, YIELD }
+
+internal fun peerConnectedRoleCommand(priority: ConnectionPriority): BleRoleCommand =
+    when (priority) {
+        ConnectionPriority.ANDROID -> BleRoleCommand.CLAIM
+        ConnectionPriority.MAC_HANDY -> BleRoleCommand.YIELD
+    }
+
+internal fun roleCommandByte(command: BleRoleCommand): Byte =
+    when (command) {
+        BleRoleCommand.CLAIM -> BLE_RX_CLAIM_PRIMARY
+        BleRoleCommand.YIELD -> BLE_RX_YIELD_PRIMARY
+    }
+
+internal fun roleCommandDelaysMs(command: BleRoleCommand): LongArray =
+    when (command) {
+        BleRoleCommand.CLAIM -> BLE_ROLE_CLAIM_DELAYS_MS
+        BleRoleCommand.YIELD -> BLE_ROLE_YIELD_DELAYS_MS
+    }
+
+internal fun hostAuthorizedStartPreamble(priority: ConnectionPriority): List<Byte> =
+    buildList {
+        if (priority == ConnectionPriority.ANDROID) add(BLE_RX_CLAIM_PRIMARY)
+        add(BLE_RX_STOP_RECORDING)
+    }
+
 /** Parses event packets whose decoding has no connection-management side effects. */
 internal fun parseSimpleBleEvent(data: ByteArray): BleEvent? {
     if (data.size < 3 || (data[1].toInt() and 0xFF) != 0x55) return null
@@ -210,14 +243,23 @@ class BleManager(
     private val _isPrimary = MutableStateFlow(true)
     val isPrimary: StateFlow<Boolean> = _isPrimary
 
-    fun setIsPrimary(value: Boolean) {
-        _isPrimary.value = value
+    fun setPreferredRole(claimPrimary: Boolean) {
+        applyRoleCommand(if (claimPrimary) BleRoleCommand.CLAIM else BleRoleCommand.YIELD)
+    }
+
+    fun ensurePreferredPrimary() {
+        if (preferences.connectionPriority() != ConnectionPriority.ANDROID) return
+        sendToRx(BLE_RX_CLAIM_PRIMARY)
+        _isPrimary.value = true
+        Log.d(TAG, "Ensured primary before host-authorized recording start")
     }
 
     private var bluetoothManager: BluetoothManager? = null
     private var gatt: BluetoothGatt? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val roleLock = Any()
+    private val pendingRoleRunnables = mutableListOf<Runnable>()
     private val rxQueue = ArrayDeque<ByteArray>()
     private var rxWriteInFlight = false
     private var rxRetryScheduled = false
@@ -693,13 +735,12 @@ class BleManager(
      * session left over from a missed TX 0x01/0x02 after reconnect.
      */
     private fun claimPrimaryAndResetRecording() {
-        // In MAC_HANDY mode we must NOT send 0x02 here, because the retry
-        // sends (300 ms / 600 ms) would race against and override the 0x03
-        // yield that the 0x31 handler issues when Handy connects.
+        // In MAC_HANDY mode we must NOT send 0x02 here, because delayed
+        // claims would race against and override the 0x03 yield that the
+        // 0x31 handler issues when Handy connects.
         val priority = preferences.connectionPriority()
         if (priority != ConnectionPriority.MAC_HANDY) {
-            sendToRxWithRetry(0x02.toByte())
-            _isPrimary.value = true
+            applyRoleCommand(BleRoleCommand.CLAIM)
             Log.d(TAG, "Role declared: primary (preference=$priority)")
         } else {
             Log.d(TAG, "Role: not claiming primary (preference=MAC_HANDY)")
@@ -881,19 +922,21 @@ class BleManager(
                     0x20 -> parseSimpleBleEvent(data)
                     0x21 -> parseSimpleBleEvent(data)
                     0x31 -> {
-                        // peer connected: negotiate role based on preference
-                        val priority = preferences.connectionPriority()
-                        if (priority == ConnectionPriority.MAC_HANDY) {
-                            sendToRxWithRetry(0x03.toByte()) // yield to Mac Handy
-                            _isPrimary.value = false
-                            Log.i(TAG, "Peer connected — yielded primary (MAC_HANDY)")
-                        }
+                        val command = peerConnectedRoleCommand(preferences.connectionPriority())
+                        applyRoleCommand(command)
+                        Log.i(
+                            TAG,
+                            if (command == BleRoleCommand.CLAIM) {
+                                "Peer connected — reclaimed primary (ANDROID)"
+                            } else {
+                                "Peer connected — yielded primary (MAC_HANDY)"
+                            },
+                        )
                         BleEvent.PeerConnected
                     }
                     0x32 -> {
                         // Peer left: reclaim primary so FW keeps delivering events/audio here.
-                        _isPrimary.value = true
-                        sendToRxWithRetry(0x02.toByte())
+                        applyRoleCommand(BleRoleCommand.CLAIM)
                         Log.i(TAG, "Peer disconnected — reclaimed primary")
                         BleEvent.PeerDisconnected
                     }
@@ -1018,6 +1061,7 @@ class BleManager(
     }
 
     private fun clearRxQueue() {
+        cancelPendingRoleCommands()
         mainHandler.post {
             mainHandler.removeCallbacks(rxWriteTimeout)
             rxQueue.clear()
@@ -1026,19 +1070,37 @@ class BleManager(
         }
     }
 
+    private fun applyRoleCommand(command: BleRoleCommand) {
+        _isPrimary.value = command == BleRoleCommand.CLAIM
+        scheduleRoleCommand(roleCommandByte(command), roleCommandDelaysMs(command))
+    }
+
+    private fun cancelPendingRoleCommands() {
+        synchronized(roleLock) {
+            pendingRoleRunnables.forEach { mainHandler.removeCallbacks(it) }
+            pendingRoleRunnables.clear()
+        }
+    }
+
     /**
-     * Repeats a one-byte command.
-     *
-     * Predates the RX queue, and was how the role-negotiation commands worked
-     * around writes being dropped when issued back to back. The queue now
-     * delivers every write, so this is belt-and-braces for a command the node
-     * treats as idempotent; new callers should use [sendToRx].
+     * Sends an idempotent role command now and again after [delaysMs], cancelling
+     * any previous role retries so a later yield cannot be overwritten by a
+     * stale claim (and vice versa). Claim delays outlast Handy's ~800 ms connect
+     * claim so ANDROID priority wins last-write-wins on the node.
      */
-    fun sendToRxWithRetry(byte: Byte, retries: Int = 2, delayMs: Long = 300) {
-        sendToRx(byte)
-        val handler = Handler(Looper.getMainLooper())
-        for (i in 1..retries) {
-            handler.postDelayed({ sendToRx(byte) }, delayMs * i)
+    private fun scheduleRoleCommand(byte: Byte, delaysMs: LongArray) {
+        synchronized(roleLock) {
+            pendingRoleRunnables.forEach { mainHandler.removeCallbacks(it) }
+            pendingRoleRunnables.clear()
+            for (delayMs in delaysMs) {
+                if (delayMs <= 0L) {
+                    sendToRx(byte)
+                    continue
+                }
+                val runnable = Runnable { sendToRx(byte) }
+                pendingRoleRunnables.add(runnable)
+                mainHandler.postDelayed(runnable, delayMs)
+            }
         }
     }
 

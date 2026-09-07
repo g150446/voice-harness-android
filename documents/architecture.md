@@ -186,6 +186,14 @@ nRF52840                        Android
     │                               │   ASR → Chat → TTS or Even G2
 ```
 
+### 優先接続（Android / Mac Handy）
+
+両方同時接続すると、PCM と TX `0x01`/`0x02` は Node の primary 1本にしか届かない。
+タップは全接続へ飛ぶ。ホーム「優先接続」が Android のとき、`BleManager` は
+Handy の接続 800 ms 後 claim より後（0 / 1000 / 1600 ms）に RX `0x02` を再送し、
+ホスト承認の録音開始前にも `0x02` を書く。Mac Handy 優先なら `0x31` で `0x03` yield。
+詳細は [`ble_protocol.md`](ble_protocol.md) の「デュアル接続と優先接続」。
+
 アプリ状態は常に TX `0x01`/`0x02` に追従する。開始のきっかけは次のいずれか:
 
 | 経路 | FW `0.0.95+` | Android |

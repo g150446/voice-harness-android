@@ -1382,6 +1382,7 @@ internal class VoiceProcessor(
     private fun requestRecordingStart(event: RecordingTapEvent) {
         val label = if (event == RecordingTapEvent.SINGLE) "Single" else "Double"
         Log.i(TAG, "$label tap: host-authorized recording start (stop-then-start)")
+        BleConnectionService.ensurePreferredPrimary()
         BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
         pendingTapStartJob?.cancel()
         pendingTapStartJob = scope.launch {
