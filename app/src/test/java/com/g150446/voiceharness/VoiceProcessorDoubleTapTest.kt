@@ -9,6 +9,14 @@ import org.junit.Test
 class VoiceProcessorDoubleTapTest {
 
     @Test
+    fun `recording tap mode storage defaults to single and restores known values`() {
+        assertEquals(RecordingTapMode.SINGLE, RecordingTapMode.fromStorage(null))
+        assertEquals(RecordingTapMode.SINGLE, RecordingTapMode.fromStorage("unknown"))
+        assertEquals(RecordingTapMode.SINGLE, RecordingTapMode.fromStorage("SINGLE"))
+        assertEquals(RecordingTapMode.DOUBLE, RecordingTapMode.fromStorage("DOUBLE"))
+    }
+
+    @Test
     fun `double tap interrupts recording and post-recording pipeline states`() {
         assertFalse(shouldInterruptOnDoubleTap(VoiceState.READY))
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.RECORDING))
@@ -105,6 +113,108 @@ class VoiceProcessorDoubleTapTest {
                 readerModeEnabled = false,
                 g2ClientActive = false,
                 state = VoiceState.READY,
+            ),
+        )
+    }
+
+    @Test
+    fun `single mode routes single tap to recording and keeps legacy double interrupt`() {
+        assertEquals(
+            RecordingTapAction.START_RECORDING,
+            recordingTapAction(
+                RecordingTapMode.SINGLE,
+                RecordingTapEvent.SINGLE,
+                readerModeEnabled = false,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.STOP_RECORDING,
+            recordingTapAction(
+                RecordingTapMode.SINGLE,
+                RecordingTapEvent.SINGLE,
+                readerModeEnabled = false,
+                g2ClientActive = false,
+                state = VoiceState.RECORDING,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.INTERRUPT,
+            recordingTapAction(
+                RecordingTapMode.SINGLE,
+                RecordingTapEvent.DOUBLE,
+                readerModeEnabled = false,
+                g2ClientActive = false,
+                state = VoiceState.RECORDING,
+            ),
+        )
+    }
+
+    @Test
+    fun `double mode ignores single and starts or normally stops recording with double`() {
+        assertEquals(
+            RecordingTapAction.NONE,
+            recordingTapAction(
+                RecordingTapMode.DOUBLE,
+                RecordingTapEvent.SINGLE,
+                readerModeEnabled = false,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.START_RECORDING,
+            recordingTapAction(
+                RecordingTapMode.DOUBLE,
+                RecordingTapEvent.DOUBLE,
+                readerModeEnabled = false,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.STOP_RECORDING,
+            recordingTapAction(
+                RecordingTapMode.DOUBLE,
+                RecordingTapEvent.DOUBLE,
+                readerModeEnabled = false,
+                g2ClientActive = true,
+                state = VoiceState.RECORDING,
+            ),
+        )
+    }
+
+    @Test
+    fun `double mode prioritizes reader while idle and interrupts post-recording work`() {
+        assertEquals(
+            RecordingTapAction.ENABLE_READER_MODE,
+            recordingTapAction(
+                RecordingTapMode.DOUBLE,
+                RecordingTapEvent.DOUBLE,
+                readerModeEnabled = false,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.DISABLE_READER_MODE,
+            recordingTapAction(
+                RecordingTapMode.DOUBLE,
+                RecordingTapEvent.DOUBLE,
+                readerModeEnabled = true,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.INTERRUPT,
+            recordingTapAction(
+                RecordingTapMode.DOUBLE,
+                RecordingTapEvent.DOUBLE,
+                readerModeEnabled = false,
+                g2ClientActive = false,
+                state = VoiceState.TRANSCRIBING,
             ),
         )
     }

@@ -186,6 +186,7 @@ fun HomeScreen(
     val isPrimary by viewModel.isPrimary.collectAsState()
     val doubleTapStatus by viewModel.doubleTapStatus.collectAsState()
     val singleTapStatus by viewModel.singleTapStatus.collectAsState()
+    val recordingTapMode by viewModel.recordingTapMode.collectAsState()
     val drivingMode by viewModel.drivingMode.collectAsState()
     val nodeDrivingMode by viewModel.nodeDrivingMode.collectAsState()
     val nodePendingDrivingMode by viewModel.nodePendingDrivingMode.collectAsState()
@@ -200,6 +201,11 @@ fun HomeScreen(
     val recordingCueEnabled by viewModel.recordingCueEnabled.collectAsState()
     val modelStatus by viewModel.modelStatus.collectAsState()
     val lastPipelineMs by viewModel.lastPipelineMs.collectAsState()
+    val recordingTapLabel = if (recordingTapMode == RecordingTapMode.DOUBLE) {
+        "ダブルタップ"
+    } else {
+        "シングルタップ"
+    }
     val context = LocalContext.current
     val displayLocale = LocalConfiguration.current.locales[0]
     val scrollState = rememberScrollState()
@@ -378,11 +384,11 @@ fun HomeScreen(
             Text(
                 text = when {
                     drivingMode == DrivingMode.DRIVING ->
-                        "運転モード: シングルタップ録音（ホスト承認）"
+                        "運転モード: ${recordingTapLabel}録音（ホスト承認）"
                     gestureDetectEnabled ->
-                        "通常モード: ジェスチャー / シングルタップ録音"
+                        "通常モード: ジェスチャー / ${recordingTapLabel}録音"
                     else ->
-                        "通常モード: シングルタップ録音"
+                        "通常モード: ${recordingTapLabel}録音"
                 },
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -639,6 +645,38 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
+                text = "ダブルタップで録音",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Switch(
+                checked = recordingTapMode == RecordingTapMode.DOUBLE,
+                onCheckedChange = { useDoubleTap ->
+                    viewModel.setRecordingTapMode(
+                        if (useDoubleTap) RecordingTapMode.DOUBLE else RecordingTapMode.SINGLE,
+                    )
+                },
+            )
+        }
+        Text(
+            text = if (recordingTapMode == RecordingTapMode.DOUBLE) {
+                "オン — ダブルタップで録音開始/終了（G2接続中の待機時はリーダーモードを優先）"
+            } else {
+                "オフ — シングルタップで録音開始/終了"
+            },
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp),
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
                 text = "ジェスチャー録音",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -649,7 +687,7 @@ fun HomeScreen(
             )
         }
         val detectStatus = when {
-            !gestureDetectEnabled -> "オフ — シングルタップのみ（誤認識防止）"
+            !gestureDetectEnabled -> "オフ — ${recordingTapLabel}のみ（誤認識防止）"
             nodeGestureDetectEnabled == null -> "オン（Node未確認・FW 0.0.95+ が必要）"
             nodeGestureDetectEnabled == true ->
                 "オン — 手首ジェスチャーで録音開始/停止"

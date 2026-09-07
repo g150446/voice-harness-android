@@ -86,6 +86,10 @@ class BleConnectionService : Service() {
         val doubleTapStatus: StateFlow<DoubleTapStatus> = _doubleTapStatus.asStateFlow()
         private val _singleTapStatus = MutableStateFlow(SingleTapStatus())
         val singleTapStatus: StateFlow<SingleTapStatus> = _singleTapStatus.asStateFlow()
+
+        /** Tap event used to start/stop recording; single tap remains the default. */
+        private val _recordingTapMode = MutableStateFlow(RecordingTapMode.SINGLE)
+        val recordingTapMode: StateFlow<RecordingTapMode> = _recordingTapMode.asStateFlow()
         // _drivingMode is the app's *intent* (DrivingModeController's verdict plus any
         // manual override). The two below are what the node reported over 0x40, so a
         // disagreement or a deferred switch is visible instead of assumed away.
@@ -185,6 +189,15 @@ class BleConnectionService : Service() {
 
         internal fun recordSingleTap(detectedAtMillis: Long = System.currentTimeMillis()) {
             _singleTapStatus.value = nextSingleTapStatus(_singleTapStatus.value, detectedAtMillis)
+        }
+
+        fun initializeRecordingTapMode(context: Context) {
+            _recordingTapMode.value = RecordingTapPreferences(context).mode()
+        }
+
+        fun setRecordingTapMode(context: Context, mode: RecordingTapMode) {
+            RecordingTapPreferences(context).setMode(mode)
+            _recordingTapMode.value = mode
         }
 
         private var instance: BleConnectionService? = null
@@ -513,6 +526,7 @@ class BleConnectionService : Service() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         initializeResponseOutputTarget(applicationContext)
         initializeReadingPassthroughEnabled(applicationContext)
+        initializeRecordingTapMode(applicationContext)
         initializeGestureCaptureEnabled(applicationContext)
         initializeGestureDetectEnabled(applicationContext)
         initializeRecordingCueEnabled(applicationContext)

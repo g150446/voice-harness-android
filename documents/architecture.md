@@ -146,7 +146,9 @@ ROLE_ASSISTANT
 
 シングルタップ `0x14` / ダブルタップ `0x12` は同じ入力 Channel で受信し、Service が
 回数を UI と G2 ブリッジへ公開する。FW `0.0.94+` ではどちらも notify-only。
-single はホスト承認録音または G2 ページ送り、double はリーダーモード トグル／パイプライン割り込み。
+ホームの設定で single / double のどちらをホスト承認録音に使うか選べる（既定 single）。
+リーダーモード中の single は G2 ページ送り、G2 接続中の待機時は double のリーダーモード
+トグルを録音より優先する。処理中の double はパイプライン割り込みとして扱う。
 
 ### バックグラウンド動作の仕組み
 
@@ -188,10 +190,10 @@ nRF52840                        Android
 
 | 経路 | FW `0.0.95+` | Android |
 |---|---|---|
-| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | リーダーモード OFF 時に RX `0x01`/`0x00` でホスト承認 |
+| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | ホームで single 選択かつリーダーモード OFF 時に RX `0x01`/`0x00` でホスト承認 |
 | 手首ジェスチャー | 検出スイッチ ON 時のみ自律 `0x01`/`0x02`（**既定 OFF**） | ホーム「ジェスチャー録音」→ RX `0x07` |
 | リーダーモード ON の single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
-| ダブルタップ (`0x12`) | notify-only | リーダーモード ON/OFF（ON は G2 接続時のみ。処理中は割り込み） |
+| ダブルタップ (`0x12`) | notify-only | ホームで double 選択時は録音 start/stop。G2 接続中の待機時はリーダーモード ON/OFF、録音後の処理中は割り込み |
 
 無音による RX `0x00` 自動停止は廃止済み。  
 詳細は [`ble_protocol.md`](ble_protocol.md) / [`gesture_detect_default_off.md`](gesture_detect_default_off.md) /

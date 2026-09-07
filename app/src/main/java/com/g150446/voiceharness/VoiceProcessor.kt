@@ -100,6 +100,55 @@ internal fun readerModeDoubleTapAction(
         else -> ReaderModeDoubleTapAction.NONE
     }
 }
+
+internal enum class RecordingTapEvent { SINGLE, DOUBLE }
+
+internal enum class RecordingTapAction {
+    NONE,
+    START_RECORDING,
+    STOP_RECORDING,
+    INTERRUPT,
+    ENABLE_READER_MODE,
+    DISABLE_READER_MODE,
+}
+
+/** Resolves tap ownership before any BLE command or pipeline side effect is performed. */
+internal fun recordingTapAction(
+    mode: RecordingTapMode,
+    event: RecordingTapEvent,
+    readerModeEnabled: Boolean,
+    g2ClientActive: Boolean,
+    state: VoiceState,
+): RecordingTapAction {
+    if (event == RecordingTapEvent.SINGLE) {
+        if (mode != RecordingTapMode.SINGLE) return RecordingTapAction.NONE
+        return when (singleTapRecordingCommand(readerModeEnabled, state)) {
+            BLE_RX_START_RECORDING -> RecordingTapAction.START_RECORDING
+            BLE_RX_STOP_RECORDING -> RecordingTapAction.STOP_RECORDING
+            else -> RecordingTapAction.NONE
+        }
+    }
+
+    if (mode == RecordingTapMode.DOUBLE) {
+        return when (state) {
+            VoiceState.RECORDING -> RecordingTapAction.STOP_RECORDING
+            VoiceState.TRANSCRIBING, VoiceState.RESPONDING, VoiceState.SPEAKING ->
+                RecordingTapAction.INTERRUPT
+            VoiceState.READY, VoiceState.ERROR -> when {
+                readerModeEnabled -> RecordingTapAction.DISABLE_READER_MODE
+                g2ClientActive -> RecordingTapAction.ENABLE_READER_MODE
+                else -> RecordingTapAction.START_RECORDING
+            }
+        }
+    }
+
+    if (shouldInterruptOnDoubleTap(state)) return RecordingTapAction.INTERRUPT
+    return when (readerModeDoubleTapAction(readerModeEnabled, g2ClientActive, state)) {
+        ReaderModeDoubleTapAction.ENABLE -> RecordingTapAction.ENABLE_READER_MODE
+        ReaderModeDoubleTapAction.DISABLE -> RecordingTapAction.DISABLE_READER_MODE
+        ReaderModeDoubleTapAction.NONE -> RecordingTapAction.NONE
+    }
+}
 private const val PCM_CHANNELS = 1
 private const val PCM_BITS_PER_SAMPLE = 16
 private const val KINDLE_CAPTURE_ATTEMPTS = 3
@@ -147,8 +196,8 @@ internal class VoiceProcessor(
     private val discardNextRecordingStop = AtomicBoolean(false)
     /** elapsedRealtime of last double-tap / cancel arm; used to ignore residual singles. */
     @Volatile private var lastDoubleTapElapsedMs = 0L
-    /** stop-then-start job; cancelled on double-tap so a prior single cannot start later. */
-    private var pendingSingleTapStartJob: Job? = null
+    /** stop-then-start job; cancelled by a newer double-tap or pipeline interruption. */
+    private var pendingTapStartJob: Job? = null
     private val reminderMutationLock = Any()
     private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
@@ -1306,38 +1355,38 @@ internal class VoiceProcessor(
         }
     }
 
-    /**
-     * Single tap (FW 0.0.94+ notify-only): host authorizes recording via RX,
-     * except in reader mode where G2 advances pages from singleTapCount.
-     *
-     * Start path sends stop then start so a phantom FW recording session
-     * (missed TX 0x01/0x02 after reconnect) cannot block the next start.
-     */
+    /** Single tap is routed to recording only while SINGLE mode owns it. */
     internal fun handleSingleTap() {
         val now = SystemClock.elapsedRealtime()
         if (shouldSuppressSingleTapAfterDouble(now, lastDoubleTapElapsedMs)) {
             Log.i(TAG, "Single tap suppressed after recent double tap")
             return
         }
-        val command = singleTapRecordingCommand(
+        val action = recordingTapAction(
+            mode = BleConnectionService.recordingTapMode.value,
+            event = RecordingTapEvent.SINGLE,
             readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
+            g2ClientActive = EvenG2ReadingSession.isClientActive(),
             state = BleConnectionService.voiceState.value,
         )
-        if (command == null) {
-            Log.i(TAG, "Single tap: no recording command (reader mode or ignored state)")
-            return
+        when (action) {
+            RecordingTapAction.START_RECORDING -> requestRecordingStart(RecordingTapEvent.SINGLE)
+            RecordingTapAction.STOP_RECORDING -> {
+                Log.i(TAG, "Single tap: host-authorized recording stop")
+                BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
+            }
+            else -> Log.i(TAG, "Single tap: no recording command (mode, reader, or state)")
         }
-        if (command == BLE_RX_STOP_RECORDING) {
-            Log.i(TAG, "Single tap: host-authorized recording stop")
-            BleConnectionService.sendCommand(command)
-            return
-        }
-        Log.i(TAG, "Single tap: host-authorized recording start (stop-then-start)")
+    }
+
+    private fun requestRecordingStart(event: RecordingTapEvent) {
+        val label = if (event == RecordingTapEvent.SINGLE) "Single" else "Double"
+        Log.i(TAG, "$label tap: host-authorized recording start (stop-then-start)")
         BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
-        pendingSingleTapStartJob?.cancel()
-        pendingSingleTapStartJob = scope.launch {
+        pendingTapStartJob?.cancel()
+        pendingTapStartJob = scope.launch {
             delay(HOST_START_RESYNC_DELAY_MS)
-            if (shouldSuppressSingleTapAfterDouble(
+            if (event == RecordingTapEvent.SINGLE && shouldSuppressSingleTapAfterDouble(
                     SystemClock.elapsedRealtime(),
                     lastDoubleTapElapsedMs,
                 )
@@ -1346,11 +1395,18 @@ internal class VoiceProcessor(
                 return@launch
             }
             if (BleConnectionService.voiceState.value == VoiceState.RECORDING) {
-                Log.d(TAG, "Single tap start skipped: already recording")
+                Log.d(TAG, "$label tap start skipped: already recording")
                 return@launch
             }
-            if (BleConnectionService.readingPassthroughEnabled.value) {
-                Log.d(TAG, "Single tap start skipped: reader mode enabled")
+            val currentAction = recordingTapAction(
+                mode = BleConnectionService.recordingTapMode.value,
+                event = event,
+                readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
+                g2ClientActive = EvenG2ReadingSession.isClientActive(),
+                state = BleConnectionService.voiceState.value,
+            )
+            if (currentAction != RecordingTapAction.START_RECORDING) {
+                Log.d(TAG, "$label tap start skipped: ownership or state changed")
                 return@launch
             }
             BleConnectionService.sendCommand(BLE_RX_START_RECORDING)
@@ -1359,27 +1415,30 @@ internal class VoiceProcessor(
 
     internal fun handleDoubleTap() {
         armSingleTapSuppress("double-tap")
-        pendingSingleTapStartJob?.cancel()
-        pendingSingleTapStartJob = null
+        pendingTapStartJob?.cancel()
+        pendingTapStartJob = null
         val voiceState = BleConnectionService.voiceState.value
-        if (shouldInterruptOnDoubleTap(voiceState)) {
-            interruptHarnessPipeline(voiceState)
-            return
-        }
-        when (
-            readerModeDoubleTapAction(
-                readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
-                g2ClientActive = EvenG2ReadingSession.isClientActive(),
-                state = voiceState,
-            )
-        ) {
-            ReaderModeDoubleTapAction.DISABLE -> {
+        val action = recordingTapAction(
+            mode = BleConnectionService.recordingTapMode.value,
+            event = RecordingTapEvent.DOUBLE,
+            readerModeEnabled = BleConnectionService.readingPassthroughEnabled.value,
+            g2ClientActive = EvenG2ReadingSession.isClientActive(),
+            state = voiceState,
+        )
+        when (action) {
+            RecordingTapAction.INTERRUPT -> interruptHarnessPipeline(voiceState)
+            RecordingTapAction.STOP_RECORDING -> {
+                Log.i(TAG, "Double tap: host-authorized recording stop")
+                BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
+            }
+            RecordingTapAction.START_RECORDING -> requestRecordingStart(RecordingTapEvent.DOUBLE)
+            RecordingTapAction.DISABLE_READER_MODE -> {
                 BleConnectionService.setReadingPassthroughEnabled(appContext, false)
                 BleConnectionService.setResponse("リーダーモードを終了しました")
                 BleConnectionService.setErrorMessage("")
                 Log.i(TAG, "Double tap: reader mode disabled")
             }
-            ReaderModeDoubleTapAction.ENABLE -> {
+            RecordingTapAction.ENABLE_READER_MODE -> {
                 val enabled = BleConnectionService.setReadingPassthroughEnabled(appContext, true)
                 if (!enabled) {
                     Log.i(TAG, "Double tap: reader mode enable refused (G2 inactive)")
@@ -1393,9 +1452,7 @@ internal class VoiceProcessor(
                 }
                 Log.i(TAG, "Double tap: reader mode enabled")
             }
-            ReaderModeDoubleTapAction.NONE -> {
-                Log.d(TAG, "Double tap ignored")
-            }
+            RecordingTapAction.NONE -> Log.d(TAG, "Double tap ignored")
         }
     }
 
@@ -1445,8 +1502,8 @@ internal class VoiceProcessor(
         harnessPipelineInterrupted.set(true)
         harnessPipelineJob?.cancel()
         harnessPipelineJob = null
-        pendingSingleTapStartJob?.cancel()
-        pendingSingleTapStartJob = null
+        pendingTapStartJob?.cancel()
+        pendingTapStartJob = null
         cancelAssistantRequest(activeAssistantRequestId)
         synchronized(reminderMutationLock) {
             activeReminderId.getAndSet(null)?.let(::rollbackInterruptedReminder)
