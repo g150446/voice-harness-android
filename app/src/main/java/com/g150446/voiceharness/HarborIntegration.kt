@@ -5,11 +5,14 @@ import android.net.Uri
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,7 +39,7 @@ import javax.crypto.spec.SecretKeySpec
 
 enum class InteractionMode { AI, READER, HARBOR }
 
-internal enum class CapturePurpose { AI_QUERY, MODE_SWITCH }
+internal enum class CapturePurpose { AI_QUERY, COMMAND }
 
 internal fun parseInteractionMode(text: String): InteractionMode? {
     val normalized = text.lowercase(Locale.ROOT)
@@ -116,7 +119,39 @@ data class HarborConnectionState(
     val error: String? = null,
 )
 
-internal data class HarborWorkspace(val id: String, val name: String, val selected: Boolean)
+internal data class HarborWorkspace(
+    val id: String,
+    val name: String,
+    val selected: Boolean,
+    val agent: String? = null,
+    val process: String? = null,
+    val summary: String? = null,
+)
+
+/**
+ * Resolves a confirmed switch target against the workspace list.
+ *
+ * The target comes from the interpreter's `workspace` field, so it is already a name
+ * rather than a whole utterance; matching it by name is safe here. An ambiguous partial
+ * match resolves to null so the caller can say so instead of guessing.
+ */
+internal fun resolveHarborWorkspace(
+    target: String,
+    workspaces: List<HarborWorkspace>,
+): HarborWorkspace? {
+    val needle = harborWorkspaceKey(target)
+    if (needle.isEmpty()) return null
+    workspaces.firstOrNull { harborWorkspaceKey(it.name) == needle }?.let { return it }
+    workspaces.firstOrNull { harborWorkspaceKey(it.id) == needle }?.let { return it }
+    return workspaces.filter {
+        val key = harborWorkspaceKey(it.name)
+        key.isNotEmpty() && (key.contains(needle) || needle.contains(key))
+    }.singleOrNull()
+}
+
+private fun harborWorkspaceKey(value: String): String =
+    value.lowercase(Locale.ROOT).filter(Char::isLetterOrDigit)
+
 internal data class HarborScreen(val text: String)
 internal data class HarborG2View(
     val summary: Boolean,
@@ -136,6 +171,9 @@ internal fun filterHarborDisplayText(text: String): String {
         }
         .joinToString("\n")
 }
+
+internal fun shouldPublishHarborPoll(paused: Boolean, coroutineActive: Boolean): Boolean =
+    !paused && coroutineActive
 
 internal fun parseHarborG2View(json: JSONObject): HarborG2View {
     if (json.optString("view") != "summary") {
@@ -246,6 +284,8 @@ internal class HarborCredentialsStore(private val context: Context) {
     }
 }
 
+private const val TAG = "HarborApiClient"
+
 internal class HarborApiClient(
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
@@ -315,17 +355,46 @@ internal class HarborApiClient(
                             item.optString("name", "Workspace")
                         },
                         selected = item.optBoolean("selected"),
+                        agent = item.optString("agent").trim().takeIf { it.isNotEmpty() },
+                        process = item.optString("process").trim().takeIf { it.isNotEmpty() },
+                        summary = item.optString("summary").trim().takeIf { it.isNotEmpty() },
                     )
                 )
             }
         }
     }
 
-    fun fetchScreen(credentials: HarborCredentials, workspaceId: String): HarborScreen {
-        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/screen?lines=60"
+    fun fetchScreen(
+        credentials: HarborCredentials,
+        workspaceId: String,
+        lines: Int = 60,
+    ): HarborScreen {
+        val clamped = lines.coerceIn(1, 20_000)
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/screen?lines=$clamped"
         val response = authorized(credentials, "GET", path)
         checkOk(response)
         return HarborScreen(JSONObject(String(response.body)).optString("text"))
+    }
+
+    fun fetchInterpretContext(credentials: HarborCredentials): HarborInterpretContext? {
+        val workspaces = listWorkspaces(credentials)
+        val workspace = workspaces.firstOrNull { it.selected } ?: return null
+        val screen = runCatching {
+            fetchScreen(credentials, workspace.id, lines = INTERPRET_CONTEXT_LINES)
+        }.getOrElse {
+            fetchScreen(credentials, workspace.id, lines = 60)
+        }
+        val conversation = filterHarborDisplayText(screen.text)
+            .takeLast(INTERPRET_CONTEXT_MAX_CHARS)
+        return HarborInterpretContext(
+            workspaceId = workspace.id,
+            workspaceName = workspace.name,
+            agent = workspace.agent,
+            process = workspace.process,
+            workspaceSummary = workspace.summary,
+            conversation = conversation,
+            availableWorkspaces = workspaces.map { it.name },
+        )
     }
 
     fun fetchG2View(credentials: HarborCredentials, workspaceId: String): HarborG2View {
@@ -339,6 +408,41 @@ internal class HarborApiClient(
         }
         checkOk(response)
         return parseHarborG2View(JSONObject(String(response.body)))
+    }
+
+    fun fetchSpeechHints(credentials: HarborCredentials, workspaceId: String): List<String> {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/speech/hints"
+        val response = authorized(credentials, "GET", path)
+        checkOk(response)
+        val items = JSONObject(String(response.body)).optJSONArray("hints") ?: JSONArray()
+        return buildList {
+            for (index in 0 until items.length()) {
+                items.optString(index).trim().takeIf(String::isNotEmpty)?.let(::add)
+            }
+        }
+    }
+
+    fun postInstruction(credentials: HarborCredentials, workspaceId: String, text: String) {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/instruction"
+        val body = JSONObject().put("text", text).put("submit", true).toString().toByteArray()
+        val response = authorized(credentials, "POST", path, body)
+        Log.i(TAG, "instruction http=${response.code} chars=${text.length}")
+        checkOk(response)
+    }
+
+    fun postActivate(credentials: HarborCredentials, workspaceId: String) {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/activate"
+        val response = authorized(credentials, "POST", path, "{}".toByteArray())
+        Log.i(TAG, "activate http=${response.code} workspace=$workspaceId")
+        checkOk(response)
+    }
+
+    fun postKey(credentials: HarborCredentials, workspaceId: String, key: String) {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/key"
+        val body = JSONObject().put("key", key).toString().toByteArray()
+        val response = authorized(credentials, "POST", path, body)
+        Log.i(TAG, "key http=${response.code} key=$key")
+        checkOk(response)
     }
 
     private fun authorized(
@@ -407,7 +511,8 @@ internal class HarborApiClient(
         if (clientId != null) builder.header("X-Harbor-Client-Id", clientId)
         if (body.isNotEmpty()) builder.header("Content-Type", "application/json")
         builder.method(method, if (method == "GET") null else body.toRequestBody(JSON))
-        val requestClient = if (path.endsWith("/g2-view")) g2Http else http
+        val requestClient =
+            if (path.endsWith("/g2-view") || path.endsWith("/voice/intent")) g2Http else http
         requestClient.newCall(builder.build()).execute().use { response ->
             val bytes = response.body.bytes()
             val actual = response.header("X-Harbor-Response-Signature")
@@ -428,6 +533,8 @@ internal class HarborApiClient(
 
     private companion object {
         val JSON = "application/json; charset=utf-8".toMediaType()
+        const val INTERPRET_CONTEXT_LINES = 2_000
+        const val INTERPRET_CONTEXT_MAX_CHARS = 64 * 1_024
     }
 }
 
@@ -439,6 +546,7 @@ internal class HarborMirrorController(
     private val store = HarborCredentialsStore(context)
     private var credentials = store.load()
     private var job: Job? = null
+    @Volatile private var paused = false
     private var mode = InteractionMode.AI
     private val _state = MutableStateFlow(
         HarborConnectionState(paired = credentials != null, deviceName = credentials?.deviceName)
@@ -452,6 +560,11 @@ internal class HarborMirrorController(
 
     fun setG2Active(active: Boolean) {
         if (active) reconcile() else stopPolling()
+    }
+
+    fun setPaused(value: Boolean) {
+        paused = value
+        if (value) stopPolling() else reconcile()
     }
 
     fun pair(rawUri: String) {
@@ -484,8 +597,53 @@ internal class HarborMirrorController(
         }
     }
 
+    fun speechHints(): List<String> {
+        val creds = credentials ?: return emptyList()
+        return runCatching {
+            val workspace = client.listWorkspaces(creds).firstOrNull { it.selected } ?: return emptyList()
+            client.fetchSpeechHints(creds, workspace.id)
+        }.getOrDefault(emptyList())
+    }
+
+    fun interpretContext(): HarborInterpretContext? {
+        val creds = credentials ?: return null
+        return runCatching { client.fetchInterpretContext(creds) }.getOrNull()
+    }
+
+    /**
+     * Carries out the action the user already confirmed on the glass.
+     *
+     * The interpretation happened once, on the phone, with the workspace list and the
+     * agent conversation in context. Routing it through Harbor's own voice classifier
+     * afterwards could only re-decide what the user had already approved — which is how
+     * a confirmed instruction ended up switching workspaces instead of being sent.
+     */
+    fun submitCommand(args: HarborCommandArgs): String {
+        val creds = credentials ?: error("Terminal Harborをペアリングしてください")
+        val workspaces = client.listWorkspaces(creds)
+        if (args.action == HarborCommandAction.SWITCH_WORKSPACE) {
+            val target = args.workspace?.trim().orEmpty()
+            if (target.isEmpty()) error("切り替え先のワークスペースが空です")
+            val match = resolveHarborWorkspace(target, workspaces)
+                ?: error("「$target」というワークスペースが見つかりません")
+            client.postActivate(creds, match.id)
+            return "${match.name} に切り替えました"
+        }
+        val selected = workspaces.firstOrNull { it.selected }
+            ?: error("選択中のワークスペースがありません")
+        if (args.action == HarborCommandAction.KEY) {
+            val key = args.key?.trim()?.lowercase().orEmpty().ifBlank { "enter" }
+            client.postKey(creds, selected.id, key)
+            return if (key == "enter") "Enterキーを送りました" else "${key}キーを送りました"
+        }
+        val text = args.command.trim()
+        if (text.isEmpty()) error("送信する指示が空です")
+        client.postInstruction(creds, selected.id, text)
+        return "指示を送りました"
+    }
+
     private fun reconcile() {
-        if (mode != InteractionMode.HARBOR || !EvenG2ReadingSession.isClientActive()) {
+        if (paused || mode != InteractionMode.HARBOR || !EvenG2ReadingSession.isClientActive()) {
             stopPolling()
             return
         }
@@ -501,14 +659,20 @@ internal class HarborMirrorController(
     private suspend fun poll(creds: HarborCredentials) {
         var failures = 0
         try {
-            while (mode == InteractionMode.HARBOR && EvenG2ReadingSession.isClientActive()) {
+            while (
+                !paused &&
+                mode == InteractionMode.HARBOR &&
+                EvenG2ReadingSession.isClientActive()
+            ) {
                 try {
                     val workspace = client.listWorkspaces(creds).firstOrNull { it.selected }
+                    if (!shouldPublishHarborPoll(paused, coroutineContext.isActive)) return
                     if (workspace == null) {
                         _state.value = _state.value.copy(connected = true, workspaceName = null, error = null)
                         EvenG2ReadingSession.publishHarbor(null, null, "選択中のワークスペースがありません")
                     } else {
                         val view = client.fetchG2View(creds, workspace.id)
+                        if (!shouldPublishHarborPoll(paused, coroutineContext.isActive)) return
                         _state.value = _state.value.copy(
                             connected = true,
                             workspaceName = workspace.name,
@@ -531,7 +695,7 @@ internal class HarborMirrorController(
                         }
                     }
                     failures = 0
-                    delay(1_000L)
+                    delay(HARBOR_MIRROR_POLL_MS)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Throwable) {
@@ -540,7 +704,7 @@ internal class HarborMirrorController(
                         connected = false,
                         error = error.message ?: "Terminal Harborに接続できません",
                     )
-                    if (failures >= 3) {
+                    if (failures >= 3 && shouldPublishHarborPoll(paused, coroutineContext.isActive)) {
                         EvenG2ReadingSession.publishHarbor(
                             _state.value.workspaceName,
                             null,

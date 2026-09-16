@@ -122,7 +122,7 @@ blockedIntent=0 / 32     passedJunk=0 / 22
 ASRを続行する。処理JobとAIバックエンドをキャンセルし、
 TTSを停止して状態を `READY` に戻し、画面と履歴に「中断しました」を残す。
 
-G2 接続中かつ処理中でない double はモード指示録音を開始する。G2ページ送りはリーダー / Harbor 中の single。
+G2 接続中かつ処理中でない double はモード別の指示録音を開始する。G2ページ送りはリーダー / Harbor 中の single。
 詳細は [`smart_glasses_output.md`](smart_glasses_output.md)。
 
 残振動で double 直後に single が飛びやすいため、ホストは double 受信から **2 秒間**

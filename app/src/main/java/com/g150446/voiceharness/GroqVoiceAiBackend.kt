@@ -96,6 +96,9 @@ class GroqVoiceAiBackend(
                 conversationHistory = request.conversationHistory,
                 languageCode = request.languageCode,
                 screenContext = request.screenContext,
+                harborToolEnabled = request.harborToolEnabled,
+                forceHarborCommand = request.forceHarborCommand,
+                harborContext = request.harborContext,
             )
             val response = httpClient.newCall(
                 Request.Builder()
@@ -190,9 +193,9 @@ class GroqVoiceAiBackend(
         val toolCalls: List<ChatToolCall>
     )
 
-    private companion object {
+    companion object {
         private const val TAG = "GroqVoiceAiBackend"
-        private const val WHISPER_MODEL = "whisper-large-v3-turbo"
+        const val WHISPER_MODEL = "whisper-large-v3-turbo"
         private const val TRANSCRIPTIONS_URL =
             "https://api.groq.com/openai/v1/audio/transcriptions"
         private const val CHAT_COMPLETIONS_URL =

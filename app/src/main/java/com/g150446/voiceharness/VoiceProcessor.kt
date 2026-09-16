@@ -44,7 +44,7 @@ internal fun shouldInterruptOnDoubleTap(
     state: VoiceState,
     capturePurpose: CapturePurpose = CapturePurpose.AI_QUERY,
 ): Boolean = when (state) {
-    VoiceState.RECORDING -> capturePurpose != CapturePurpose.MODE_SWITCH
+    VoiceState.RECORDING -> capturePurpose != CapturePurpose.COMMAND
     VoiceState.TRANSCRIBING,
     VoiceState.RESPONDING,
     VoiceState.SPEAKING -> true
@@ -69,8 +69,8 @@ internal fun shouldSuppressSingleTapAfterDouble(
 }
 
 /**
- * Whether a single tap should ask the node to start or stop recording via RX.
- * Reader and Harbor modes never use single tap for recording (G2 page advance only).
+ * Whether a single tap should ask the node to start or stop recording via RX in AI mode.
+ * Harbor single recording is resolved in [recordingTapAction]; Reader never records.
  */
 internal fun singleTapRecordingCommand(
     interactionMode: InteractionMode,
@@ -91,7 +91,34 @@ internal enum class RecordingTapAction {
     START_RECORDING,
     STOP_RECORDING,
     INTERRUPT,
-    START_MODE_SWITCH,
+    START_COMMAND,
+    CONFIRM_HARBOR,
+    CANCEL_HARBOR,
+}
+
+internal data class PendingHarborCommand(
+    val stt: String,
+    val args: HarborCommandArgs,
+) {
+    val awaitingClarification: Boolean get() = args.needsClarification
+}
+
+/** What a [RecordingTapAction.CONFIRM_HARBOR] tap does. Every case must reach the glass. */
+internal enum class HarborConfirmOutcome {
+    /** The confirm window closed before the tap landed. */
+    EXPIRED,
+
+    /** The interpreter wants a clarification; re-ask instead of sending. */
+    NEEDS_CLARIFICATION,
+
+    /** Send the command to Terminal Harbor. */
+    SUBMIT,
+}
+
+internal fun harborConfirmOutcome(pending: PendingHarborCommand?): HarborConfirmOutcome = when {
+    pending == null -> HarborConfirmOutcome.EXPIRED
+    pending.awaitingClarification -> HarborConfirmOutcome.NEEDS_CLARIFICATION
+    else -> HarborConfirmOutcome.SUBMIT
 }
 
 /** Resolves tap ownership before any BLE command or pipeline side effect is performed. */
@@ -102,8 +129,50 @@ internal fun recordingTapAction(
     g2ClientActive: Boolean,
     state: VoiceState,
     capturePurpose: CapturePurpose = CapturePurpose.AI_QUERY,
+    harborConfirmPending: Boolean = false,
+    harborConfirmAwaitingClarification: Boolean = false,
+    harborSummaryActive: Boolean = false,
 ): RecordingTapAction {
+    if (harborConfirmPending) {
+        // Single confirms as soon as the prompt is visible, including while the
+        // intent is still being interpreted (the tap is queued, not executed early).
+        if (event == RecordingTapEvent.SINGLE &&
+            (state == VoiceState.READY ||
+                state == VoiceState.ERROR ||
+                state == VoiceState.TRANSCRIBING)
+        ) {
+            return RecordingTapAction.CONFIRM_HARBOR
+        }
+        if (event == RecordingTapEvent.DOUBLE &&
+            (state == VoiceState.READY || state == VoiceState.ERROR)
+        ) {
+            // Follow the label the glass is showing: the confirm prompt offers
+            // 「ダブルタップで取り消す」, and cancelling means stopping, not starting over.
+            // Only the clarification prompt offers 「ダブルタップで言い直す」.
+            return if (harborConfirmAwaitingClarification) {
+                RecordingTapAction.START_COMMAND
+            } else {
+                RecordingTapAction.CANCEL_HARBOR
+            }
+        }
+    }
     if (event == RecordingTapEvent.SINGLE) {
+        if (interactionMode == InteractionMode.HARBOR) {
+            // Harbor idle: single toggles the host-authorized command recording.
+            // While the glass pages a summary/question, single belongs to the plugin.
+            return when {
+                state == VoiceState.RECORDING ->
+                    if (capturePurpose == CapturePurpose.COMMAND) {
+                        RecordingTapAction.STOP_RECORDING
+                    } else {
+                        RecordingTapAction.NONE
+                    }
+                harborSummaryActive -> RecordingTapAction.NONE
+                state == VoiceState.READY || state == VoiceState.ERROR ->
+                    RecordingTapAction.START_COMMAND
+                else -> RecordingTapAction.NONE
+            }
+        }
         if (mode != RecordingTapMode.SINGLE) return RecordingTapAction.NONE
         return when (singleTapRecordingCommand(interactionMode, state)) {
             BLE_RX_START_RECORDING -> RecordingTapAction.START_RECORDING
@@ -113,12 +182,12 @@ internal fun recordingTapAction(
     }
 
     if (g2ClientActive) {
-        if (state == VoiceState.RECORDING && capturePurpose == CapturePurpose.MODE_SWITCH) {
+        if (state == VoiceState.RECORDING && capturePurpose == CapturePurpose.COMMAND) {
             return RecordingTapAction.STOP_RECORDING
         }
         if (shouldInterruptOnDoubleTap(state, capturePurpose)) return RecordingTapAction.INTERRUPT
         return if (state == VoiceState.READY || state == VoiceState.ERROR) {
-            RecordingTapAction.START_MODE_SWITCH
+            RecordingTapAction.START_COMMAND
         } else {
             RecordingTapAction.NONE
         }
@@ -184,6 +253,18 @@ internal class VoiceProcessor(
     @Volatile private var lastDoubleTapElapsedMs = 0L
     /** stop-then-start job; cancelled by a newer double-tap or pipeline interruption. */
     private var pendingTapStartJob: Job? = null
+    @Volatile private var pendingHarborCommand: PendingHarborCommand? = null
+    /** True while the Harbor intent is still being interpreted; taps are queued. */
+    @Volatile private var harborConfirmInterpreting = false
+    /** Atomic so a tap arriving as interpretation ends cannot be lost between read and clear. */
+    private val harborConfirmRequested = AtomicBoolean(false)
+    /**
+     * True from the confirm tap until the Harbor result has been on the glass long enough
+     * to read. The 1s mirror poll republishes the workspace and would otherwise wipe the
+     * result within a frame, which reads as "nothing happened".
+     */
+    @Volatile private var harborSubmitInFlight = false
+    private var harborConfirmTimeoutJob: Job? = null
     private val reminderMutationLock = Any()
     private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
@@ -242,8 +323,8 @@ internal class VoiceProcessor(
         if (BleConnectionService.voiceState.value == VoiceState.RECORDING) return
         activeCapturePurpose = nextCapturePurpose
         nextCapturePurpose = CapturePurpose.AI_QUERY
-        if (activeCapturePurpose == CapturePurpose.MODE_SWITCH) {
-            EvenG2ReadingSession.publishResponse("モードを指示してください\nダブルタップで決定")
+        if (activeCapturePurpose == CapturePurpose.COMMAND) {
+            EvenG2ReadingSession.publishResponse("指示を話してください\nタップで決定")
         } else {
             EvenG2ReadingSession.clearDisplay()
         }
@@ -367,6 +448,12 @@ internal class VoiceProcessor(
                 gestureDiags = diags,
                 trajectoryFile = trajectoryFile,
                 diagsFromNodeBatch = useBatch,
+                interactionMode = BleConnectionService.interactionMode.value.name,
+                g2ClientActive = EvenG2ReadingSession.isClientActive(),
+                sttBackend = ModelManager.currentSttBackend(appContext).name,
+                sttModel = ModelDisplayIds.sttModelId(appContext),
+                llmBackend = ModelManager.currentLlmBackend(appContext).name,
+                llmModel = ModelDisplayIds.llmModelId(appContext),
             )
         )
         pendingGestureDiags = emptyList()
@@ -418,8 +505,8 @@ internal class VoiceProcessor(
             recordingCuePlayer.playStopped()
         }
 
-        if (capturePurpose == CapturePurpose.MODE_SWITCH) {
-            processModeSwitchRecording(pcmData, recordingDurationMs, pcmDurationMs)
+        if (capturePurpose == CapturePurpose.COMMAND) {
+            processCommandRecording(pcmData, recordingDurationMs, pcmDurationMs)
             return
         }
 
@@ -509,7 +596,7 @@ internal class VoiceProcessor(
         }
     }
 
-    private fun processModeSwitchRecording(
+    private fun processCommandRecording(
         pcmData: ByteArray,
         recordingDurationMs: Long,
         pcmDurationMs: Long,
@@ -518,71 +605,342 @@ internal class VoiceProcessor(
         pendingGestureDiags = emptyList()
         recordingStoppedAtWallMs = 0L
         if (!isBlePcmCaptureComplete(recordingDurationMs, pcmDurationMs) || !hasSpeechInPcm(pcmData)) {
-            showModeSwitchError("モード指示を認識できませんでした")
+            showCommandError("指示を認識できませんでした")
             return
         }
         BleConnectionService.setVoiceState(VoiceState.TRANSCRIBING)
+        val interactionMode = BleConnectionService.interactionMode.value
         harnessPipelineJob = scope.launch(Dispatchers.IO) {
             val trimmed = PcmSilenceTrimmer.trim(pcmData, PCM_SAMPLE_RATE)
             val wav = buildWavFile(trimmed)
             if (wav == null) {
-                showModeSwitchError("モード指示を処理できませんでした")
+                showCommandError("指示を処理できませんでした")
                 return@launch
             }
             try {
                 aiBackend.ensureReady().getOrThrow()
-                val result = aiBackend.transcribe(
-                    wav,
-                    listOf(
-                        AsrVocabularyTerm("ハーバーモード"),
-                        AsrVocabularyTerm("AI対話モード"),
-                        AsrVocabularyTerm("リーダーモード"),
-                        AsrVocabularyTerm("Terminal Harbor"),
-                    ),
-                ).getOrThrow()
-                val raw = result.text.trim()
+                val vocab = buildList {
+                    add(AsrVocabularyTerm(GLASSES_MODE_SWITCH_PHRASE))
+                    add(AsrVocabularyTerm("ハーバーモード"))
+                    add(AsrVocabularyTerm("AI対話モード"))
+                    add(AsrVocabularyTerm("リーダーモード"))
+                    add(AsrVocabularyTerm("Terminal Harbor"))
+                    add(AsrVocabularyTerm("ページ進めて"))
+                    add(AsrVocabularyTerm("ページ戻して"))
+                    BleConnectionService.harborSpeechHints()
+                        .take(24)
+                        .forEach { add(AsrVocabularyTerm(it)) }
+                }
+                val raw = aiBackend.transcribe(wav, vocab).getOrThrow().text.trim()
                 BleConnectionService.setTranscription(raw)
-                val mode = parseInteractionMode(raw)
-                if (mode == null) {
-                    showModeSwitchError("モードを特定できませんでした")
+                val modeRemainder = glassesModeSwitchRemainder(raw)
+                if (modeRemainder != null) {
+                    applyGlassesModeSwitch(modeRemainder)
                     return@launch
                 }
-                if (!BleConnectionService.setInteractionMode(appContext, mode)) {
-                    BleConnectionService.setVoiceState(VoiceState.READY)
-                    return@launch
-                }
-                BleConnectionService.setResponse(
-                    when (mode) {
-                        InteractionMode.AI -> "AI対話モードに切り替えました"
-                        InteractionMode.READER -> "リーダーモードに切り替えました"
-                        InteractionMode.HARBOR -> "Harborモードに切り替えました"
+                when (interactionMode) {
+                    InteractionMode.HARBOR -> {
+                        presentHarborConfirmSuspend(raw)
+                        BleConnectionService.setVoiceState(VoiceState.READY)
                     }
-                )
-                if (mode == InteractionMode.READER) {
-                    startReadingPassthroughFromCurrentScreen(
-                        command = "音声指示でリーダーモード開始",
-                        silentFailure = false,
-                    )
-                } else {
-                    BleConnectionService.setVoiceState(VoiceState.READY)
+                    InteractionMode.READER -> {
+                        val command = parseReaderPageCommand(raw)
+                        if (command == null) {
+                            showCommandError("ページ操作を認識できませんでした")
+                            return@launch
+                        }
+                        turnKindlePages(command.pages, command.forward)
+                    }
+                    InteractionMode.AI -> transcribeAndRespondOnDevice(wav)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                showModeSwitchError("モード指示の文字起こしに失敗しました")
+                showCommandError(error.message ?: "指示の処理に失敗しました")
             } finally {
                 runCatching { wav.delete() }
-                BleConnectionService.pauseHarborMirror(false)
+                if (pendingHarborCommand == null && !harborSubmitInFlight) {
+                    BleConnectionService.pauseHarborMirror(false)
+                }
             }
         }
     }
 
-    private fun showModeSwitchError(message: String) {
+    private suspend fun applyGlassesModeSwitch(remainder: String) {
+        if (remainder.isBlank()) {
+            showCommandError("モード名を続けて話してください")
+            return
+        }
+        val mode = parseInteractionMode(remainder)
+        if (mode == null) {
+            showCommandError("モードを特定できませんでした")
+            return
+        }
+        if (!BleConnectionService.setInteractionMode(appContext, mode)) {
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            return
+        }
+        BleConnectionService.setResponse(
+            when (mode) {
+                InteractionMode.AI -> "AI対話モードに切り替えました"
+                InteractionMode.READER -> "リーダーモードに切り替えました"
+                InteractionMode.HARBOR -> "Harborモードに切り替えました"
+            }
+        )
+        if (mode == InteractionMode.READER) {
+            startReadingPassthroughFromCurrentScreen(
+                command = "音声指示でリーダーモード開始",
+                silentFailure = false,
+            )
+        } else {
+            BleConnectionService.setVoiceState(VoiceState.READY)
+        }
+    }
+
+    private fun showCommandError(message: String) {
+        clearHarborConfirm(resumeMirror = false)
         BleConnectionService.setErrorMessage(message)
         BleConnectionService.setResponse(message)
         EvenG2ReadingSession.publishResponse(message)
         BleConnectionService.setVoiceState(VoiceState.READY)
-        BleConnectionService.pauseHarborMirror(false)
+        if (!harborSubmitInFlight) BleConnectionService.pauseHarborMirror(false)
+    }
+
+    private suspend fun presentHarborConfirmSuspend(text: String) {
+        val stt = text.trim()
+        BleConnectionService.setTranscription(stt)
+        // Snapshot before pausing mirror so we still have a live workspace view.
+        val harborContext = BleConnectionService.harborInterpretContext()
+        BleConnectionService.pauseHarborMirror(true)
+        // Own the tap before the glass says "tap to run": a tap landing between the
+        // prompt and the assignment below would fall through to START_COMMAND.
+        harborConfirmInterpreting = true
+        harborConfirmRequested.set(false)
+        pendingHarborCommand = PendingHarborCommand(
+            stt = stt,
+            args = HarborCommandTool.fallback(stt),
+        )
+        publishHarborConfirmUi(
+            stt = stt,
+            aiComment = "解析中…",
+            awaitingClarification = false,
+        )
+
+        val interpreted = interpretHarborCommand(stt, harborContext)
+        if (pendingHarborCommand?.stt != stt) {
+            // A newer utterance took ownership; only release the latch if nothing holds it.
+            if (pendingHarborCommand == null) harborConfirmInterpreting = false
+            return
+        }
+        pendingHarborCommand = PendingHarborCommand(stt = stt, args = interpreted)
+        Log.i(
+            TAG,
+            "Harbor intent: action=${interpreted.action} key=${interpreted.key} " +
+                "commandChars=${interpreted.command.length} " +
+                "clarify=${interpreted.needsClarification}",
+        )
+        publishHarborConfirmUi(
+            stt = stt,
+            aiComment = interpreted.intentSummary,
+            awaitingClarification = interpreted.needsClarification,
+        )
+        harborConfirmInterpreting = false
+        // Re-arm so the tap window starts when the prompt becomes actionable.
+        armHarborConfirmTimeout()
+        if (harborConfirmRequested.getAndSet(false)) {
+            Log.i(TAG, "Executing Harbor confirm queued during interpretation")
+            executeHarborConfirm()
+        }
+    }
+
+    private fun presentHarborConfirmFromTool(
+        stt: String,
+        args: HarborCommandArgs,
+    ) {
+        BleConnectionService.pauseHarborMirror(true)
+        val normalized = if (args.action == HarborCommandAction.KEY || HarborCommandTool.isEnterRequest(stt)) {
+            args.copy(action = HarborCommandAction.KEY, key = args.key ?: "enter", command = "")
+        } else {
+            args
+        }
+        pendingHarborCommand = PendingHarborCommand(stt = stt, args = normalized)
+        harborConfirmInterpreting = false
+        harborConfirmRequested.set(false)
+        armHarborConfirmTimeout()
+        publishHarborConfirmUi(
+            stt = stt,
+            aiComment = normalized.intentSummary,
+            awaitingClarification = normalized.needsClarification,
+        )
+        saveHistoryEntry(
+            transcription = stt,
+            response = "Harbor確認: ${normalized.intentSummary}",
+            isSilent = false,
+            errorMessage = "",
+        )
+    }
+
+    private fun publishHarborConfirmUi(
+        stt: String,
+        aiComment: String?,
+        awaitingClarification: Boolean,
+    ) {
+        val prompt = harborConfirmPrompt(stt, aiComment, awaitingClarification)
+        val phoneResponse = buildString {
+            aiComment?.takeIf { it.isNotBlank() }?.let { append(it) }
+            if (isNotEmpty()) append('\n')
+            append(
+                if (awaitingClarification) {
+                    "ダブルタップで言い直す"
+                } else {
+                    "シングルタップで実行 / ダブルタップで取り消す"
+                },
+            )
+        }
+        BleConnectionService.setResponse(phoneResponse)
+        EvenG2ReadingSession.publishResponse(prompt)
+    }
+
+    private fun armHarborConfirmTimeout() {
+        harborConfirmTimeoutJob?.cancel()
+        harborConfirmTimeoutJob = scope.launch {
+            delay(HARBOR_CONFIRM_TIMEOUT_MS)
+            if (pendingHarborCommand == null) return@launch
+            cancelHarborConfirm("timeout")
+        }
+    }
+
+    /** Drops the pending command and returns the glass to the live workspace. */
+    private fun cancelHarborConfirm(reason: String) {
+        Log.i(TAG, "Harbor confirm cancelled ($reason)")
+        clearHarborConfirm(resumeMirror = true)
+        val message = "指示を取り消しました"
+        BleConnectionService.setResponse(message)
+        EvenG2ReadingSession.publishResponse(message)
+        BleConnectionService.setVoiceState(VoiceState.READY)
+    }
+
+    private suspend fun interpretHarborCommand(
+        rawStt: String,
+        harborContext: HarborInterpretContext? = null,
+    ): HarborCommandArgs {
+        val ready = aiBackend.ensureReady()
+        if (ready.isFailure) {
+            Log.w(TAG, "Harbor interpret skipped: ${ready.exceptionOrNull()?.message}")
+            return HarborCommandTool.fallback(rawStt)
+        }
+        val llm = ModelManager.currentLlmBackend(appContext)
+        if (llm != LlmBackendId.GROQ && llm != LlmBackendId.OPENROUTER) {
+            Log.w(TAG, "Harbor interpret requires cloud LLM; falling back to raw STT")
+            return HarborCommandTool.fallback(rawStt)
+        }
+        val result = aiBackend.chat(
+            ChatRequest(
+                conversationHistory = listOf(ConversationTurn(role = "user", content = rawStt)),
+                languageCode = responseLanguageCode ?: "ja",
+                harborToolEnabled = true,
+                forceHarborCommand = true,
+                harborContext = harborContext,
+            )
+        )
+        if (result.isFailure) {
+            Log.w(TAG, "Harbor interpret failed: ${result.exceptionOrNull()?.message}")
+            return HarborCommandTool.fallback(rawStt)
+        }
+        val chat = result.getOrThrow()
+        val call = chat.toolCalls.firstOrNull { it.name == HARBOR_COMMAND_TOOL_NAME }
+        return if (call != null) {
+            HarborCommandTool.parse(call.argumentsJson, fallbackCommand = rawStt)
+        } else if (chat.text.isNotBlank()) {
+            HarborCommandTool.fallback(rawStt).copy(
+                intentSummary = chat.text.trim().take(120),
+            )
+        } else {
+            HarborCommandTool.fallback(rawStt)
+        }
+    }
+
+    /**
+     * Every exit from here must leave something on the glass. A tap that is accepted as
+     * [RecordingTapAction.CONFIRM_HARBOR] and then returns quietly is indistinguishable
+     * from a tap that never arrived over BLE, which is what made the last failure
+     * un-diagnosable.
+     */
+    private fun executeHarborConfirm() {
+        val pending = pendingHarborCommand
+        if (pending == null) {
+            Log.w(TAG, "Harbor confirm ignored: no pending command (expired or discarded)")
+            val message = "確認の有効期限が切れました。もう一度話してください"
+            BleConnectionService.setResponse(message)
+            EvenG2ReadingSession.publishResponse(message)
+            return
+        }
+        if (harborConfirmOutcome(pending) == HarborConfirmOutcome.NEEDS_CLARIFICATION) {
+            Log.w(TAG, "Harbor confirm ignored: awaiting clarification")
+            // Re-show the question (and give a fresh window) so the tap is acknowledged.
+            publishHarborConfirmUi(
+                stt = pending.stt,
+                aiComment = pending.args.question?.takeIf { it.isNotBlank() }
+                    ?: pending.args.intentSummary,
+                awaitingClarification = true,
+            )
+            armHarborConfirmTimeout()
+            return
+        }
+        Log.i(
+            TAG,
+            "Harbor confirm executing: action=${pending.args.action} " +
+                "key=${pending.args.key} commandChars=${pending.args.command.length}",
+        )
+        harborSubmitInFlight = true
+        clearHarborConfirm(resumeMirror = false)
+        harnessPipelineJob = scope.launch(Dispatchers.IO) {
+            try {
+                val message = BleConnectionService.submitHarborCommand(pending.args)
+                Log.i(TAG, "Harbor confirm result: $message")
+                BleConnectionService.setResponse(message)
+                EvenG2ReadingSession.publishResponse(message)
+                val historyResponse = when (pending.args.action) {
+                    HarborCommandAction.KEY ->
+                        "Harbor key: ${pending.args.key ?: "enter"}\n$message"
+                    HarborCommandAction.SWITCH_WORKSPACE ->
+                        "Harbor切り替え: ${pending.args.workspace.orEmpty()}\n$message"
+                    HarborCommandAction.INSTRUCTION ->
+                        "Harborへ送信: ${pending.args.command}\n$message"
+                }
+                saveHistoryEntry(
+                    transcription = pending.stt,
+                    response = historyResponse,
+                    isSilent = false,
+                    errorMessage = "",
+                )
+                BleConnectionService.setVoiceState(VoiceState.READY)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                Log.w(TAG, "Harbor confirm failed", error)
+                showCommandError(error.message ?: "指示の処理に失敗しました")
+            } finally {
+                // Hold the mirror off until the result has been readable on the glass;
+                // a HARBOR_MIRROR_POLL_MS tick would otherwise overwrite it at once.
+                scope.launch {
+                    delay(HARBOR_RESULT_HOLD_MS)
+                    harborSubmitInFlight = false
+                    if (pendingHarborCommand == null) {
+                        BleConnectionService.pauseHarborMirror(false)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun clearHarborConfirm(resumeMirror: Boolean) {
+        pendingHarborCommand = null
+        harborConfirmInterpreting = false
+        harborConfirmRequested.set(false)
+        harborConfirmTimeoutJob?.cancel()
+        harborConfirmTimeoutJob = null
+        if (resumeMirror) BleConnectionService.pauseHarborMirror(false)
     }
 
     // --- Shared transcription + chat logic ---
@@ -743,6 +1101,12 @@ internal class VoiceProcessor(
                 presentResponse(message)
                 return
             }
+            val harborPaired = BleConnectionService.harborConnectionState.value.paired
+            val harborContext = if (harborPaired) {
+                BleConnectionService.harborInterpretContext()
+            } else {
+                null
+            }
             val chat = assistantGateway.submit(
                 AssistantRequest(
                     text = if (readerModeRequested) {
@@ -755,6 +1119,8 @@ internal class VoiceProcessor(
                     speakResponse = true,
                     languageCode = responseLanguageCode,
                     screenContext = screenContext,
+                    harborToolEnabled = harborPaired,
+                    harborContext = harborContext,
                 )
             )
             if (chat.isFailure) {
@@ -777,27 +1143,40 @@ internal class VoiceProcessor(
             )
 
             val reminderCall = chatResult.toolCalls.firstOrNull { it.name == "set_reminder" }
-            if (reminderCall != null) {
-                handleReminderToolCall(reminderCall.argumentsJson)
-            } else {
-                val responseText = chatResult.text
-                if (readerModeRequested) {
-                    // Screen-derived book text is transient: do not retain it in the shared
-                    // conversation after the extraction turn.
-                    assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
-                    presentReadingPassthrough(query, responseText, screenContext)
-                    return
+            val harborCall = chatResult.toolCalls.firstOrNull { it.name == HARBOR_COMMAND_TOOL_NAME }
+            when {
+                reminderCall != null -> handleReminderToolCall(reminderCall.argumentsJson)
+                harborCall != null && BleConnectionService.harborConnectionState.value.paired -> {
+                    val args = HarborCommandTool.parse(
+                        harborCall.argumentsJson,
+                        fallbackCommand = BleConnectionService.transcription.value,
+                    )
+                    presentHarborConfirmFromTool(
+                        stt = BleConnectionService.transcription.value,
+                        args = args,
+                    )
+                    BleConnectionService.setVoiceState(VoiceState.READY)
                 }
-                val finalResponse = responseText.ifBlank { "(返答なし)" }
-                BleConnectionService.setResponse(finalResponse)
-                Log.d(TAG, "Response: $responseText")
-                saveHistoryEntry(
-                    transcription = BleConnectionService.transcription.value,
-                    response = finalResponse,
-                    isSilent = false,
-                    errorMessage = "",
-                )
-                presentResponse(finalResponse)
+                else -> {
+                    val responseText = chatResult.text
+                    if (readerModeRequested) {
+                        // Screen-derived book text is transient: do not retain it in the shared
+                        // conversation after the extraction turn.
+                        assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
+                        presentReadingPassthrough(query, responseText, screenContext)
+                        return
+                    }
+                    val finalResponse = responseText.ifBlank { "(返答なし)" }
+                    BleConnectionService.setResponse(finalResponse)
+                    Log.d(TAG, "Response: $responseText")
+                    saveHistoryEntry(
+                        transcription = BleConnectionService.transcription.value,
+                        response = finalResponse,
+                        isSilent = false,
+                        errorMessage = "",
+                    )
+                    presentResponse(finalResponse)
+                }
             }
         } catch (_: CancellationException) {
             Log.d(TAG, "Harness pipeline cancelled by double tap")
@@ -877,6 +1256,12 @@ internal class VoiceProcessor(
                 transcribedText = query,
             )
             responseLanguageCode = language
+            val harborPaired = BleConnectionService.harborConnectionState.value.paired
+            val harborContext = if (harborPaired) {
+                BleConnectionService.harborInterpretContext()
+            } else {
+                null
+            }
             val result = assistantGateway.submit(
                 AssistantRequest(
                     text = query,
@@ -886,6 +1271,8 @@ internal class VoiceProcessor(
                     speakResponse = speakResponse,
                     screenContext = screenContext,
                     languageCode = language,
+                    harborToolEnabled = harborPaired,
+                    harborContext = harborContext,
                 )
             )
             if (isAssistantCancelled(requestId)) {
@@ -894,6 +1281,7 @@ internal class VoiceProcessor(
             }
             result.onSuccess { reply ->
                 val reminderCall = reply.toolCalls.firstOrNull { it.name == "set_reminder" }
+                val harborCall = reply.toolCalls.firstOrNull { it.name == HARBOR_COMMAND_TOOL_NAME }
                 if (reminderCall != null) {
                     handleReminderToolCall(reminderCall.argumentsJson)
                     notifyAssistantUi(
@@ -909,6 +1297,23 @@ internal class VoiceProcessor(
                         BleConnectionService.setVoiceState(VoiceState.READY)
                         BleConnectionService.releaseAssistantProcessing()
                     }
+                    return@onSuccess
+                }
+                if (harborCall != null && BleConnectionService.harborConnectionState.value.paired) {
+                    val args = HarborCommandTool.parse(
+                        harborCall.argumentsJson,
+                        fallbackCommand = query,
+                    )
+                    presentHarborConfirmFromTool(stt = query, args = args)
+                    BleConnectionService.setVoiceState(VoiceState.READY)
+                    BleConnectionService.releaseAssistantProcessing()
+                    notifyAssistantUi(
+                        requestId = requestId,
+                        conversationId = conversationId,
+                        text = args.intentSummary,
+                        success = true,
+                        speaking = false,
+                    )
                     return@onSuccess
                 }
                 val response = reply.text.ifBlank { "(返答なし)" }
@@ -1433,16 +1838,29 @@ internal class VoiceProcessor(
     /** Single tap is routed to recording only while SINGLE mode owns it. */
     internal fun handleSingleTap() {
         val now = SystemClock.elapsedRealtime()
-        if (shouldSuppressSingleTapAfterDouble(now, lastDoubleTapElapsedMs)) {
+        if (pendingHarborCommand == null &&
+            shouldSuppressSingleTapAfterDouble(now, lastDoubleTapElapsedMs)
+        ) {
             Log.i(TAG, "Single tap suppressed after recent double tap")
             return
         }
         val action = currentRecordingTapAction(RecordingTapEvent.SINGLE)
         when (action) {
             RecordingTapAction.START_RECORDING -> requestRecordingStart(RecordingTapEvent.SINGLE)
+            RecordingTapAction.START_COMMAND -> requestCommandStart(RecordingTapEvent.SINGLE)
             RecordingTapAction.STOP_RECORDING -> {
                 Log.i(TAG, "Single tap: host-authorized recording stop")
                 BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
+            }
+            RecordingTapAction.CANCEL_HARBOR -> cancelHarborConfirm("single tap")
+            RecordingTapAction.CONFIRM_HARBOR -> {
+                if (harborConfirmInterpreting) {
+                    harborConfirmRequested.set(true)
+                    Log.i(TAG, "Single tap: Harbor confirm queued during interpretation")
+                } else {
+                    Log.i(TAG, "Single tap: confirm Harbor command")
+                    executeHarborConfirm()
+                }
             }
             else -> Log.i(TAG, "Single tap: no recording command (mode, reader/Harbor, or state)")
         }
@@ -1456,6 +1874,10 @@ internal class VoiceProcessor(
             g2ClientActive = EvenG2ReadingSession.isClientActive(),
             state = BleConnectionService.voiceState.value,
             capturePurpose = activeCapturePurpose,
+            harborConfirmPending = pendingHarborCommand != null,
+            harborConfirmAwaitingClarification =
+                pendingHarborCommand?.awaitingClarification == true,
+            harborSummaryActive = EvenG2ReadingSession.hasHarborSummary(),
         )
 
     private fun requestRecordingStart(event: RecordingTapEvent) {
@@ -1487,9 +1909,10 @@ internal class VoiceProcessor(
         }
     }
 
-    private fun requestModeSwitchStart() {
-        Log.i(TAG, "Double tap: mode-switch recording start (stop-then-start)")
-        nextCapturePurpose = CapturePurpose.MODE_SWITCH
+    private fun requestCommandStart(event: RecordingTapEvent) {
+        val label = if (event == RecordingTapEvent.SINGLE) "Single" else "Double"
+        Log.i(TAG, "$label tap: command recording start (stop-then-start)")
+        nextCapturePurpose = CapturePurpose.COMMAND
         BleConnectionService.pauseHarborMirror(true)
         BleConnectionService.ensurePreferredPrimary()
         BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
@@ -1497,13 +1920,11 @@ internal class VoiceProcessor(
         pendingTapStartJob = scope.launch {
             delay(HOST_START_RESYNC_DELAY_MS)
             if (BleConnectionService.voiceState.value == VoiceState.RECORDING) {
-                Log.d(TAG, "Mode-switch start skipped: already recording")
+                Log.d(TAG, "$label tap command start skipped: already recording")
                 return@launch
             }
-            if (currentRecordingTapAction(RecordingTapEvent.DOUBLE) !=
-                RecordingTapAction.START_MODE_SWITCH
-            ) {
-                Log.d(TAG, "Mode-switch start skipped: G2 inactive or state changed")
+            if (currentRecordingTapAction(event) != RecordingTapAction.START_COMMAND) {
+                Log.d(TAG, "$label tap command start skipped: state changed")
                 BleConnectionService.pauseHarborMirror(false)
                 return@launch
             }
@@ -1516,14 +1937,23 @@ internal class VoiceProcessor(
         pendingTapStartJob?.cancel()
         pendingTapStartJob = null
         val voiceState = BleConnectionService.voiceState.value
-        when (currentRecordingTapAction(RecordingTapEvent.DOUBLE)) {
+        val action = currentRecordingTapAction(RecordingTapEvent.DOUBLE)
+        if (action == RecordingTapAction.START_COMMAND && pendingHarborCommand != null) {
+            // Only the clarification prompt routes a double tap here (「言い直す」); a plain
+            // confirm prompt cancels instead. Drop the old command before re-recording.
+            Log.i(TAG, "Double tap: discard Harbor confirm and re-record")
+            clearHarborConfirm(resumeMirror = false)
+        }
+        when (action) {
             RecordingTapAction.INTERRUPT -> interruptHarnessPipeline(voiceState)
             RecordingTapAction.STOP_RECORDING -> {
                 Log.i(TAG, "Double tap: host-authorized recording stop")
                 BleConnectionService.sendCommand(BLE_RX_STOP_RECORDING)
             }
             RecordingTapAction.START_RECORDING -> requestRecordingStart(RecordingTapEvent.DOUBLE)
-            RecordingTapAction.START_MODE_SWITCH -> requestModeSwitchStart()
+            RecordingTapAction.START_COMMAND -> requestCommandStart(RecordingTapEvent.DOUBLE)
+            RecordingTapAction.CONFIRM_HARBOR -> executeHarborConfirm()
+            RecordingTapAction.CANCEL_HARBOR -> cancelHarborConfirm("double tap")
             RecordingTapAction.NONE -> Log.d(TAG, "Double tap ignored")
         }
     }
@@ -1576,6 +2006,7 @@ internal class VoiceProcessor(
         harnessPipelineJob = null
         pendingTapStartJob?.cancel()
         pendingTapStartJob = null
+        clearHarborConfirm(resumeMirror = true)
         cancelAssistantRequest(activeAssistantRequestId)
         synchronized(reminderMutationLock) {
             activeReminderId.getAndSet(null)?.let(::rollbackInterruptedReminder)
@@ -1692,75 +2123,95 @@ internal class VoiceProcessor(
         }
     }
 
-    private suspend fun advanceKindlePageIfPossible(): Boolean {
+    private suspend fun advanceKindlePageIfPossible(): Boolean =
+        turnKindlePages(pages = 1, forward = true, extract = true)
+
+    private suspend fun turnKindlePages(
+        pages: Int,
+        forward: Boolean,
+        extract: Boolean = true,
+    ): Boolean {
         if (!readingPageTurnInFlight.compareAndSet(false, true)) return false
         try {
             if (!KindlePageTurnController.isAvailable()) {
                 showKindlePageTurnError("Accessibility Serviceを有効にしてください")
                 return false
             }
-            val previous = readingSourceContext?.let(ScreenContextFingerprint::from)
-                ?: run {
-                    showKindlePageTurnError("現在のKindle画面を確認できません")
+            var changedScreen: ScreenContext? = null
+            repeat(pages) {
+                val previous = (changedScreen ?: readingSourceContext)?.let(ScreenContextFingerprint::from)
+                    ?: run {
+                        showKindlePageTurnError("現在のKindle画面を確認できません")
+                        return false
+                    }
+                changedScreen = turnOneKindlePage(previous, forward)
+                if (changedScreen == null) {
+                    showKindlePageTurnError(
+                        "Kindleのページ操作または画面更新を確認できませんでした",
+                    )
                     return false
                 }
-
-            var changedScreen: ScreenContext? = null
-            val semanticResult = withContext(Dispatchers.Main.immediate) {
-                KindlePageTurnController.performSemanticNext()
+                readingSourceContext = changedScreen
             }
-            if (semanticResult == KindlePageTurnResult.DISPATCHED) {
-                changedScreen = captureChangedKindleScreen(previous)
-            }
-            if (changedScreen == null) {
-                val candidates = pageTurnSwipeCandidates(readingPageTurnGesture)
-                Log.d(
-                    TAG,
-                    "Kindle page turn swipe candidates=$candidates " +
-                        "preferred=$readingPageTurnGesture",
-                )
-                for (gesture in candidates) {
-                    val swipeResult = KindlePageTurnController.performSwipe(gesture)
-                    if (swipeResult != KindlePageTurnResult.DISPATCHED) continue
-                    changedScreen = captureChangedKindleScreen(previous)
-                    if (changedScreen != null) {
-                        readingPageTurnGesture = gesture
-                        break
-                    }
-                }
-            }
-            if (changedScreen == null) {
-                showKindlePageTurnError(
-                    "Kindleの次ページ操作または画面更新を確認できませんでした"
-                )
-                return false
-            }
-
+            val screen = changedScreen ?: return false
+            if (!extract) return true
+            val label = if (forward) "Kindleの次ページ" else "Kindleの前のページ"
             val result = assistantGateway.submit(
                 AssistantRequest(
-                    text = ReadingPassthrough.extractionPrompt("Kindleの次ページを表示"),
+                    text = ReadingPassthrough.extractionPrompt(label),
                     origin = QueryOrigin.HARNESS_NODE_VOICE,
                     conversationId = HARNESS_CONVERSATION_ID,
                     speakResponse = false,
                     languageCode = null,
-                    screenContext = changedScreen,
+                    screenContext = screen,
                 )
             )
             assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
             result.onSuccess { reply ->
                 presentReadingPassthrough(
-                    command = "Kindleの次ページ",
+                    command = label,
                     extracted = reply.text,
-                    sourceContext = changedScreen,
+                    sourceContext = screen,
                     saveHistory = false,
                 )
             }.onFailure { error ->
-                showKindlePageTurnError("次ページ本文の抽出に失敗しました: ${error.message}")
+                showKindlePageTurnError("ページ本文の抽出に失敗しました: ${error.message}")
             }
             return result.isSuccess
         } finally {
             readingPageTurnInFlight.set(false)
         }
+    }
+
+    private suspend fun turnOneKindlePage(
+        previous: ScreenContextFingerprint,
+        forward: Boolean,
+    ): ScreenContext? {
+        var changedScreen: ScreenContext? = null
+        val semanticResult = withContext(Dispatchers.Main.immediate) {
+            KindlePageTurnController.performSemanticScroll(forward)
+        }
+        if (semanticResult == KindlePageTurnResult.DISPATCHED) {
+            changedScreen = captureChangedKindleScreen(previous)
+        }
+        if (changedScreen == null) {
+            val candidates = pageTurnSwipeCandidates(readingPageTurnGesture, forward)
+            Log.d(
+                TAG,
+                "Kindle page turn swipe candidates=$candidates " +
+                    "preferred=$readingPageTurnGesture forward=$forward",
+            )
+            for (gesture in candidates) {
+                val swipeResult = KindlePageTurnController.performSwipe(gesture)
+                if (swipeResult != KindlePageTurnResult.DISPATCHED) continue
+                changedScreen = captureChangedKindleScreen(previous)
+                if (changedScreen != null) {
+                    if (forward) readingPageTurnGesture = gesture
+                    break
+                }
+            }
+        }
+        return changedScreen
     }
 
     private suspend fun captureChangedKindleScreen(

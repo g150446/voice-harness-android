@@ -24,12 +24,24 @@ internal enum class WritingDirection {
 }
 
 /** Swipe attempts for Kindle page advance, preferred direction first. */
-internal fun pageTurnSwipeCandidates(preferred: PageTurnGesture): List<PageTurnGesture> =
-    when (preferred) {
+internal fun pageTurnSwipeCandidates(
+    preferred: PageTurnGesture,
+    forward: Boolean = true,
+): List<PageTurnGesture> {
+    val next = when (preferred) {
         PageTurnGesture.SWIPE_LEFT -> listOf(PageTurnGesture.SWIPE_LEFT)
         PageTurnGesture.SWIPE_RIGHT -> listOf(PageTurnGesture.SWIPE_RIGHT)
         PageTurnGesture.UNKNOWN -> listOf(PageTurnGesture.SWIPE_LEFT, PageTurnGesture.SWIPE_RIGHT)
     }
+    if (forward) return next
+    return next.map(::oppositePageTurn).distinct()
+}
+
+internal fun oppositePageTurn(gesture: PageTurnGesture): PageTurnGesture = when (gesture) {
+    PageTurnGesture.SWIPE_LEFT -> PageTurnGesture.SWIPE_RIGHT
+    PageTurnGesture.SWIPE_RIGHT -> PageTurnGesture.SWIPE_LEFT
+    PageTurnGesture.UNKNOWN -> PageTurnGesture.UNKNOWN
+}
 
 internal enum class KindlePageTurnResult {
     DISPATCHED,
@@ -65,16 +77,22 @@ internal object KindlePageTurnController {
             value.startsWith("$KINDLE_PACKAGE.")
     }
 
-    fun performSemanticNext(): KindlePageTurnResult {
+    fun performSemanticNext(): KindlePageTurnResult = performSemanticScroll(forward = true)
+
+    fun performSemanticScroll(forward: Boolean): KindlePageTurnResult {
         val current = service ?: return KindlePageTurnResult.UNAVAILABLE
         val root = current.rootInActiveWindow
             ?: return KindlePageTurnResult.NOT_KINDLE
         if (root.packageName?.toString() != KINDLE_PACKAGE) {
             return KindlePageTurnResult.NOT_KINDLE
         }
-        val scrollable = findForwardScrollableNode(root)
-            ?: return KindlePageTurnResult.FAILED
-        return if (scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+        val action = if (forward) {
+            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+        } else {
+            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+        }
+        val scrollable = findScrollableNode(root, action) ?: return KindlePageTurnResult.FAILED
+        return if (scrollable.performAction(action)) {
             KindlePageTurnResult.DISPATCHED
         } else {
             KindlePageTurnResult.FAILED
@@ -127,13 +145,14 @@ internal object KindlePageTurnController {
         }
     }
 
-    private fun findForwardScrollableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD }) {
-            return node
-        }
+    private fun findScrollableNode(
+        node: AccessibilityNodeInfo,
+        action: Int,
+    ): AccessibilityNodeInfo? {
+        if (node.actionList.any { it.id == action }) return node
         for (index in 0 until node.childCount) {
             val child = node.getChild(index) ?: continue
-            val match = findForwardScrollableNode(child)
+            val match = findScrollableNode(child, action)
             if (match != null) return match
         }
         return null

@@ -77,6 +77,12 @@ class HistoryRepository(context: Context) {
                 entry.trajectoryFile?.let { put("trajectoryFile", it) }
                 if (entry.diagsFromNodeBatch) put("diagsFromNodeBatch", true)
                 entry.gestureLabel?.let { put("gestureLabel", it.name) }
+                if (entry.interactionMode.isNotBlank()) put("interactionMode", entry.interactionMode)
+                if (entry.g2ClientActive) put("g2ClientActive", true)
+                if (entry.sttBackend.isNotBlank()) put("sttBackend", entry.sttBackend)
+                if (entry.sttModel.isNotBlank()) put("sttModel", entry.sttModel)
+                if (entry.llmBackend.isNotBlank()) put("llmBackend", entry.llmBackend)
+                if (entry.llmModel.isNotBlank()) put("llmModel", entry.llmModel)
             })
         }
         return array.toString()
@@ -93,5 +99,11 @@ class HistoryRepository(context: Context) {
         trajectoryFile = obj.optString("trajectoryFile", "").ifBlank { null },
         diagsFromNodeBatch = obj.optBoolean("diagsFromNodeBatch", false),
         gestureLabel = GestureLabel.fromStorage(obj.optString("gestureLabel", "")),
+        interactionMode = obj.optString("interactionMode", ""),
+        g2ClientActive = obj.optBoolean("g2ClientActive", false),
+        sttBackend = obj.optString("sttBackend", ""),
+        sttModel = obj.optString("sttModel", ""),
+        llmBackend = obj.optString("llmBackend", ""),
+        llmModel = obj.optString("llmModel", ""),
     )
 }

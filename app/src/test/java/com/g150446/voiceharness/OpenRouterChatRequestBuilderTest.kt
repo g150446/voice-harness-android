@@ -63,4 +63,88 @@ class OpenRouterChatRequestBuilderTest {
         assertEquals(1, result.toolCalls.size)
         assertEquals("set_reminder", result.toolCalls[0].name)
     }
+
+    @Test
+    fun `includes harbor_command when enabled and tools supported`() {
+        val body = OpenRouterChatRequestBuilder.buildRequestBody(
+            modelId = "google/gemini-3.5-flash-lite",
+            conversationHistory = listOf(ConversationTurn("user", "git pushして")),
+            languageCode = "ja",
+            screenContext = null,
+            supportsTools = true,
+            supportsImage = false,
+            harborToolEnabled = true,
+        )
+        val root = JSONObject(body)
+        val tools = root.getJSONArray("tools")
+        val names = (0 until tools.length()).map {
+            tools.getJSONObject(it).getJSONObject("function").getString("name")
+        }
+        assertTrue(names.contains("set_reminder"))
+        assertTrue(names.contains(HARBOR_COMMAND_TOOL_NAME))
+    }
+
+    @Test
+    fun `force harbor command omits reminder tool`() {
+        val body = OpenRouterChatRequestBuilder.buildRequestBody(
+            modelId = "google/gemini-3.5-flash-lite",
+            conversationHistory = listOf(ConversationTurn("user", "Enterを送って")),
+            languageCode = "ja",
+            screenContext = null,
+            supportsTools = true,
+            supportsImage = false,
+            harborToolEnabled = true,
+            forceHarborCommand = true,
+        )
+        val root = JSONObject(body)
+        val tools = root.getJSONArray("tools")
+        assertEquals(1, tools.length())
+        assertEquals(
+            HARBOR_COMMAND_TOOL_NAME,
+            tools.getJSONObject(0).getJSONObject("function").getString("name"),
+        )
+        val choice = root.getJSONObject("tool_choice")
+        assertEquals(HARBOR_COMMAND_TOOL_NAME, choice.getJSONObject("function").getString("name"))
+    }
+
+    @Test
+    fun `force harbor command includes terminal context in system prompt`() {
+        val body = OpenRouterChatRequestBuilder.buildRequestBody(
+            modelId = "google/gemini-3.5-flash-lite",
+            conversationHistory = listOf(ConversationTurn("user", "コミットして")),
+            languageCode = "ja",
+            screenContext = null,
+            supportsTools = true,
+            supportsImage = false,
+            harborToolEnabled = true,
+            forceHarborCommand = true,
+            harborContext = HarborInterpretContext(
+                workspaceId = "ws",
+                workspaceName = "demo-repo",
+                agent = "codex",
+                conversation = "Agent: shall I commit the docs?",
+            ),
+        )
+        val root = org.json.JSONObject(body)
+        val system = root.getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(system.contains("demo-repo"))
+        assertTrue(system.contains("codex"))
+        assertTrue(system.contains("shall I commit the docs?"))
+    }
+
+    @Test
+    fun `harbor tool omitted when tools unsupported`() {
+        val body = OpenRouterChatRequestBuilder.buildRequestBody(
+            modelId = "x/y",
+            conversationHistory = listOf(ConversationTurn("user", "hi")),
+            languageCode = null,
+            screenContext = null,
+            supportsTools = false,
+            supportsImage = false,
+            harborToolEnabled = true,
+            forceHarborCommand = true,
+        )
+        val root = JSONObject(body)
+        assertFalse(root.has("tools"))
+    }
 }

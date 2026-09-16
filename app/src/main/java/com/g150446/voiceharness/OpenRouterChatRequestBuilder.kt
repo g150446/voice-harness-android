@@ -12,12 +12,20 @@ object OpenRouterChatRequestBuilder {
         screenContext: ScreenContext?,
         supportsTools: Boolean,
         supportsImage: Boolean,
+        harborToolEnabled: Boolean = false,
+        forceHarborCommand: Boolean = false,
+        harborContext: HarborInterpretContext? = null,
     ): String {
         val currentTimeMillis = System.currentTimeMillis()
+        val includeHarbor = supportsTools && (harborToolEnabled || forceHarborCommand)
+        val harborOnly = supportsTools && forceHarborCommand
         val systemPrompt = GroqChatRequestBuilder.buildSystemPromptForOpenRouter(
             languageCode = languageCode,
             currentTimeMillis = currentTimeMillis,
             screenContext = screenContext,
+            includeHarbor = includeHarbor,
+            harborOnly = harborOnly,
+            harborContext = harborContext,
         )
         return JSONObject().apply {
             put("model", modelId)
@@ -42,8 +50,27 @@ object OpenRouterChatRequestBuilder {
                 }
             })
             if (supportsTools) {
-                put("tools", reminderToolsArray())
-                put("tool_choice", "auto")
+                put(
+                    "tools",
+                    GroqChatRequestBuilder.buildToolsArray(
+                        includeHarbor = includeHarbor,
+                        harborOnly = harborOnly,
+                    ),
+                )
+                if (forceHarborCommand) {
+                    put(
+                        "tool_choice",
+                        JSONObject().apply {
+                            put("type", "function")
+                            put(
+                                "function",
+                                JSONObject().apply { put("name", HARBOR_COMMAND_TOOL_NAME) },
+                            )
+                        },
+                    )
+                } else {
+                    put("tool_choice", "auto")
+                }
             }
         }.toString()
     }
@@ -66,44 +93,6 @@ object OpenRouterChatRequestBuilder {
                 )
             })
         }
-    }
-
-    private fun reminderToolsArray(): JSONArray = JSONArray().apply {
-        put(JSONObject().apply {
-            put("type", "function")
-            put("function", JSONObject().apply {
-                put("name", "set_reminder")
-                put(
-                    "description",
-                    "Set a reminder for the user at a specific date and time. " +
-                        "Use this when the user wants to be reminded of something in the future.",
-                )
-                put("parameters", JSONObject().apply {
-                    put("type", "object")
-                    put("properties", JSONObject().apply {
-                        put("title", JSONObject().apply {
-                            put("type", "string")
-                            put("description", "A concise description of what to remind the user about")
-                        })
-                        put("datetime", JSONObject().apply {
-                            put("type", "string")
-                            put(
-                                "description",
-                                "The target date and time in ISO 8601 format with Asia/Tokyo timezone (+09:00).",
-                            )
-                        })
-                        put("tts_enabled", JSONObject().apply {
-                            put("type", "boolean")
-                            put("description", "Whether to read the reminder aloud via TTS. Default false.")
-                        })
-                    })
-                    put("required", JSONArray().apply {
-                        put("title")
-                        put("datetime")
-                    })
-                })
-            })
-        })
     }
 
     fun parseChatResponse(responseBody: String): ChatResult {

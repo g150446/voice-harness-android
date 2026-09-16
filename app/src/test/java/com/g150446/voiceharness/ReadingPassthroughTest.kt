@@ -114,5 +114,9 @@ class ReadingPassthroughTest {
             listOf(PageTurnGesture.SWIPE_RIGHT),
             pageTurnSwipeCandidates(PageTurnGesture.SWIPE_RIGHT),
         )
+        assertEquals(
+            listOf(PageTurnGesture.SWIPE_LEFT),
+            pageTurnSwipeCandidates(PageTurnGesture.SWIPE_RIGHT, forward = false),
+        )
     }
 }

@@ -6,7 +6,7 @@ import java.util.Locale
 
 object GroqChatRequestBuilder {
 
-    private const val CHAT_MODEL = "openai/gpt-oss-120b"
+    internal const val CHAT_MODEL = "openai/gpt-oss-120b"
     internal const val CONCISE_RESPONSE_INSTRUCTION =
         "Answer in one or two short sentences and include only the information needed. " +
             "Only give a longer response when the user explicitly asks for details."
@@ -35,14 +35,18 @@ object GroqChatRequestBuilder {
             add(ChatMessageSpec(role = "user", content = userText))
         }
 
-    // --- Function Calling (Reminder) ---
+    // --- Function Calling (Reminder + optional Harbor) ---
 
     fun buildRequestBodyWithFunctionCalling(
         conversationHistory: List<ConversationTurn>,
         languageCode: String?,
         screenContext: ScreenContext? = null,
+        harborToolEnabled: Boolean = false,
+        forceHarborCommand: Boolean = false,
+        harborContext: HarborInterpretContext? = null,
     ): String {
         val currentTimeMillis = System.currentTimeMillis()
+        val includeHarbor = harborToolEnabled || forceHarborCommand
         return JSONObject().apply {
             put("model", CHAT_MODEL)
             put("messages", JSONArray().apply {
@@ -50,7 +54,14 @@ object GroqChatRequestBuilder {
                     put("role", "system")
                     put(
                         "content",
-                        buildSystemPromptWithReminders(languageCode, currentTimeMillis, screenContext),
+                        buildSystemPromptWithReminders(
+                            languageCode,
+                            currentTimeMillis,
+                            screenContext,
+                            includeHarbor = includeHarbor,
+                            harborOnly = forceHarborCommand,
+                            harborContext = harborContext,
+                        ),
                     )
                 })
                 conversationHistory.forEach { turn ->
@@ -60,37 +71,21 @@ object GroqChatRequestBuilder {
                     })
                 }
             })
-            put("tools", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("type", "function")
-                    put("function", JSONObject().apply {
-                        put("name", "set_reminder")
-                        put("description", "Set a reminder for the user at a specific date and time. Use this when the user wants to be reminded of something in the future.")
-                        put("parameters", JSONObject().apply {
-                            put("type", "object")
-                            put("properties", JSONObject().apply {
-                                put("title", JSONObject().apply {
-                                    put("type", "string")
-                                    put("description", "A concise description of what to remind the user about")
-                                })
-                                put("datetime", JSONObject().apply {
-                                    put("type", "string")
-                                    put("description", "The target date and time in ISO 8601 format with Asia/Tokyo timezone (+09:00). If the user only mentions a time (e.g., '3時'), assume today's date. If the user mentions a relative time (e.g., '30分後'), calculate the absolute time from now.")
-                                })
-                                put("tts_enabled", JSONObject().apply {
-                                    put("type", "boolean")
-                                    put("description", "Whether to read the reminder aloud via TTS when the time comes. Set to true if the user says something like '読み上げして', 'speak it aloud', 'notify with voice', etc. Default is false.")
-                                })
-                            })
-                            put("required", JSONArray().apply {
-                                put("title")
-                                put("datetime")
-                            })
-                        })
-                    })
-                })
-            })
-            put("tool_choice", "auto")
+            put("tools", buildToolsArray(includeHarbor = includeHarbor, harborOnly = forceHarborCommand))
+            if (forceHarborCommand) {
+                put(
+                    "tool_choice",
+                    JSONObject().apply {
+                        put("type", "function")
+                        put(
+                            "function",
+                            JSONObject().apply { put("name", HARBOR_COMMAND_TOOL_NAME) },
+                        )
+                    },
+                )
+            } else {
+                put("tool_choice", "auto")
+            }
         }.toString()
     }
 
@@ -99,7 +94,76 @@ object GroqChatRequestBuilder {
         languageCode: String?,
         currentTimeMillis: Long,
         screenContext: ScreenContext?,
-    ): String = buildSystemPromptWithReminders(languageCode, currentTimeMillis, screenContext)
+        includeHarbor: Boolean = false,
+        harborOnly: Boolean = false,
+        harborContext: HarborInterpretContext? = null,
+    ): String = buildSystemPromptWithReminders(
+        languageCode,
+        currentTimeMillis,
+        screenContext,
+        includeHarbor = includeHarbor,
+        harborOnly = harborOnly,
+        harborContext = harborContext,
+    )
+
+    internal fun buildToolsArray(
+        includeHarbor: Boolean,
+        harborOnly: Boolean = false,
+    ): JSONArray = JSONArray().apply {
+        if (!harborOnly) {
+            put(JSONObject().apply {
+                put("type", "function")
+                put("function", JSONObject().apply {
+                    put("name", "set_reminder")
+                    put(
+                        "description",
+                        "Set a reminder for the user at a specific date and time. " +
+                            "Use this when the user wants to be reminded of something in the future.",
+                    )
+                    put("parameters", JSONObject().apply {
+                        put("type", "object")
+                        put("properties", JSONObject().apply {
+                            put("title", JSONObject().apply {
+                                put("type", "string")
+                                put(
+                                    "description",
+                                    "A concise description of what to remind the user about",
+                                )
+                            })
+                            put("datetime", JSONObject().apply {
+                                put("type", "string")
+                                put(
+                                    "description",
+                                    "The target date and time in ISO 8601 format with Asia/Tokyo " +
+                                        "timezone (+09:00). If the user only mentions a time " +
+                                        "(e.g., '3時'), assume today's date. If the user mentions " +
+                                        "a relative time (e.g., '30分後'), calculate the absolute " +
+                                        "time from now.",
+                                )
+                            })
+                            put("tts_enabled", JSONObject().apply {
+                                put("type", "boolean")
+                                put(
+                                    "description",
+                                    "Whether to read the reminder aloud via TTS when the time " +
+                                        "comes. Set to true if the user says something like " +
+                                        "'読み上げして', 'speak it aloud', 'notify with voice', etc. " +
+                                        "Default is false.",
+                                )
+                            })
+                        })
+                        put("required", JSONArray().apply {
+                            put("title")
+                            put("datetime")
+                        })
+                    })
+                })
+            })
+        }
+        if (includeHarbor) {
+            put(HarborCommandTool.toolDefinitionJson())
+        }
+    }
 
     private fun buildSystemPrompt(languageCode: String?): String {
         val normalizedCode = languageCode
@@ -128,7 +192,17 @@ object GroqChatRequestBuilder {
         languageCode: String?,
         currentTimeMillis: Long,
         screenContext: ScreenContext? = null,
+        includeHarbor: Boolean = false,
+        harborOnly: Boolean = false,
+        harborContext: HarborInterpretContext? = null,
     ): String {
+        val harborContextAppendix = HarborContextPrompt.systemAppendix(harborContext)
+        if (harborOnly) {
+            return "You interpret spoken requests for Terminal Harbor. " +
+                HarborCommandTool.SYSTEM_APPENDIX + " " +
+                "Always call harbor_command. Do not answer in plain text." +
+                harborContextAppendix
+        }
         val basePrompt = buildSystemPrompt(languageCode)
         val currentTimeStr = formatCurrentTimeJst(currentTimeMillis)
         val reminderInstructions = "You can set reminders for the user by calling the set_reminder function. " +
@@ -141,7 +215,12 @@ object GroqChatRequestBuilder {
             "If the time is ambiguous (e.g., just '3時' without AM/PM context), use your best judgment based on common usage. " +
             "If the user says something like '読み上げして', 'speak it aloud', 'notify with voice', or similar, set tts_enabled to true. " +
             "If critical information like the title or exact time is missing, ask the user for clarification in a natural way."
-        return "$basePrompt $reminderInstructions" +
+        val harborAppendix = if (includeHarbor) {
+            " ${HarborCommandTool.SYSTEM_APPENDIX}$harborContextAppendix"
+        } else {
+            ""
+        }
+        return "$basePrompt $reminderInstructions$harborAppendix" +
             ScreenContextPrompt.systemAppendix(screenContext?.withoutImage())
     }
 

@@ -6,9 +6,9 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 
 ```
 [Harness Node]
-  ・シングルタップ (0x14) → ホストが RX 0x01/0x00（既定の録音操作・リーダー／Harbor中はページ送りのみ）
+  ・シングルタップ (0x14) → ホストが RX 0x01/0x00（AI対話の既定録音操作。Harbor待機中は指示録音、リーダー／Harbor要約中はページ送りのみ）
   ・手首ジェスチャー → オプション（既定OFF）。ON 時のみ FW 自律 TX 0x01 / 0x02
-  ・ダブルタップ (0x12) → G2接続中はモード指示録音。未接続時はホーム設定で録音開始／終了／無視
+  ・ダブルタップ (0x12) → G2接続中はモード別の指示録音（先頭が「グラスモード変更」のときだけモード切替）。未接続時はホーム設定で録音開始／終了／無視
         │ BLE TX 0x01 (録音開始)
         ▼
 [Android: PCM 蓄積]
@@ -40,6 +40,7 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
   ・Terminal Harborの既存モバイルブリッジとQR/HMACでペアリング
   ・出力中は空白・罫線行を省いた末尾をライブ表示
   ・入力待ちになると日本語要約（最大3画面）＋質問・選択肢を原文表示
+  ・音声指示はSTTをG2即表示→LLM意図確認→タップで送信（モードは再起動後も復帰）
 
 [電源長押し ROLE_ASSISTANT]
         → 下部シート UI（自動録音なし）
@@ -169,9 +170,14 @@ QR/URLと`npm run dev`はプラグイン開発時だけ使用する。配布パ�
 
 ホームの「操作モード」で **AI対話 / リーダー / Harbor** を切り替えられる。
 リーダーとTerminal Harborは、それぞれの欄にあるトグルからもON/OFFできる。
-G2接続中は Harness Node のダブルタップでモード指示録音を開始し、モード名を話してもう一度
-ダブルタップすると切り替わる。G2未接続時のダブルタップはホームの録音タップ設定に従う。
-AI対話モードはG2出力を自動選択する。
+選択したモードは端末に保存され、アプリ再起動後も G2 再接続と（Harbor の場合）ペアリングが揃えば自動復帰する。
+G2接続中のダブルタップは、今の操作モード向けの指示録音になる。リーダーでは「5つページ進めて」
+のように Kindle 実ページを操作し、Harbor では STT を G2 に即表示したうえで LLM が意図を確認し、
+シングルタップで Terminal Harbor へ送信、ダブルタップで取り消し。モード切替は発話の先頭を
+「グラスモード変更」にしたときだけ。G2未接続時のダブルタップはホームの録音タップ設定に従う。
+AI対話モードはG2出力を自動選択する。Harbor がペアリング済みなら AI 対話でも `harbor_command`
+tool で端末操作を受け付け、拒否せず確認画面へ進む（クラウド LLM が必要）。
+履歴には操作モード・G2接続有無・ASR/LLM モデルが残る。
 
 Harborモードを初めて使う場合は、Terminal Harborのサイドバーで **Pair mobile** を開き、
 Voice HarnessのTerminal Harbor欄からQRを読み取る。QRを使えない場合はPair URIを手入力できる。
@@ -225,7 +231,6 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 
 - 既定ホスト名: `motorola-razr-50s`（`TS_HOST=...` で変更可）
 - 既定ポート: `5555`
-- 同一 LAN / テザリングのみなら従来どおり `./scripts/adb-wireless.sh`
 - Tailscale 上で端末が online であること（`tailscale status`）
 - **APK を Tailscale 経由で入れない**（タイムアウトで古いプロセスが残ることがある）
 
@@ -293,6 +298,7 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 - [`documents/history_feature.md`](documents/history_feature.md) — 会話履歴とジェスチャ判定の保存・UI
 - [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
 - [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Even G2 出力（現行）と Vuzix Z100 アーカイブ仕様
+- [`documents/harbor_confirm_voice_intent.md`](documents/harbor_confirm_voice_intent.md) — Harbor 確認画面のタップ割り当てと意図解析を1回にした経緯
 - [`even-g2/app/README.md`](even-g2/app/README.md) — Even Hub プラグイン（Voice Harness G2）
 - [`documents/even_g2_macless_deployment.md`](documents/even_g2_macless_deployment.md) — Macなし運用、非公開Beta配布、期限切れ表示の復旧
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング

@@ -23,7 +23,7 @@ class VoiceProcessorDoubleTapTest {
         assertFalse(
             shouldInterruptOnDoubleTap(
                 VoiceState.RECORDING,
-                CapturePurpose.MODE_SWITCH,
+                CapturePurpose.COMMAND,
             ),
         )
         assertTrue(shouldInterruptOnDoubleTap(VoiceState.TRANSCRIBING))
@@ -108,6 +108,52 @@ class VoiceProcessorDoubleTapTest {
             ),
         )
         assertEquals(
+            RecordingTapAction.START_COMMAND,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
+        )
+    }
+
+    @Test
+    fun `Harbor single toggles command recording unless the glass pages a summary`() {
+        assertEquals(
+            RecordingTapAction.START_COMMAND,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.STOP_RECORDING,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.RECORDING,
+                capturePurpose = CapturePurpose.COMMAND,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.NONE,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.RECORDING,
+                capturePurpose = CapturePurpose.AI_QUERY,
+            ),
+        )
+        assertEquals(
             RecordingTapAction.NONE,
             recordingTapAction(
                 mode = RecordingTapMode.SINGLE,
@@ -115,6 +161,17 @@ class VoiceProcessorDoubleTapTest {
                 interactionMode = InteractionMode.HARBOR,
                 g2ClientActive = true,
                 state = VoiceState.READY,
+                harborSummaryActive = true,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.NONE,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.TRANSCRIBING,
             ),
         )
     }
@@ -164,9 +221,9 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
-    fun `G2 connection uses double tap for mode-switch recording`() {
+    fun `G2 connection uses double tap for command recording`() {
         assertEquals(
-            RecordingTapAction.START_MODE_SWITCH,
+            RecordingTapAction.START_COMMAND,
             recordingTapAction(
                 mode = RecordingTapMode.SINGLE,
                 event = RecordingTapEvent.DOUBLE,
@@ -176,7 +233,7 @@ class VoiceProcessorDoubleTapTest {
             ),
         )
         assertEquals(
-            RecordingTapAction.START_MODE_SWITCH,
+            RecordingTapAction.START_COMMAND,
             recordingTapAction(
                 mode = RecordingTapMode.DOUBLE,
                 event = RecordingTapEvent.DOUBLE,
@@ -193,7 +250,7 @@ class VoiceProcessorDoubleTapTest {
                 interactionMode = InteractionMode.AI,
                 g2ClientActive = true,
                 state = VoiceState.RECORDING,
-                capturePurpose = CapturePurpose.MODE_SWITCH,
+                capturePurpose = CapturePurpose.COMMAND,
             ),
         )
         assertEquals(
@@ -206,5 +263,192 @@ class VoiceProcessorDoubleTapTest {
                 state = VoiceState.RECORDING,
             ),
         )
+    }
+
+    @Test
+    fun `Harbor confirm uses single tap to execute and double tap to cancel`() {
+        assertEquals(
+            RecordingTapAction.CONFIRM_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+            ),
+        )
+        // The prompt says 「ダブルタップで取り消す」, so it must stop rather than re-record.
+        assertEquals(
+            RecordingTapAction.CANCEL_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `clarification prompt re-records on double tap because it says so`() {
+        // 「ダブルタップで言い直す」 is the only confirm prompt that starts a new recording.
+        assertEquals(
+            RecordingTapAction.START_COMMAND,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+                harborConfirmAwaitingClarification = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `Harbor confirm owns taps even when G2 client is inactive`() {
+        assertEquals(
+            RecordingTapAction.CONFIRM_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.CANCEL_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `Harbor confirm beats single-tap recording mode used by Echo M5Stick`() {
+        // Default home setting is SINGLE recording; confirm must not fall through to START_RECORDING.
+        assertEquals(
+            RecordingTapAction.CONFIRM_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.CONFIRM_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.ERROR,
+                harborConfirmPending = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `Harbor confirm accepts a single tap while the intent is still interpreted`() {
+        // The prompt is published before the LLM returns; the tap is queued.
+        assertEquals(
+            RecordingTapAction.CONFIRM_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.TRANSCRIBING,
+                capturePurpose = CapturePurpose.COMMAND,
+                harborConfirmPending = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `Harbor confirm double tap during interpretation interrupts instead of re-recording`() {
+        assertEquals(
+            RecordingTapAction.INTERRUPT,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.TRANSCRIBING,
+                capturePurpose = CapturePurpose.COMMAND,
+                harborConfirmPending = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `awaiting clarification still routes single tap as confirm action for ownership`() {
+        // The tap is still owned by the confirm prompt; executeHarborConfirm re-asks
+        // the clarifying question instead of sending (see harborConfirmOutcome).
+        assertEquals(
+            RecordingTapAction.CONFIRM_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `harbor confirm outcome separates expired, clarification and submit`() {
+        assertEquals(HarborConfirmOutcome.EXPIRED, harborConfirmOutcome(null))
+        assertEquals(
+            HarborConfirmOutcome.NEEDS_CLARIFICATION,
+            harborConfirmOutcome(
+                PendingHarborCommand(
+                    stt = "あれをやって",
+                    args = HarborCommandArgs(
+                        command = "あれをやって",
+                        intentSummary = "何を実行しますか？",
+                        needsClarification = true,
+                        question = "何を実行しますか？",
+                    ),
+                ),
+            ),
+        )
+        assertEquals(
+            HarborConfirmOutcome.SUBMIT,
+            harborConfirmOutcome(
+                PendingHarborCommand(
+                    stt = "コミットして",
+                    args = HarborCommandArgs(
+                        command = "コミットして",
+                        intentSummary = "コミットを指示しますか？",
+                    ),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `harbor result stays on the glass past a mirror poll tick`() {
+        // The mirror repaints every HARBOR_MIRROR_POLL_MS; a shorter hold means the
+        // "指示を送りました" result is wiped before it can be read, which reads as
+        // the command never having run.
+        assertTrue(HARBOR_RESULT_HOLD_MS > HARBOR_MIRROR_POLL_MS)
+        assertTrue(HARBOR_RESULT_HOLD_MS < HARBOR_CONFIRM_TIMEOUT_MS)
     }
 }

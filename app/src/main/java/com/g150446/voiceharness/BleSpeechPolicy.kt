@@ -20,6 +20,22 @@ internal const val BLE_SILENCE_STOP_MS = 5_000L
 internal const val BLE_RX_STOP_RECORDING = 0x00.toByte()
 /** Host-authorized start (selected tap event while idle; FW 0.0.94+). */
 internal const val BLE_RX_START_RECORDING = 0x01.toByte()
+
+/**
+ * M5 StickC tap authority. `0` keeps the firmware's legacy autonomous single-click
+ * recording toggle (Handy); `1` makes taps notify-only so the host authorizes via
+ * [BLE_RX_START_RECORDING] / [BLE_RX_STOP_RECORDING] like the nRF52 firmware does.
+ * nRF52/XIAO firmware ignores this command — it is always notify-only.
+ */
+internal const val BLE_RX_TAP_NOTIFY_ONLY = 0x08.toByte()
+internal const val BLE_TAP_NOTIFY_ONLY_ON = 0x01.toByte()
+internal const val BLE_TAP_NOTIFY_ONLY_OFF = 0x00.toByte()
+
+internal fun tapNotifyOnlyCommand(enabled: Boolean): ByteArray =
+    byteArrayOf(
+        BLE_RX_TAP_NOTIFY_ONLY,
+        if (enabled) BLE_TAP_NOTIFY_ONLY_ON else BLE_TAP_NOTIFY_ONLY_OFF,
+    )
 internal const val BLE_CAPTURE_CHECK_MIN_DURATION_MS = 1_000L
 internal const val BLE_CAPTURE_MIN_COMPLETENESS_RATIO = 0.70
 

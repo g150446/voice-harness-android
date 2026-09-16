@@ -1,5 +1,6 @@
 package com.g150446.voiceharness
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -130,6 +131,18 @@ class BleSpeechPolicyTest {
                 maxBandRatio = 0.035,
                 sileroStuck = false
             )
+        )
+    }
+
+    @Test
+    fun tapNotifyOnlyCommand_buildsHostAuthorityPayload() {
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x01),
+            tapNotifyOnlyCommand(enabled = true),
+        )
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x00),
+            tapNotifyOnlyCommand(enabled = false),
         )
     }
 }

@@ -3,6 +3,7 @@ package com.g150446.voiceharness
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -56,5 +57,40 @@ class HarborG2ViewTest {
         assertEquals("", view.summaryText)
         assertEquals("続行しますか？", view.question)
         assertEquals(listOf("1. はい"), view.options)
+    }
+
+    @Test
+    fun `paused or cancelled Harbor poll does not publish`() {
+        assertTrue(shouldPublishHarborPoll(paused = false, coroutineActive = true))
+        assertFalse(shouldPublishHarborPoll(paused = true, coroutineActive = true))
+        assertFalse(shouldPublishHarborPoll(paused = false, coroutineActive = false))
+    }
+
+    @Test
+    fun `switch target resolves by name, directory casing and id`() {
+        val workspaces = listOf(
+            HarborWorkspace(id = "w-1", name = "voice-harness-even-g2", selected = true),
+            HarborWorkspace(id = "w-2", name = "terminal-harbor", selected = false),
+        )
+
+        assertEquals("w-2", resolveHarborWorkspace("terminal-harbor", workspaces)?.id)
+        assertEquals("w-2", resolveHarborWorkspace("Terminal Harbor", workspaces)?.id)
+        assertEquals("w-1", resolveHarborWorkspace("w-1", workspaces)?.id)
+        // Partial hits still resolve while they stay unique.
+        assertEquals("w-1", resolveHarborWorkspace("even-g2", workspaces)?.id)
+    }
+
+    @Test
+    fun `switch target refuses an empty, unknown or ambiguous name`() {
+        val workspaces = listOf(
+            HarborWorkspace(id = "w-1", name = "harbor-one", selected = true),
+            HarborWorkspace(id = "w-2", name = "harbor-two", selected = false),
+        )
+
+        assertNull(resolveHarborWorkspace("", workspaces))
+        assertNull(resolveHarborWorkspace("   ", workspaces))
+        assertNull(resolveHarborWorkspace("nothing-like-this", workspaces))
+        // "harbor" hits both, so the caller must be told rather than sent somewhere.
+        assertNull(resolveHarborWorkspace("harbor", workspaces))
     }
 }

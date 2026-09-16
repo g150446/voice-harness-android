@@ -40,4 +40,16 @@ data class HistoryEntry(
     val trajectoryFile: String? = null,
     /** Training label, set by hand from the history screen. */
     val gestureLabel: GestureLabel? = null,
+    /** AI / READER / HARBOR at the time of this entry (empty on older entries). */
+    val interactionMode: String = "",
+    /** Whether the Even G2 plugin was polling when this entry was written. */
+    val g2ClientActive: Boolean = false,
+    /** ASR backend id (e.g. GROQ). Empty on older entries. */
+    val sttBackend: String = "",
+    /** Concrete ASR model id or local file name. */
+    val sttModel: String = "",
+    /** LLM backend id (e.g. OPENROUTER). Empty on older entries. */
+    val llmBackend: String = "",
+    /** Concrete LLM model id or local file name. */
+    val llmModel: String = "",
 )

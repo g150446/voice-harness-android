@@ -212,7 +212,10 @@ Button A の single/double click）を使用する。Androidはタップ回数�
 
 | 条件 | 動作 |
 |---|---|
-| リーダー / Harbor | RX なし。`singleTapCount` で G2 ページ送り |
+| リーダー、または Harbor の要約・質問表示中 | RX なし。`singleTapCount` で G2 ページ送り |
+| Harbor 待機中（録音開始） | RX `0x00` の後 ~150ms で RX `0x01`。`capturePurpose=COMMAND` |
+| Harbor 指示録音中 | RX `0x00`（停止） |
+| Harbor 確認待ち | RX なしで Harbor コマンドを実行 |
 | AI 対話・ホームが single・録音中 | RX `0x00`（停止） |
 | AI 対話・ホームが single・それ以外 | RX `0x00` の後 ~150ms で RX `0x01`（開始）。優先接続が Android ならその直前に RX `0x02` |
 
@@ -221,8 +224,9 @@ Button A の single/double click）を使用する。Androidはタップ回数�
 接続確立後にも RX `0x00` を1回送り、状態を揃える。
 優先接続が Android のときは開始前に RX `0x02` で primary を取り直す（Handy が後から奪った場合の保険）。
 
-double は G2 接続中ならモード指示録音（同録音中は確定、通常処理中は割り込み）。
-未接続時はホームで double を選んだときだけ録音 start/stop。single 設定なら無視。
+double は G2 接続中ならモード別の指示録音（同録音中は確定、通常処理中は割り込み）。
+先頭が「グラスモード変更」のときだけモード切替。未接続時はホームで double を選んだときだけ
+録音 start/stop。single 設定なら無視。
 切替は G2 にメッセージ表示。プラグイン切断で自動 OFF。処理中はパイプライン割り込み優先。
 double のあと **2 秒間**は single の録音 RX を送らない（受信時刻基準。進行中の
 stop→start 遅延 Job も cancel。UI のタップ回数は増えてよい）。
@@ -305,11 +309,12 @@ Android は `GestureDiagStore` に蓄積する。停止直後にバッチが届�
 23 bytes: [0x00][0x55][0x11][f32 z][u32 elapsed_ms][f32 avg_speed][f32 peak_speed][f32 distance]
 ```
 
-## RX コマンド（Android → nRF）
+## RX コマンド（Android → Node）
 
 手首ジェスチャーの録音開始・停止は、検出スイッチ ON かつ通常モードのとき
 ファームウェア自律（TX `0x01` / `0x02`）。
 タップ録音はホスト承認（FW `0.0.94+`）で Android が RX を送る。ホーム設定の既定は single で、double に変更できる。
+Harbor 待機中の single はホーム設定に関係なく指示録音（COMMAND）の start/stop をホスト承認する。
 無音による自動停止（RX `0x00`）は廃止済み。
 
 | バイト | 意味 |
@@ -321,6 +326,11 @@ Android は `GestureDiagStore` に蓄積する。停止直後にバッチが届�
 | `[0x05, m]` | 運転モード（0=通常, 1=運転） |
 | `[0x06, e]` | IMU軌跡収集（0=off, 1=on）。既定 off |
 | `[0x07, e]` | ジェスチャー検出（0=off, 1=on）。既定 off。FW `0.0.95+` |
+| `[0x08, e]` | タップ権限（M5 StickC のみ）。0=ローカル録音トグル（既定・Handy）、1=notify-only。接続時に 1 を送り、Node は切断で 0 に戻す。nRF52/XIAO は無視 |
+
+M5 StickC の単発クリックは既定でファームウェアが録音をトグルするため、Harbor 確認画面や
+要約表示でも録音が始まる。Android は接続時に `[0x08, 0x01]` を送ってこれを止め、
+nRF52 と同じホスト承認モデルに揃える。
 
 値 `0x02` は「クライアントからの primary 宣言」と「TX 録音終了イベント」で共用。
 区別はパケット形式（イベントは `[0x00][0x55][code]`）で行う。

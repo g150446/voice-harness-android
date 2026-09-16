@@ -223,6 +223,14 @@ internal object EvenG2ReadingSession {
         )
     }
 
+    /** True while the glass shows the Harbor summary/question pages that own single taps. */
+    fun hasHarborSummary(): Boolean {
+        val current = state.value
+        return current.active &&
+            current.mode == EvenG2DisplayMode.HARBOR &&
+            current.harborSummaryText != null
+    }
+
     fun markClientSeen() {
         lastClientSeenElapsed = SystemClock.elapsedRealtime()
     }

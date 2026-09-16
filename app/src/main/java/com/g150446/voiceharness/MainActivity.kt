@@ -784,9 +784,9 @@ fun HomeScreen(
         }
         Text(
             text = if (recordingTapMode == RecordingTapMode.DOUBLE) {
-                "オン — G2未接続時はダブルタップで録音開始/終了（接続中はモード指示）"
+                "オン — G2未接続時はダブルタップで録音開始/終了（接続中はモード別の指示）"
             } else {
-                "オフ — シングルタップで録音開始/終了（G2接続中のダブルタップはモード指示）"
+                "オフ — シングルタップで録音開始/終了（G2接続中のダブルタップはモード別の指示）"
             },
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1422,6 +1422,41 @@ fun HistoryDetailScreen(
                 text = entry.errorMessage,
                 fontSize = 14.sp,
                 color = MaterialTheme.colorScheme.error,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            )
+        }
+
+        if (entry.interactionMode.isNotBlank() ||
+            entry.sttBackend.isNotBlank() ||
+            entry.llmBackend.isNotBlank()
+        ) {
+            Text(
+                text = "デバッグ",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            Text(
+                text = buildString {
+                    if (entry.interactionMode.isNotBlank()) {
+                        append("モード: ${entry.interactionMode}")
+                        append(if (entry.g2ClientActive) " (G2接続中)" else " (G2未接続)")
+                        append('\n')
+                    }
+                    if (entry.sttBackend.isNotBlank()) {
+                        append("ASR: ${entry.sttBackend}")
+                        if (entry.sttModel.isNotBlank()) append(" / ${entry.sttModel}")
+                        append('\n')
+                    }
+                    if (entry.llmBackend.isNotBlank()) {
+                        append("LLM: ${entry.llmBackend}")
+                        if (entry.llmModel.isNotBlank()) append(" / ${entry.llmModel}")
+                    }
+                }.trimEnd(),
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 16.dp)

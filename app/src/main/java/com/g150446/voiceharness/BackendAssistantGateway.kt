@@ -32,6 +32,8 @@ internal class BackendAssistantGateway(
                         conversationHistory = session.turnsForInference(),
                         languageCode = request.languageCode,
                         screenContext = screenContext,
+                        harborToolEnabled = request.harborToolEnabled,
+                        harborContext = request.harborContext,
                     )
                 ).getOrThrow()
                 if (result.text.isNotBlank()) session.addTurn("assistant", result.text)

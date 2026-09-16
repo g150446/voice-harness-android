@@ -10,6 +10,7 @@ ASR（Whisper）と LLM（Chat）は独立選択できる（例: ASR=Groq、LLM=
 | STT | Whisper API | `whisper-large-v3-turbo` |
 | LLM | Chat Completions | `openai/gpt-oss-120b`（`GroqChatRequestBuilder`） |
 | リマインダー | function calling `set_reminder` | 端末側でアラーム登録 |
+| Harbor | function calling `harbor_command`（ペアリング時 / Harbor確認） | 確認後に Terminal Harbor API |
 
 TTS は従来どおり Android `TextToSpeech`（または Z100 表示）。  
 画面コンテキストはテキストのみ一時プロンプトへ添付可能（JPEG は送らない）。

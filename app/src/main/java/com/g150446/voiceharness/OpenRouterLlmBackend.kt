@@ -57,6 +57,9 @@ class OpenRouterLlmBackend(
                 screenContext = request.screenContext,
                 supportsTools = supportsTools,
                 supportsImage = supportsImage,
+                harborToolEnabled = request.harborToolEnabled,
+                forceHarborCommand = request.forceHarborCommand,
+                harborContext = request.harborContext,
             )
             val call = httpClient.newCall(
                 Request.Builder()

@@ -45,6 +45,15 @@ data class ChatRequest(
     val conversationHistory: List<ConversationTurn>,
     val languageCode: String? = null,
     val screenContext: ScreenContext? = null,
+    /** When true, expose harbor_command alongside set_reminder (cloud LLM only). */
+    val harborToolEnabled: Boolean = false,
+    /**
+     * When true, force the model to call harbor_command (Harbor confirm interpretation).
+     * Implies [harborToolEnabled].
+     */
+    val forceHarborCommand: Boolean = false,
+    /** Selected Terminal Harbor workspace scrollback / agent metadata for interpretation. */
+    val harborContext: HarborInterpretContext? = null,
 )
 
 data class AssistantRequest(
@@ -55,6 +64,8 @@ data class AssistantRequest(
     val speakResponse: Boolean = true,
     val screenContext: ScreenContext? = null,
     val languageCode: String? = null,
+    val harborToolEnabled: Boolean = false,
+    val harborContext: HarborInterpretContext? = null,
 )
 
 data class AssistantResult(

@@ -28,7 +28,7 @@
 |---|---|
 | API | `GET /api/v1/models`, `POST /api/v1/chat/completions` |
 | モデルキャッシュ | 24 時間。更新失敗時は既存キャッシュ維持 |
-| tools | `supported_parameters` に `tools` があるモデルだけ `set_reminder` を送る |
+| tools | `supported_parameters` に `tools` があるモデルだけ `set_reminder` を送る。Harbor ペアリング済みなら `harbor_command` も追加。Harbor確認フローでは `tool_choice` を `harbor_command` 固定 |
 | 画像 | 画像対応モデルかつ「画面を使用」ON のとき、最後の user メッセージに JPEG（text 先行）を添付 |
 | 画面テキスト | ローカル/Groq と同様、一時プロンプトとして添付（履歴には残さない） |
 | キャンセル | シートを閉じると進行中 HTTP Call を cancel |

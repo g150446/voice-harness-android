@@ -114,6 +114,18 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             .verticalScroll(rememberScrollState())
     ) {
         Text("モデル設定", fontSize = 18.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("現在の選択", fontSize = 14.sp)
+        Text(
+            "ASR: ${ModelDisplayIds.sttLabel(context)}",
+            fontSize = 13.sp,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            "LLM: ${ModelDisplayIds.llmLabel(context)}",
+            fontSize = 13.sp,
+            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+        )
         Spacer(modifier = Modifier.height(12.dp))
 
         Text("音声認識 (ASR)", fontSize = 15.sp)
@@ -264,6 +276,29 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                 },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("モデル一覧を更新") }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                buildString {
+                    append("選択中: ")
+                    append(selectedOpenRouterModel.ifBlank { "未選択" })
+                    val selected = openRouterModels.firstOrNull { it.id == selectedOpenRouterModel }
+                    if (selected != null) {
+                        val badges = buildList {
+                            if (selected.isFree) add("無料")
+                            if (selected.supportsImage) add("画像")
+                            if (selected.supportsTools) add("tools")
+                        }
+                        if (badges.isNotEmpty()) {
+                            append("  [")
+                            append(badges.joinToString(" · "))
+                            append("]")
+                        }
+                    }
+                },
+                fontSize = 13.sp,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
 
             val filtered = OpenRouterModelCatalog.filter(openRouterModels, modelQuery).take(40)
             filtered.forEach { model ->
