@@ -229,6 +229,24 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 - Tailscale 上で端末が online であること（`tailscale status`）
 - **APK を Tailscale 経由で入れない**（タイムアウトで古いプロセスが残ることがある）
 
+ローカル Wi-Fi / テザリングだけで繋ぐなら `./scripts/adb-wireless.sh`：
+
+```bash
+./scripts/adb-wireless.sh            # 無線で接続。失敗したら USB セットアップに落ちる
+./scripts/adb-wireless.sh connect    # 無線のみ（USB 不要）
+./scripts/adb-wireless.sh setup      # USB 接続時: tcpip 5555 を有効化して接続・IP を記憶
+./scripts/adb-wireless.sh status
+```
+
+`connect` は **USB なしで**次の順に試す:
+
+1. 前回成功した IP（`~/.cache/voice-harness/adb-wireless.host`）
+2. Mac のデフォルトゲートウェイ — 端末のテザリングに Mac が繋がっている場合はこれが端末 IP
+3. 端末の Tailscale IP
+
+`adb tcpip 5555` は**端末を再起動するまで有効**なので、一度 `setup` すれば以降は USB 不要。
+再起動後に繋がらなくなったら USB を挿して `setup` をやり直す。
+
 ### VAD / ASR 幻覚対策メモ
 
 - BLE 経路は `Silero VAD` を優先し、`maxProb` が異常に低い場合は FFT ベース解析に自動フォールバックする
