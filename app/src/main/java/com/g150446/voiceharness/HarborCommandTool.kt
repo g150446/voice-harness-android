@@ -36,6 +36,19 @@ internal object HarborCommandTool {
         RegexOption.IGNORE_CASE,
     )
 
+    /**
+     * Matches a trailing quotative "please send this" cue (「〜と送って」「〜と送信して」),
+     * as opposed to bare "〜を送って"/"送って", which is ambiguous with genuine instruction
+     * content (e.g. "ファイルを送って").
+     */
+    private val TRAILING_SEND_TRIGGER = Regex("と(送って|送信して)[\\s。、!?！？]*$")
+
+    private fun stripTrailingSendTrigger(text: String): String {
+        val trimmed = text.trim()
+        val stripped = TRAILING_SEND_TRIGGER.replace(trimmed, "").trim()
+        return stripped.ifBlank { trimmed }
+    }
+
     const val SYSTEM_APPENDIX =
         "The user can operate their own PC terminal through Terminal Harbor. " +
             "Attached Terminal Harbor context shows the selected workspace and the AI coding agent " +
@@ -52,6 +65,9 @@ internal object HarborCommandTool {
             "Use action=switch_workspace only when moving to another workspace is the whole " +
             "request, with nothing to do once you arrive (「harbor に切り替えて」 / 「〜に移動して」); " +
             "set workspace to one of the listed workspaces. " +
+            "A trailing 「〜と送って」/「〜と送信して」 is a spoken cue meaning send what precedes " +
+            "it — exclude that trailing phrase from command itself (「問題なさそうと送って」 → " +
+            "command 「問題なさそう」). " +
             "If the user is asking for work to be done, it is action=instruction even when the " +
             "sentence names one or more workspaces. For example " +
             "「voice-harness-even-g2 と terminal-harbor を整理してコミットして」 is action=instruction " +
@@ -148,8 +164,9 @@ internal object HarborCommandTool {
             val obj = JSONObject(argumentsJson.ifBlank { "{}" })
             val actionRaw = obj.optString("action", "instruction").trim().lowercase(Locale.ROOT)
             val keyRaw = obj.optString("key", "").trim().lowercase(Locale.ROOT)
-            val command = obj.optString("command", "").trim()
+            val rawCommand = obj.optString("command", "").trim()
                 .ifBlank { sttFallback }
+            val command = stripTrailingSendTrigger(rawCommand)
             val workspace = obj.optString("workspace", "").trim().takeIf { it.isNotEmpty() }
             val intentSummary = obj.optString("intent_summary", "").trim()
             val needsClarification = obj.optBoolean("needs_clarification", false)
@@ -215,14 +232,15 @@ internal object HarborCommandTool {
     }
 
     fun fallback(rawStt: String): HarborCommandArgs {
-        val command = rawStt.trim()
-        if (isEnterRequest(command)) {
+        val trimmedStt = rawStt.trim()
+        if (isEnterRequest(trimmedStt)) {
             return HarborCommandArgs(
                 action = HarborCommandAction.KEY,
                 key = "enter",
                 intentSummary = "Enterキーを送りますか？",
             )
         }
+        val command = stripTrailingSendTrigger(trimmedStt)
         return HarborCommandArgs(
             action = HarborCommandAction.INSTRUCTION,
             command = command,

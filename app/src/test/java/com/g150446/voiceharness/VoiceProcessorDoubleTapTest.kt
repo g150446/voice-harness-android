@@ -124,6 +124,16 @@ class VoiceProcessorDoubleTapTest {
         assertEquals(
             RecordingTapAction.START_COMMAND,
             recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = false,
+                state = VoiceState.READY,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.START_COMMAND,
+            recordingTapAction(
                 mode = RecordingTapMode.DOUBLE,
                 event = RecordingTapEvent.SINGLE,
                 interactionMode = InteractionMode.HARBOR,
@@ -449,6 +459,5 @@ class VoiceProcessorDoubleTapTest {
         // "指示を送りました" result is wiped before it can be read, which reads as
         // the command never having run.
         assertTrue(HARBOR_RESULT_HOLD_MS > HARBOR_MIRROR_POLL_MS)
-        assertTrue(HARBOR_RESULT_HOLD_MS < HARBOR_CONFIRM_TIMEOUT_MS)
     }
 }

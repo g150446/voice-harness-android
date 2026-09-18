@@ -264,7 +264,6 @@ internal class VoiceProcessor(
      * result within a frame, which reads as "nothing happened".
      */
     @Volatile private var harborSubmitInFlight = false
-    private var harborConfirmTimeoutJob: Job? = null
     private val reminderMutationLock = Any()
     private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
@@ -745,8 +744,6 @@ internal class VoiceProcessor(
             awaitingClarification = interpreted.needsClarification,
         )
         harborConfirmInterpreting = false
-        // Re-arm so the tap window starts when the prompt becomes actionable.
-        armHarborConfirmTimeout()
         if (harborConfirmRequested.getAndSet(false)) {
             Log.i(TAG, "Executing Harbor confirm queued during interpretation")
             executeHarborConfirm()
@@ -766,7 +763,6 @@ internal class VoiceProcessor(
         pendingHarborCommand = PendingHarborCommand(stt = stt, args = normalized)
         harborConfirmInterpreting = false
         harborConfirmRequested.set(false)
-        armHarborConfirmTimeout()
         publishHarborConfirmUi(
             stt = stt,
             aiComment = normalized.intentSummary,
@@ -799,15 +795,6 @@ internal class VoiceProcessor(
         }
         BleConnectionService.setResponse(phoneResponse)
         EvenG2ReadingSession.publishResponse(prompt)
-    }
-
-    private fun armHarborConfirmTimeout() {
-        harborConfirmTimeoutJob?.cancel()
-        harborConfirmTimeoutJob = scope.launch {
-            delay(HARBOR_CONFIRM_TIMEOUT_MS)
-            if (pendingHarborCommand == null) return@launch
-            cancelHarborConfirm("timeout")
-        }
     }
 
     /** Drops the pending command and returns the glass to the live workspace. */
@@ -884,7 +871,6 @@ internal class VoiceProcessor(
                     ?: pending.args.intentSummary,
                 awaitingClarification = true,
             )
-            armHarborConfirmTimeout()
             return
         }
         Log.i(
@@ -938,8 +924,6 @@ internal class VoiceProcessor(
         pendingHarborCommand = null
         harborConfirmInterpreting = false
         harborConfirmRequested.set(false)
-        harborConfirmTimeoutJob?.cancel()
-        harborConfirmTimeoutJob = null
         if (resumeMirror) BleConnectionService.pauseHarborMirror(false)
     }
 

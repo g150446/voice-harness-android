@@ -30,9 +30,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +50,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -59,6 +66,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -167,6 +175,9 @@ fun VoiceScreen(
             AppScreen.HISTORY_DETAIL -> HistoryDetailScreen(modifier = modifier, viewModel = viewModel)
             AppScreen.REMINDER_LIST -> ReminderListScreen(modifier = modifier, viewModel = viewModel)
             AppScreen.GESTURE_DIAG -> GestureDiagScreen(modifier = modifier, viewModel = viewModel)
+            AppScreen.HARBOR_DEVICES -> HarborDevicesScreen(modifier, viewModel)
+            AppScreen.HARBOR_WORKSPACES -> HarborWorkspacesScreen(modifier, viewModel)
+            AppScreen.HARBOR_DETAIL -> HarborWorkspaceScreen(modifier, viewModel)
         }
     }
 }
@@ -530,26 +541,45 @@ fun HomeScreen(
                     .fillMaxWidth()
                     .padding(bottom = 4.dp)
             )
-            Text(
-                text = response,
-                fontSize = 15.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(
-                        bottom = if (
-                            modelStatus.debugPipelineTimingEnabled && lastPipelineMs > 0L
-                        ) 8.dp else 24.dp
-                    )
-            )
-            if (modelStatus.debugPipelineTimingEnabled && lastPipelineMs > 0L) {
+            val isHarborConfirm = response.contains("シングルタップで実行") ||
+                response.contains("ダブルタップで言い直す")
+            if (isHarborConfirm) {
+                // Card sets this apart from a normal AI response, since it's a pending
+                // action awaiting confirmation rather than plain conversational text.
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(text = response, fontSize = 15.sp)
+                        HarborConfirmButtons(response = response, viewModel = viewModel)
+                    }
+                }
+            } else {
                 Text(
-                    text = formatPipelineTiming(lastPipelineMs),
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = response,
+                    fontSize = 15.sp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 24.dp)
+                        .padding(
+                            bottom = if (
+                                modelStatus.debugPipelineTimingEnabled && lastPipelineMs > 0L
+                            ) 8.dp else 24.dp
+                        )
                 )
+                if (modelStatus.debugPipelineTimingEnabled && lastPipelineMs > 0L) {
+                    Text(
+                        text = formatPipelineTiming(lastPipelineMs),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 24.dp)
+                    )
+                }
             }
         }
 
@@ -636,6 +666,10 @@ fun HomeScreen(
                 Text(if (showHarborManualEntry) "閉じる" else "URIを手入力", fontSize = 11.sp)
             }
         }
+        OutlinedButton(
+            onClick = viewModel::openTerminalHarbor,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        ) { Text("Terminal Harborを開く") }
         if (showHarborManualEntry) {
             OutlinedTextField(
                 value = harborPairUri,
@@ -1699,4 +1733,313 @@ private fun TapStatusLine(
         },
         modifier = modifier.fillMaxWidth(),
     )
+}
+
+@Composable
+private fun HarborDevicesScreen(modifier: Modifier, viewModel: VoiceViewModel) {
+    val state by viewModel.harborUiState.collectAsState()
+    val context = LocalContext.current
+    var uri by remember { mutableStateOf("") }
+    var removeId by remember { mutableStateOf<String?>(null) }
+    BackHandler { viewModel.navigateBack() }
+    removeId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { removeId = null },
+            title = { Text("ペアリングを解除しますか？") },
+            text = { Text("このMacの認証鍵を端末から削除します。再接続にはQRペアリングが必要です。") },
+            confirmButton = {
+                Button(onClick = { viewModel.removeHarborDevice(id); removeId = null }) { Text("解除") }
+            },
+            dismissButton = { TextButton(onClick = { removeId = null }) { Text("キャンセル") } },
+        )
+    }
+    Column(modifier.fillMaxSize().padding(16.dp)) {
+        Text("Terminal Harbor", style = MaterialTheme.typography.headlineSmall)
+        Text("接続するMac", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            items(state.devices, key = { it.id }) { device ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { viewModel.selectHarborDevice(device.id) }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(if (device.active) "● ${device.name}" else device.name)
+                        Text(device.endpoint, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = { removeId = device.id }) { Text("解除") }
+                }
+                HorizontalDivider()
+            }
+        }
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        OutlinedTextField(
+            value = uri,
+            onValueChange = { uri = it },
+            label = { Text("harbor://pair URI") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                val options = GmsBarcodeScannerOptions.Builder()
+                    .setBarcodeFormats(Barcode.FORMAT_QR_CODE).enableAutoZoom().build()
+                GmsBarcodeScanning.getClient(context, options).startScan()
+                    .addOnSuccessListener { it.rawValue?.let(viewModel::pairTerminalHarbor) }
+            }) { Text("QRで追加") }
+            Button(onClick = { viewModel.pairTerminalHarbor(uri); uri = "" }, enabled = uri.isNotBlank()) {
+                Text("URIで追加")
+            }
+            if (state.devices.isNotEmpty()) {
+                val target = state.devices.firstOrNull { it.active } ?: state.devices.first()
+                TextButton(onClick = { viewModel.selectHarborDevice(target.id) }) {
+                    Text("開く")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HarborWorkspacesScreen(modifier: Modifier, viewModel: VoiceViewModel) {
+    val state by viewModel.harborUiState.collectAsState()
+    var showCreate by remember { mutableStateOf(false) }
+    var root by remember { mutableStateOf("") }
+    var closeId by remember { mutableStateOf<String?>(null) }
+    BackHandler { viewModel.navigateBack() }
+    LaunchedEffect(Unit) { viewModel.refreshHarborWorkspaces() }
+    if (showCreate) AlertDialog(
+        onDismissRequest = { showCreate = false },
+        title = { Text("新しいworkspace") },
+        text = { OutlinedTextField(root, { root = it }, label = { Text("Mac上のフォルダ（省略可）") }) },
+        confirmButton = { Button(onClick = { viewModel.createHarborWorkspace(root); showCreate = false }) { Text("作成") } },
+        dismissButton = { TextButton(onClick = { showCreate = false }) { Text("キャンセル") } },
+    )
+    closeId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { closeId = null },
+            title = { Text("workspaceを終了しますか？") },
+            text = { Text("すべてのtabと実行中プロセスを終了します。この操作は取り消せません。") },
+            confirmButton = { Button(onClick = { viewModel.closeHarborWorkspace(id); closeId = null }) { Text("終了") } },
+            dismissButton = { TextButton(onClick = { closeId = null }) { Text("キャンセル") } },
+        )
+    }
+    Column(modifier.fillMaxSize().padding(16.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Workspaces", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = viewModel::showHarborDevices) { Text("Mac切替") }
+            TextButton(onClick = viewModel::refreshHarborWorkspaces) { Text("更新") }
+        }
+        if (state.busy) Text("接続中…")
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+            items(state.workspaces, key = { it.id }) { workspace ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { viewModel.openHarborWorkspace(workspace.id) }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text((if (workspace.selected) "● " else "") + workspace.name)
+                        workspace.summary?.let { Text(it, maxLines = 2, fontSize = 12.sp) }
+                    }
+                    TextButton(onClick = { closeId = workspace.id }) { Text("終了") }
+                }
+                HorizontalDivider()
+            }
+        }
+        Button(onClick = { showCreate = true }, modifier = Modifier.fillMaxWidth()) { Text("workspaceを作成") }
+    }
+}
+
+@Composable
+private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel) {
+    val state by viewModel.harborUiState.collectAsState()
+    val workspaceId by viewModel.selectedHarborWorkspaceId.collectAsState()
+    val transcription by viewModel.transcription.collectAsState()
+    val response by viewModel.response.collectAsState()
+    val terminalFontSize by viewModel.harborFontSize.collectAsState()
+    var instruction by remember { mutableStateOf("") }
+    var deepHistory by remember { mutableStateOf(false) }
+    var closeTab by remember { mutableStateOf<HarborTab?>(null) }
+    var closeWorkspace by remember { mutableStateOf(false) }
+    val terminalScroll = rememberScrollState()
+    val speechLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val text = result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+        if (!text.isNullOrBlank()) instruction = listOf(instruction, text).filter(String::isNotBlank).joinToString(" ")
+    }
+    BackHandler { viewModel.navigateBack() }
+    LaunchedEffect(workspaceId, deepHistory) {
+        if (deepHistory) {
+            viewModel.refreshHarborWorkspace(17_500)
+            return@LaunchedEffect
+        }
+        while (true) {
+            viewModel.refreshHarborWorkspace(500)
+            delay(1_000)
+        }
+    }
+    LaunchedEffect(state.screenText, deepHistory) {
+        if (!deepHistory) {
+            delay(25)
+            terminalScroll.scrollTo(terminalScroll.maxValue)
+        }
+    }
+    closeTab?.let { tab ->
+        AlertDialog(
+            onDismissRequest = { closeTab = null },
+            title = { Text("tabを終了しますか？") },
+            text = { Text("${tab.title} の${tab.paneCount}個のpaneとプロセスを終了します。") },
+            confirmButton = { Button(onClick = { viewModel.closeHarborTab(tab.id); closeTab = null }) { Text("終了") } },
+            dismissButton = { TextButton(onClick = { closeTab = null }) { Text("キャンセル") } },
+        )
+    }
+    if (closeWorkspace && workspaceId != null) {
+        AlertDialog(
+            onDismissRequest = { closeWorkspace = false },
+            title = { Text("workspaceを終了しますか？") },
+            text = { Text("すべてのtab、pane、実行中プロセスを終了します。この操作は取り消せません。") },
+            confirmButton = {
+                Button(onClick = {
+                    viewModel.closeHarborWorkspace(workspaceId!!)
+                    closeWorkspace = false
+                    viewModel.navigateBack()
+                }) { Text("終了") }
+            },
+            dismissButton = { TextButton(onClick = { closeWorkspace = false }) { Text("キャンセル") } },
+        )
+    }
+    Column(modifier.fillMaxSize().padding(12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                state.workspaces.firstOrNull { it.id == workspaceId }?.name ?: "Terminal",
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                onClick = { viewModel.setHarborFontSize(terminalFontSize - 1) },
+                enabled = terminalFontSize > HarborFontSizePreferences.MIN_SIZE,
+                contentPadding = PaddingValues(6.dp),
+            ) { Text("A−") }
+            Text("$terminalFontSize", fontSize = 11.sp)
+            TextButton(
+                onClick = { viewModel.setHarborFontSize(terminalFontSize + 1) },
+                enabled = terminalFontSize < HarborFontSizePreferences.MAX_SIZE,
+                contentPadding = PaddingValues(6.dp),
+            ) { Text("A+") }
+            TextButton(onClick = { deepHistory = !deepHistory }) { Text(if (deepHistory) "Live" else "履歴") }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = viewModel::refreshHarborWorkspace) { Text("更新") }
+            TextButton(onClick = viewModel::createHarborTab) { Text("+Tab") }
+            TextButton(onClick = { closeWorkspace = true }) { Text("workspace終了") }
+        }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            state.tabs.forEach { tab ->
+                OutlinedButton(onClick = { viewModel.activateHarborTab(tab.id) }) {
+                    Text((if (tab.selected) "● " else "") + tab.title, maxLines = 1)
+                }
+                if (state.tabs.size > 1) TextButton(onClick = { closeTab = tab }) { Text("×") }
+            }
+        }
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        if (response.contains("シングルタップで実行") || response.contains("ダブルタップで言い直す")) {
+            HarborConfirmPrompt(transcription = transcription, response = response, viewModel = viewModel)
+        }
+        Text(
+            state.screenText.ifEmpty { "出力を待っています…" },
+            fontFamily = FontFamily.Monospace,
+            fontSize = terminalFontSize.sp,
+            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(terminalScroll),
+        )
+        listOf(
+            listOf("left" to "←", "up" to "↑", "down" to "↓", "right" to "→"),
+            listOf("escape" to "ESC", "ctrl-c" to "^C"),
+            listOf("space" to "SPC", "tab" to "Tab", "shift-tab" to "⇧Tab"),
+        ).forEach { keys ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                keys.forEach { (key, label) ->
+                    TextButton(
+                        onClick = { viewModel.sendHarborKey(key) },
+                        contentPadding = PaddingValues(6.dp),
+                        modifier = Modifier.weight(1f),
+                    ) { Text(label) }
+                }
+            }
+        }
+        OutlinedTextField(
+            value = instruction,
+            onValueChange = { instruction = it },
+            label = { Text("指示") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                speechLauncher.launch(Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && state.speechHints.isNotEmpty()) {
+                        putStringArrayListExtra(
+                            android.speech.RecognizerIntent.EXTRA_BIASING_STRINGS,
+                            ArrayList(state.speechHints.take(96)),
+                        )
+                    }
+                })
+            }) { Text("音声入力") }
+            OutlinedButton(
+                onClick = {
+                    viewModel.sendHarborInstruction(instruction, submit = false)
+                    instruction = ""
+                },
+                enabled = instruction.isNotBlank(),
+            ) { Text("貼付") }
+            Button(onClick = {
+                viewModel.sendHarborInstruction(instruction, submit = true)
+                instruction = ""
+            }) {
+                Text("送信↵")
+            }
+        }
+    }
+}
+
+/**
+ * Wraps the Harbor confirm prompt in a card so it's visually distinct from the surrounding
+ * screen (previously plain Text calls that blended into the background).
+ */
+@Composable
+private fun HarborConfirmPrompt(transcription: String, response: String, viewModel: VoiceViewModel) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text("音声指示: $transcription", fontWeight = FontWeight.SemiBold)
+            Text(response)
+            HarborConfirmButtons(response = response, viewModel = viewModel)
+        }
+    }
+}
+
+/** Android equivalent of the HarnessNode taps while a Harbor confirm prompt is showing. */
+@Composable
+private fun HarborConfirmButtons(response: String, viewModel: VoiceViewModel) {
+    val canConfirm = response.contains("シングルタップで実行")
+    val needsClarification = response.contains("ダブルタップで言い直す")
+    if (!canConfirm && !needsClarification) return
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (canConfirm) {
+            Button(onClick = viewModel::confirmHarborCommand) { Text("実行") }
+            OutlinedButton(onClick = viewModel::cancelHarborCommand) { Text("取り消す") }
+        } else {
+            Button(onClick = viewModel::cancelHarborCommand) { Text("言い直す") }
+        }
+    }
 }

@@ -123,4 +123,33 @@ class HarborCommandToolTest {
         assertTrue(HarborCommandTool.isEnterRequest("送信して"))
         assertFalse(HarborCommandTool.isEnterRequest("git pushして"))
     }
+
+    @Test
+    fun `parse strips a trailing quotative send cue from command`() {
+        val args = HarborCommandTool.parse(
+            """{"action":"instruction","command":"問題なさそうと送って","intent_summary":""}""",
+        )
+        assertEquals(HarborCommandAction.INSTRUCTION, args.action)
+        assertEquals("問題なさそう", args.command)
+
+        val viaSttOnly = HarborCommandTool.parse(
+            """{"action":"instruction","command":"","intent_summary":""}""",
+            fallbackCommand = "問題なさそうと送信して",
+        )
+        assertEquals("問題なさそう", viaSttOnly.command)
+    }
+
+    @Test
+    fun `fallback strips a trailing quotative send cue`() {
+        val args = HarborCommandTool.fallback("問題なさそうと送って")
+        assertEquals(HarborCommandAction.INSTRUCTION, args.action)
+        assertEquals("問題なさそう", args.command)
+        assertFalse(args.needsClarification)
+    }
+
+    @Test
+    fun `bare send verb without the quotative と is left untouched`() {
+        val args = HarborCommandTool.fallback("ファイルを送って")
+        assertEquals("ファイルを送って", args.command)
+    }
 }

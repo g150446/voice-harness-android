@@ -3,6 +3,8 @@ package com.g150446.voiceharness
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InteractionModeTest {
@@ -28,6 +30,31 @@ class InteractionModeTest {
         assertArrayEquals(
             expected,
             hkdfDeviceKey("pair-token", "server-one", "client-one", ByteArray(32) { it.toByte() }),
+        )
+    }
+
+    @Test
+    fun `Harbor mode requires pairing but never requires G2`() {
+        assertTrue(
+            canEnableInteractionMode(
+                InteractionMode.HARBOR,
+                g2Active = false,
+                harborPaired = true,
+            ),
+        )
+        assertFalse(
+            canEnableInteractionMode(
+                InteractionMode.HARBOR,
+                g2Active = true,
+                harborPaired = false,
+            ),
+        )
+        assertFalse(
+            canEnableInteractionMode(
+                InteractionMode.READER,
+                g2Active = false,
+                harborPaired = true,
+            ),
         )
     }
 }

@@ -60,6 +60,16 @@ internal fun parseInteractionMode(text: String): InteractionMode? {
     return matches.singleOrNull()
 }
 
+internal fun canEnableInteractionMode(
+    mode: InteractionMode,
+    g2Active: Boolean,
+    harborPaired: Boolean,
+): Boolean = when (mode) {
+    InteractionMode.AI -> true
+    InteractionMode.READER -> g2Active
+    InteractionMode.HARBOR -> harborPaired
+}
+
 internal data class HarborEndpoint(val kind: String, val url: String)
 
 internal data class HarborPairPayload(
@@ -119,10 +129,11 @@ data class HarborConnectionState(
     val error: String? = null,
 )
 
-internal data class HarborWorkspace(
+data class HarborWorkspace(
     val id: String,
     val name: String,
     val selected: Boolean,
+    val root: String? = null,
     val agent: String? = null,
     val process: String? = null,
     val summary: String? = null,
@@ -153,6 +164,30 @@ private fun harborWorkspaceKey(value: String): String =
     value.lowercase(Locale.ROOT).filter(Char::isLetterOrDigit)
 
 internal data class HarborScreen(val text: String)
+data class HarborTab(
+    val id: String,
+    val title: String,
+    val selected: Boolean,
+    val paneCount: Int,
+)
+
+data class HarborDevice(
+    val id: String,
+    val name: String,
+    val endpoint: String,
+    val active: Boolean,
+)
+
+data class HarborUiState(
+    val devices: List<HarborDevice> = emptyList(),
+    val workspaces: List<HarborWorkspace> = emptyList(),
+    val tabs: List<HarborTab> = emptyList(),
+    val selectedWorkspaceId: String? = null,
+    val screenText: String = "",
+    val speechHints: List<String> = emptyList(),
+    val busy: Boolean = false,
+    val error: String? = null,
+)
 internal data class HarborG2View(
     val summary: Boolean,
     val text: String = "",
@@ -238,7 +273,70 @@ internal class HarborCredentialsStore(private val context: Context) {
         prefs.edit().putString(KEY_VALUE, encrypt(json.toString())).apply()
     }
 
-    fun clear() = prefs.edit().remove(KEY_VALUE).apply()
+    fun loadAll(): List<HarborCredentials> {
+        val stored = prefs.getString(KEY_DEVICES, null)
+        if (stored == null) {
+            val legacy = load() ?: return emptyList()
+            saveAll(listOf(legacy))
+            return listOf(legacy)
+        }
+        val plain = decrypt(stored) ?: return emptyList()
+        return runCatching {
+            val array = JSONArray(plain)
+            buildList {
+                for (index in 0 until array.length()) {
+                    parseCredentials(array.getJSONObject(index))?.let(::add)
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun saveAll(values: List<HarborCredentials>) {
+        val array = JSONArray()
+        values.forEach { value ->
+            array.put(JSONObject().apply {
+                put("base_url", value.baseUrl)
+                put("server_id", value.serverId)
+                put("client_id", value.clientId)
+                put("key", b64(value.key))
+                put("endpoints", JSONArray().apply {
+                    value.endpoints.forEach { endpoint ->
+                        put(JSONObject().put("kind", endpoint.kind).put("url", endpoint.url))
+                    }
+                })
+                put("device_name", value.deviceName ?: "")
+            })
+        }
+        prefs.edit().putString(KEY_DEVICES, encrypt(array.toString())).apply()
+    }
+
+    fun activeServerId(): String? = prefs.getString(KEY_ACTIVE_SERVER, null)
+
+    fun setActiveServerId(serverId: String?) {
+        prefs.edit().apply {
+            if (serverId == null) remove(KEY_ACTIVE_SERVER) else putString(KEY_ACTIVE_SERVER, serverId)
+        }.apply()
+    }
+
+    private fun parseCredentials(json: JSONObject): HarborCredentials? = runCatching {
+        HarborCredentials(
+            baseUrl = json.getString("base_url"),
+            serverId = json.getString("server_id"),
+            clientId = json.getString("client_id"),
+            key = b64Decode(json.getString("key")),
+            endpoints = json.optJSONArray("endpoints")?.let { items ->
+                buildList {
+                    for (index in 0 until items.length()) {
+                        val item = items.getJSONObject(index)
+                        add(HarborEndpoint(item.getString("kind"), item.getString("url")))
+                    }
+                }
+            }.orEmpty(),
+            deviceName = json.optString("device_name").takeIf(String::isNotBlank),
+        )
+    }.getOrNull()
+
+    fun clear() = prefs.edit().remove(KEY_VALUE).remove(KEY_DEVICES).remove(KEY_ACTIVE_SERVER).apply()
 
     private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -279,10 +377,15 @@ internal class HarborCredentialsStore(private val context: Context) {
     private companion object {
         const val PREFS = "terminal_harbor_credentials"
         const val KEY_VALUE = "credentials"
+        const val KEY_DEVICES = "devices_v2"
+        const val KEY_ACTIVE_SERVER = "active_server_id"
         const val KEY_ALIAS = "voice_harness_terminal_harbor_aes"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
     }
 }
+
+internal fun hasStoredHarborCredentials(context: Context): Boolean =
+    HarborCredentialsStore(context).loadAll().isNotEmpty()
 
 private const val TAG = "HarborApiClient"
 
@@ -355,6 +458,7 @@ internal class HarborApiClient(
                             item.optString("name", "Workspace")
                         },
                         selected = item.optBoolean("selected"),
+                        root = item.optString("root").takeIf(String::isNotBlank),
                         agent = item.optString("agent").trim().takeIf { it.isNotEmpty() },
                         process = item.optString("process").trim().takeIf { it.isNotEmpty() },
                         summary = item.optString("summary").trim().takeIf { it.isNotEmpty() },
@@ -362,6 +466,62 @@ internal class HarborApiClient(
                 )
             }
         }
+    }
+
+    fun createWorkspace(credentials: HarborCredentials, root: String?): HarborWorkspace {
+        val body = JSONObject().apply {
+            root?.trim()?.takeIf(String::isNotEmpty)?.let { put("root", it) }
+        }.toString().toByteArray()
+        val response = authorized(credentials, "POST", "/v1/workspaces", body)
+        checkOk(response)
+        val item = JSONObject(String(response.body))
+        return HarborWorkspace(
+            id = item.getString("id"),
+            name = item.optString("directory").ifBlank { item.optString("name", "Workspace") },
+            selected = item.optBoolean("selected", true),
+            root = item.optString("root").takeIf(String::isNotBlank),
+            agent = item.optString("agent").takeIf(String::isNotBlank),
+            process = item.optString("process").takeIf(String::isNotBlank),
+            summary = item.optString("summary").takeIf(String::isNotBlank),
+        )
+    }
+
+    fun closeWorkspace(credentials: HarborCredentials, workspaceId: String) {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}"
+        checkOk(authorized(credentials, "DELETE", path, "{\"confirm\":true}".toByteArray()))
+    }
+
+    fun listTabs(credentials: HarborCredentials, workspaceId: String): List<HarborTab> {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/tabs"
+        val response = authorized(credentials, "GET", path)
+        checkOk(response)
+        val items = JSONObject(String(response.body)).optJSONArray("tabs") ?: JSONArray()
+        return buildList {
+            for (index in 0 until items.length()) {
+                val item = items.getJSONObject(index)
+                add(HarborTab(
+                    id = item.getString("id"),
+                    title = item.optString("title", "Tab"),
+                    selected = item.optBoolean("selected"),
+                    paneCount = item.optInt("pane_count", 1),
+                ))
+            }
+        }
+    }
+
+    fun createTab(credentials: HarborCredentials, workspaceId: String) {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/tabs"
+        checkOk(authorized(credentials, "POST", path, "{}".toByteArray()))
+    }
+
+    fun activateTab(credentials: HarborCredentials, workspaceId: String, tabId: String) {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/tabs/${Uri.encode(tabId)}/activate"
+        checkOk(authorized(credentials, "POST", path, "{}".toByteArray()))
+    }
+
+    fun closeTab(credentials: HarborCredentials, workspaceId: String, tabId: String) {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/tabs/${Uri.encode(tabId)}"
+        checkOk(authorized(credentials, "DELETE", path, "{\"confirm\":true}".toByteArray()))
     }
 
     fun fetchScreen(
@@ -422,9 +582,14 @@ internal class HarborApiClient(
         }
     }
 
-    fun postInstruction(credentials: HarborCredentials, workspaceId: String, text: String) {
+    fun postInstruction(
+        credentials: HarborCredentials,
+        workspaceId: String,
+        text: String,
+        submit: Boolean = true,
+    ) {
         val path = "/v1/workspaces/${Uri.encode(workspaceId)}/instruction"
-        val body = JSONObject().put("text", text).put("submit", true).toString().toByteArray()
+        val body = JSONObject().put("text", text).put("submit", submit).toString().toByteArray()
         val response = authorized(credentials, "POST", path, body)
         Log.i(TAG, "instruction http=${response.code} chars=${text.length}")
         checkOk(response)
@@ -544,7 +709,10 @@ internal class HarborMirrorController(
     private val client: HarborApiClient = HarborApiClient(),
 ) {
     private val store = HarborCredentialsStore(context)
-    private var credentials = store.load()
+    private var allCredentials = store.loadAll().toMutableList()
+    private var credentials = allCredentials.firstOrNull {
+        it.serverId == store.activeServerId()
+    } ?: allCredentials.firstOrNull()
     private var job: Job? = null
     @Volatile private var paused = false
     private var mode = InteractionMode.AI
@@ -552,6 +720,169 @@ internal class HarborMirrorController(
         HarborConnectionState(paired = credentials != null, deviceName = credentials?.deviceName)
     )
     val state: StateFlow<HarborConnectionState> = _state.asStateFlow()
+    private val _uiState = MutableStateFlow(
+        HarborUiState(devices = deviceSummaries())
+    )
+    val uiState: StateFlow<HarborUiState> = _uiState.asStateFlow()
+
+    fun isPaired(): Boolean = credentials != null
+
+    private fun deviceSummaries(): List<HarborDevice> = allCredentials.map { item ->
+        HarborDevice(
+            id = item.serverId,
+            name = item.deviceName ?: Uri.parse(item.baseUrl).host ?: "Terminal Harbor",
+            endpoint = item.baseUrl,
+            active = item.serverId == credentials?.serverId,
+        )
+    }
+
+    private fun updateDevices() {
+        _uiState.value = _uiState.value.copy(devices = deviceSummaries())
+    }
+
+    fun refreshWorkspaces(onComplete: (() -> Unit)? = null) {
+        val creds = credentials ?: run {
+            _uiState.value = _uiState.value.copy(error = "Terminal Harborをペアリングしてください")
+            onComplete?.invoke()
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(busy = true, error = null)
+            runCatching { client.listWorkspaces(creds) }
+                .onSuccess { workspaces ->
+                    _uiState.value = _uiState.value.copy(
+                        workspaces = workspaces,
+                        selectedWorkspaceId = workspaces.firstOrNull { it.selected }?.id,
+                        busy = false,
+                    )
+                    _state.value = _state.value.copy(
+                        connected = true,
+                        workspaceName = workspaces.firstOrNull { it.selected }?.name,
+                        error = null,
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(busy = false, error = error.message)
+                }
+            onComplete?.invoke()
+        }
+    }
+
+    fun selectDevice(serverId: String) {
+        val selected = allCredentials.firstOrNull { it.serverId == serverId } ?: return
+        stopPolling()
+        credentials = selected
+        store.setActiveServerId(serverId)
+        _uiState.value = HarborUiState(devices = deviceSummaries())
+        _state.value = HarborConnectionState(
+            paired = true,
+            deviceName = selected.deviceName ?: Uri.parse(selected.baseUrl).host,
+        )
+        refreshWorkspaces { reconcile() }
+    }
+
+    fun removeDevice(serverId: String) {
+        allCredentials.removeAll { it.serverId == serverId }
+        if (credentials?.serverId == serverId) {
+            stopPolling()
+            credentials = allCredentials.firstOrNull()
+            store.setActiveServerId(credentials?.serverId)
+        }
+        store.saveAll(allCredentials)
+        updateDevices()
+        val active = credentials
+        _state.value = HarborConnectionState(
+            paired = active != null,
+            deviceName = active?.deviceName ?: active?.baseUrl?.let { Uri.parse(it).host },
+        )
+        if (active == null) _uiState.value = HarborUiState()
+        else refreshWorkspaces { reconcile() }
+    }
+
+    fun activateWorkspace(workspaceId: String) = mutateAndRefresh {
+        client.postActivate(requireCredentials(), workspaceId)
+    }
+
+    fun createWorkspace(root: String?) = mutateAndRefresh {
+        client.createWorkspace(requireCredentials(), root)
+    }
+
+    fun closeWorkspace(workspaceId: String) = mutateAndRefresh {
+        client.closeWorkspace(requireCredentials(), workspaceId)
+    }
+
+    fun loadWorkspace(workspaceId: String, lines: Int = 500) {
+        val creds = credentials ?: return
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val tabs = client.listTabs(creds, workspaceId)
+                val screen = client.fetchScreen(creds, workspaceId, lines)
+                val cachedHints = _uiState.value.takeIf {
+                    it.selectedWorkspaceId == workspaceId && it.speechHints.isNotEmpty()
+                }?.speechHints
+                val hints = cachedHints ?: runCatching {
+                    client.fetchSpeechHints(creds, workspaceId)
+                }.getOrDefault(emptyList())
+                Triple(tabs, screen, hints)
+            }.onSuccess { (tabs, screen, hints) ->
+                _uiState.value = _uiState.value.copy(
+                    selectedWorkspaceId = workspaceId,
+                    tabs = tabs,
+                    screenText = screen.text,
+                    speechHints = hints,
+                    error = null,
+                )
+            }.onFailure { error ->
+                _uiState.value = _uiState.value.copy(error = error.message)
+            }
+        }
+    }
+
+    fun createTab(workspaceId: String) = mutateWorkspace(workspaceId) {
+        client.createTab(requireCredentials(), workspaceId)
+    }
+
+    fun activateTab(workspaceId: String, tabId: String) = mutateWorkspace(workspaceId) {
+        client.activateTab(requireCredentials(), workspaceId, tabId)
+    }
+
+    fun closeTab(workspaceId: String, tabId: String) = mutateWorkspace(workspaceId) {
+        client.closeTab(requireCredentials(), workspaceId, tabId)
+    }
+
+    fun sendInstruction(workspaceId: String, text: String, submit: Boolean = true) =
+        mutateWorkspace(workspaceId) {
+            client.postInstruction(requireCredentials(), workspaceId, text, submit)
+        }
+
+    fun sendKey(workspaceId: String, key: String) = mutateWorkspace(workspaceId) {
+        client.postKey(requireCredentials(), workspaceId, key)
+    }
+
+    private fun requireCredentials(): HarborCredentials = credentials
+        ?: error("Terminal Harborをペアリングしてください")
+
+    private fun mutateAndRefresh(action: () -> Unit) {
+        scope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(busy = true, error = null)
+            runCatching(action)
+                .onSuccess { refreshWorkspaces() }
+                .onFailure { _uiState.value = _uiState.value.copy(busy = false, error = it.message) }
+        }
+    }
+
+    private fun mutateWorkspace(workspaceId: String, action: () -> Unit) {
+        scope.launch(Dispatchers.IO) {
+            _uiState.value = _uiState.value.copy(busy = true, error = null)
+            runCatching(action)
+                .onSuccess {
+                    _uiState.value = _uiState.value.copy(busy = false)
+                    loadWorkspace(workspaceId)
+                    refreshWorkspaces()
+                }
+                .onFailure { _uiState.value = _uiState.value.copy(busy = false, error = it.message) }
+        }
+    }
 
     fun setMode(value: InteractionMode) {
         mode = value
@@ -573,12 +904,17 @@ internal class HarborMirrorController(
             runCatching { client.pair(HarborPairPayload.parse(rawUri)) }
                 .onSuccess {
                     credentials = it
-                    store.save(it)
+                    allCredentials.removeAll { saved -> saved.serverId == it.serverId }
+                    allCredentials.add(it)
+                    store.saveAll(allCredentials)
+                    store.setActiveServerId(it.serverId)
+                    updateDevices()
                     _state.value = HarborConnectionState(
                         paired = true,
                         connected = true,
                         deviceName = it.deviceName ?: Uri.parse(it.baseUrl).host,
                     )
+                    refreshWorkspaces()
                     reconcile()
                 }
                 .onFailure {
@@ -590,8 +926,10 @@ internal class HarborMirrorController(
     fun clear() {
         stopPolling()
         credentials = null
+        allCredentials.clear()
         store.clear()
         _state.value = HarborConnectionState()
+        _uiState.value = HarborUiState()
         if (mode == InteractionMode.HARBOR) {
             EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborをペアリングしてください")
         }

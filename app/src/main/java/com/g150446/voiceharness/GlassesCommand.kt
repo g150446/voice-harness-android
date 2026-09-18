@@ -4,7 +4,6 @@ import java.util.Locale
 
 internal const val GLASSES_MODE_SWITCH_PHRASE = "グラスモード変更"
 internal const val READER_PAGE_COMMAND_MAX = 20
-internal const val HARBOR_CONFIRM_TIMEOUT_MS = 15_000L
 /** Terminal Harbor mirror poll period; each tick repaints the glass. */
 internal const val HARBOR_MIRROR_POLL_MS = 1_000L
 /** How long a Harbor result stays on the glass before the mirror may repaint over it. */

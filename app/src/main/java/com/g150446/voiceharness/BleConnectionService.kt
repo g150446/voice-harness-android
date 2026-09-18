@@ -156,6 +156,8 @@ class BleConnectionService : Service() {
         private val _harborConnectionState = MutableStateFlow(HarborConnectionState())
         val harborConnectionState: StateFlow<HarborConnectionState> =
             _harborConnectionState.asStateFlow()
+        private val _harborUiState = MutableStateFlow(HarborUiState())
+        val harborUiState: StateFlow<HarborUiState> = _harborUiState.asStateFlow()
 
         private val _lastPipelineMs = MutableStateFlow(0L)
         val lastPipelineMs: StateFlow<Long> = _lastPipelineMs.asStateFlow()
@@ -388,8 +390,7 @@ class BleConnectionService : Service() {
 
         /**
          * Restore the last interaction mode after a service restart.
-         * Harbor/Reader require an active G2 plugin (and Harbor pairing); otherwise keep the
-         * saved preference and fall back to AI with an on-glass notice.
+         * Reader requires G2. Harbor is phone/HarnessNode capable and only requires pairing.
          */
         private fun restoreInteractionMode(context: Context) {
             val saved = InteractionModePreferences(context).mode()
@@ -398,12 +399,9 @@ class BleConnectionService : Service() {
                     _interactionMode.value = InteractionMode.AI
                 }
                 InteractionMode.HARBOR -> {
-                    if (!EvenG2ReadingSession.isClientActive()) {
-                        _interactionMode.value = InteractionMode.AI
-                        setResponse("Harborモード待機中: G2プラグインの接続を待っています")
-                        return
-                    }
-                    if (_harborConnectionState.value.paired.not()) {
+                    val paired = instance?.harborMirrorController?.isPaired()
+                        ?: hasStoredHarborCredentials(context)
+                    if (!paired) {
                         fallBackToAiMode(
                             context,
                             reason = "Terminal Harborのペアリングがありません",
@@ -413,7 +411,9 @@ class BleConnectionService : Service() {
                     }
                     _interactionMode.value = InteractionMode.HARBOR
                     instance?.harborMirrorController?.setMode(InteractionMode.HARBOR)
-                    EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborに再接続中…")
+                    if (EvenG2ReadingSession.isClientActive()) {
+                        EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborに再接続中…")
+                    }
                     setResponse("Harborモードを復元しました")
                 }
                 InteractionMode.READER -> {
@@ -431,18 +431,7 @@ class BleConnectionService : Service() {
         fun syncInteractionModeWithG2Client(context: Context) {
             syncReaderModeWithG2Client(context)
             val saved = InteractionModePreferences(context).mode()
-            val g2Active = EvenG2ReadingSession.isClientActive()
-            if (!g2Active) {
-                if (_interactionMode.value == InteractionMode.HARBOR) {
-                    _interactionMode.value = InteractionMode.AI
-                    instance?.harborMirrorController?.setMode(InteractionMode.AI)
-                    setResponse("Harborモードを解除しました: G2プラグインが切断されました")
-                    EvenG2ReadingSession.publishResponse(
-                        "Harborモードを解除しました\nG2プラグインが切断されました",
-                    )
-                }
-                return
-            }
+            if (!EvenG2ReadingSession.isClientActive()) return
             if (saved == InteractionMode.HARBOR &&
                 _interactionMode.value != InteractionMode.HARBOR &&
                 _harborConnectionState.value.paired
@@ -499,12 +488,14 @@ class BleConnectionService : Service() {
 
         fun setInteractionMode(context: Context, mode: InteractionMode): Boolean {
             val service = instance
-            if (mode != InteractionMode.AI && !EvenG2ReadingSession.isClientActive()) {
-                setErrorMessage("G2プラグインの接続が必要です")
-                return false
-            }
-            if (mode == InteractionMode.HARBOR && _harborConnectionState.value.paired.not()) {
-                setErrorMessage("Terminal Harborをペアリングしてください")
+            val g2Active = EvenG2ReadingSession.isClientActive()
+            val harborPaired = service?.harborMirrorController?.isPaired()
+                ?: hasStoredHarborCredentials(context)
+            if (!canEnableInteractionMode(mode, g2Active, harborPaired)) {
+                setErrorMessage(
+                    if (mode == InteractionMode.READER) "G2プラグインの接続が必要です"
+                    else "Terminal Harborをペアリングしてください",
+                )
                 return false
             }
             when (mode) {
@@ -522,7 +513,9 @@ class BleConnectionService : Service() {
                 InteractionMode.HARBOR -> {
                     setReadingPassthroughEnabled(context, false, notifyG2 = false)
                     service?.harborMirrorController?.setMode(InteractionMode.HARBOR)
-                    EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborに接続中…")
+                    if (EvenG2ReadingSession.isClientActive()) {
+                        EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborに接続中…")
+                    }
                 }
             }
             if (mode != InteractionMode.HARBOR) service?.harborMirrorController?.setMode(mode)
@@ -547,6 +540,26 @@ class BleConnectionService : Service() {
                 }
             }
         }
+
+        fun refreshHarborWorkspaces() = instance?.harborMirrorController?.refreshWorkspaces()
+        fun selectHarborDevice(serverId: String) = instance?.harborMirrorController?.selectDevice(serverId)
+        fun removeHarborDevice(serverId: String) = instance?.harborMirrorController?.removeDevice(serverId)
+        fun activateHarborWorkspace(id: String) = instance?.harborMirrorController?.activateWorkspace(id)
+        fun createHarborWorkspace(root: String?) = instance?.harborMirrorController?.createWorkspace(root)
+        fun closeHarborWorkspace(id: String) = instance?.harborMirrorController?.closeWorkspace(id)
+        fun loadHarborWorkspace(id: String, lines: Int = 500) =
+            instance?.harborMirrorController?.loadWorkspace(id, lines)
+        fun createHarborTab(workspaceId: String) = instance?.harborMirrorController?.createTab(workspaceId)
+        fun activateHarborTab(workspaceId: String, tabId: String) =
+            instance?.harborMirrorController?.activateTab(workspaceId, tabId)
+        fun closeHarborTab(workspaceId: String, tabId: String) =
+            instance?.harborMirrorController?.closeTab(workspaceId, tabId)
+        fun sendHarborInstruction(workspaceId: String, text: String, submit: Boolean = true) =
+            instance?.harborMirrorController?.sendInstruction(workspaceId, text, submit)
+        fun sendHarborKey(workspaceId: String, key: String) =
+            instance?.harborMirrorController?.sendKey(workspaceId, key)
+        fun confirmHarborCommand() = instance?.voiceProcessor?.handleSingleTap()
+        fun cancelHarborCommand() = instance?.voiceProcessor?.handleDoubleTap()
 
         internal fun harborSpeechHints(): List<String> =
             instance?.harborMirrorController?.speechHints().orEmpty()
@@ -685,8 +698,12 @@ class BleConnectionService : Service() {
         ).also { it.start() }
         harborMirrorController = HarborMirrorController(applicationContext, serviceScope).also { controller ->
             _harborConnectionState.value = controller.state.value
+            _harborUiState.value = controller.uiState.value
             serviceScope.launch {
                 controller.state.collect { _harborConnectionState.value = it }
+            }
+            serviceScope.launch {
+                controller.uiState.collect { _harborUiState.value = it }
             }
         }
         recordingOverlay = RecordingOverlayController(applicationContext)

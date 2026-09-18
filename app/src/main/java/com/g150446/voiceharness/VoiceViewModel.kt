@@ -7,7 +7,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
-enum class AppScreen { HOME, HISTORY_LIST, HISTORY_DETAIL, REMINDER_LIST, GESTURE_DIAG }
+enum class AppScreen {
+    HOME, HISTORY_LIST, HISTORY_DETAIL, REMINDER_LIST, GESTURE_DIAG,
+    HARBOR_DEVICES, HARBOR_WORKSPACES, HARBOR_DETAIL,
+}
 
 class VoiceViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -64,6 +67,12 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     val interactionMode: StateFlow<InteractionMode> = BleConnectionService.interactionMode
     val harborConnectionState: StateFlow<HarborConnectionState> =
         BleConnectionService.harborConnectionState
+    val harborUiState: StateFlow<HarborUiState> = BleConnectionService.harborUiState
+    private val _selectedHarborWorkspaceId = MutableStateFlow<String?>(null)
+    val selectedHarborWorkspaceId: StateFlow<String?> = _selectedHarborWorkspaceId
+    private val harborFontSizePrefs = HarborFontSizePreferences(application)
+    private val _harborFontSize = MutableStateFlow(harborFontSizePrefs.size())
+    val harborFontSize: StateFlow<Int> = _harborFontSize
 
     val gestureCaptureEnabled: StateFlow<Boolean> =
         BleConnectionService.gestureCaptureEnabled
@@ -173,6 +182,59 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
         BleConnectionService.clearTerminalHarborPairing()
     }
 
+    fun openTerminalHarbor() {
+        _currentScreen.value = if (harborUiState.value.devices.isEmpty()) {
+            AppScreen.HARBOR_DEVICES
+        } else {
+            BleConnectionService.refreshHarborWorkspaces()
+            AppScreen.HARBOR_WORKSPACES
+        }
+    }
+
+    fun showHarborDevices() { _currentScreen.value = AppScreen.HARBOR_DEVICES }
+    fun selectHarborDevice(id: String) {
+        BleConnectionService.selectHarborDevice(id)
+        _currentScreen.value = AppScreen.HARBOR_WORKSPACES
+    }
+    fun removeHarborDevice(id: String) = BleConnectionService.removeHarborDevice(id)
+    fun refreshHarborWorkspaces() = BleConnectionService.refreshHarborWorkspaces()
+    fun createHarborWorkspace(root: String?) = BleConnectionService.createHarborWorkspace(root)
+    fun closeHarborWorkspace(id: String) = BleConnectionService.closeHarborWorkspace(id)
+    fun openHarborWorkspace(id: String) {
+        _selectedHarborWorkspaceId.value = id
+        BleConnectionService.activateHarborWorkspace(id)
+        BleConnectionService.loadHarborWorkspace(id)
+        _currentScreen.value = AppScreen.HARBOR_DETAIL
+    }
+    fun refreshHarborWorkspace(lines: Int = 500) {
+        _selectedHarborWorkspaceId.value?.let { BleConnectionService.loadHarborWorkspace(it, lines) }
+    }
+    fun createHarborTab() = _selectedHarborWorkspaceId.value?.let(BleConnectionService::createHarborTab)
+    fun activateHarborTab(id: String) = _selectedHarborWorkspaceId.value?.let {
+        BleConnectionService.activateHarborTab(it, id)
+    }
+    fun closeHarborTab(id: String) = _selectedHarborWorkspaceId.value?.let {
+        BleConnectionService.closeHarborTab(it, id)
+    }
+    fun sendHarborInstruction(text: String, submit: Boolean = true) =
+        _selectedHarborWorkspaceId.value?.let {
+            BleConnectionService.sendHarborInstruction(it, text, submit)
+        }
+    fun sendHarborKey(key: String) = _selectedHarborWorkspaceId.value?.let {
+        BleConnectionService.sendHarborKey(it, key)
+    }
+    fun confirmHarborCommand() = BleConnectionService.confirmHarborCommand()
+    fun cancelHarborCommand() = BleConnectionService.cancelHarborCommand()
+
+    fun setHarborFontSize(size: Int) {
+        val clamped = size.coerceIn(
+            HarborFontSizePreferences.MIN_SIZE,
+            HarborFontSizePreferences.MAX_SIZE,
+        )
+        harborFontSizePrefs.setSize(clamped)
+        _harborFontSize.value = clamped
+    }
+
     fun startBleScan() {
         _selectedBleDeviceAddress.value = null
         BleConnectionService.startScan()
@@ -263,6 +325,9 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
             AppScreen.HISTORY_LIST -> _currentScreen.value = AppScreen.HOME
             AppScreen.REMINDER_LIST -> _currentScreen.value = AppScreen.HOME
             AppScreen.GESTURE_DIAG -> _currentScreen.value = AppScreen.HOME
+            AppScreen.HARBOR_DEVICES -> _currentScreen.value = AppScreen.HOME
+            AppScreen.HARBOR_WORKSPACES -> _currentScreen.value = AppScreen.HOME
+            AppScreen.HARBOR_DETAIL -> _currentScreen.value = AppScreen.HARBOR_WORKSPACES
             AppScreen.HOME -> {}
         }
     }
