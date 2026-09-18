@@ -38,6 +38,7 @@
 BleConnectionService 付帯:
   RecordingOverlayController … RECORDING 中の他アプリ上インジケータ
   HeadlessScreenCapture ……… ROLE_ASSISTANT 時の Assist/スクショ
+  HarborMirrorController …… 複数Macの暗号化資格情報、Harbor API/UI状態、G2ミラーを一元管理
 
 BleManager ── Channel<BleVoiceInput> ──▶ BleConnectionService ──▶ VoiceProcessor
              （PCMとイベントを同じ順序で配送）
@@ -153,6 +154,11 @@ ROLE_ASSISTANT
 Harbor 確認画面では single = 実行、double = 取り消し（表示している
 「シングルタップで実行 / ダブルタップで取り消す」に合わせる）。確認待ち
 （`needs_clarification`）の画面だけは「ダブルタップで言い直す」で録音し直しになる。
+HarborモードはG2の接続状態から独立しており、Android画面とHarnessNodeだけでも動作する。
+Androidのworkspace詳細画面とG2は同じアクティブMac/workspaceを参照し、G2切断時はミラーだけを停止する。
+確認プロンプト表示中は、ホームと workspace 詳細画面に実行／取り消す／言い直すボタンも出る。
+ボタンは `confirmHarborCommand`/`cancelHarborCommand` 経由で tap と同じ
+`handleSingleTap`/`handleDoubleTap` を呼ぶだけなので、G2 やHarnessNodeが無くても確定できる。
 
 ### バックグラウンド動作の仕組み
 

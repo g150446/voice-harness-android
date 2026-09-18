@@ -38,6 +38,8 @@ Android アプリ。XIAO nRF52840 Sense をウェアラブルマイクとして�
 
 [Terminal Harborモード]
   ・Terminal Harborの既存モバイルブリッジとQR/HMACでペアリング
+  ・Android画面で複数Mac、workspace/tab、terminal出力、文字・音声入力、キー送信を操作
+  ・HarnessNodeとAndroidだけでも利用でき、G2は同じworkspaceを表示する任意の追加出力先
   ・出力中は空白・罫線行を省いた末尾をライブ表示
   ・入力待ちになると日本語要約（最大3画面）＋質問・選択肢を原文表示
   ・音声指示はSTTをG2即表示→LLM意図確認→タップで送信（モードは再起動後も復帰）
@@ -183,7 +185,16 @@ Harborモードを初めて使う場合は、Terminal Harborのサイドバー�
 Voice HarnessのTerminal Harbor欄からQRを読み取る。QRを使えない場合はPair URIを手入力できる。
 ペアリング情報はAndroid Keystoreで暗号化され、Pair URI、認証鍵、端末本文はログや履歴へ保存しない。
 ブリッジはTailscaleまたは信頼できるLAN上のHTTPを使用し、HMACで相互認証と改ざん検出を行う。
-Harborモード中はMacで現在選択しているワークスペースのアクティブペインを追従する。出力中は
+ホームの **Terminal Harborを開く** から、ペア済みMacとworkspaceの選択、workspace/tabの作成・終了、
+terminal出力の閲覧、文字・Android音声認識による指示、矢印・Esc・Ctrl-C・Tabキーの送信ができる。
+音声認識は入力欄へ追記するだけで自動送信しない。履歴表示中はライブ更新を停止し、Liveへ戻すと再開する。
+terminal出力の文字サイズはヘッダのA−/A+で変更でき（8〜24sp）、端末に保存される。
+旧Terminal Harbor Mobile Android版の認証情報はアプリ間で移送せず、Voice Harnessから再ペアリングする。
+
+HarborモードはG2未接続でも有効にできる。HarnessNodeのシングルタップで指示録音を開始・停止し、
+解釈後はシングルタップで実行、ダブルタップで取り消す。同じ操作はホームとworkspace画面の
+確認ボタン（実行／取り消す／言い直す）からも行える。
+G2を接続した場合はMacで現在選択しているワークスペースのアクティブペインを追従する。出力中は
 空白行・罫線・点線だけの行を省いた末尾を表示する。画面が停止してAIエージェントが質問や選択肢を
 表示すると、Terminal Harborに設定されたOpenRouterモデルが直前の指示以降を日本語で要約する。
 要約は最大3画面で、Harness Nodeのシングルタップで次画面へ進む。質問と選択肢は最後に原文で残る。
@@ -284,6 +295,9 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 | `RecordingCuePlayer.kt` / `RecordingCuePreferences.kt` | 録音開始/終了キュー音（既定オフ・ホームでトグル） |
 | `BleSpeechDetector.kt` | BLE PCM の DC 除去、FFT フォールバック、スペクトル解析 |
 | `EvenG2ReadingSession.kt` / `EvenG2BridgeServer.kt` | Even G2 表示セッションと loopback ブリッジ |
+| `HarborIntegration.kt` | Terminal Harbor ペアリング・APIクライアント・ミラー制御（複数Mac対応、資格情報は Keystore 暗号化） |
+| `HarborCommandTool.kt` / `HarborInterpretContext.kt` | `harbor_command` tool の意図解析と workspace コンテキスト |
+| `HarborFontSizePreferences.kt` | Terminal Harbor 画面の文字サイズ永続化（8〜24sp） |
 | `SmartGlassesOutputManager.kt` | Vuzix Z100 実装（実行未使用・将来再配線用アーカイブ） |
 | `MainActivity.kt` | UI（Jetpack Compose） |
 | `GroqSettingsActivity.kt` | モデル設定画面（ASR/LLM 独立 + OpenRouter） |
