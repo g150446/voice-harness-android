@@ -608,7 +608,7 @@ fun HomeScreen(
             }
         }
         Text(
-            text = "ダブルタップで録音開始 → モード名を話す → ダブルタップで決定",
+            text = "ダブルタップで録音開始 →『グラスモード変更 ハーバー』のように話す → ダブルタップで決定",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
@@ -820,7 +820,7 @@ fun HomeScreen(
             text = if (recordingTapMode == RecordingTapMode.DOUBLE) {
                 "オン — G2未接続時はダブルタップで録音開始/終了（接続中はモード別の指示）"
             } else {
-                "オフ — シングルタップで録音開始/終了（G2接続中のダブルタップはモード別の指示）"
+                "オフ — G2未接続時はシングルタップで録音開始/終了（接続中はダブルタップのみで録音、モード別の指示）"
             },
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

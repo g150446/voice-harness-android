@@ -131,7 +131,6 @@ internal fun recordingTapAction(
     capturePurpose: CapturePurpose = CapturePurpose.AI_QUERY,
     harborConfirmPending: Boolean = false,
     harborConfirmAwaitingClarification: Boolean = false,
-    harborSummaryActive: Boolean = false,
 ): RecordingTapAction {
     if (harborConfirmPending) {
         // Single confirms as soon as the prompt is visible, including while the
@@ -157,22 +156,11 @@ internal fun recordingTapAction(
         }
     }
     if (event == RecordingTapEvent.SINGLE) {
-        if (interactionMode == InteractionMode.HARBOR) {
-            // Harbor idle: single toggles the host-authorized command recording.
-            // While the glass pages a summary/question, single belongs to the plugin.
-            return when {
-                state == VoiceState.RECORDING ->
-                    if (capturePurpose == CapturePurpose.COMMAND) {
-                        RecordingTapAction.STOP_RECORDING
-                    } else {
-                        RecordingTapAction.NONE
-                    }
-                harborSummaryActive -> RecordingTapAction.NONE
-                state == VoiceState.READY || state == VoiceState.ERROR ->
-                    RecordingTapAction.START_COMMAND
-                else -> RecordingTapAction.NONE
-            }
-        }
+        // While G2 is active, single tap never starts or stops a recording — only
+        // double tap does. Single tap's remaining roles are glass-side pagination
+        // (singleTapCount, handled outside this function) and confirming a pending
+        // Harbor command (the harborConfirmPending branch above).
+        if (g2ClientActive) return RecordingTapAction.NONE
         if (mode != RecordingTapMode.SINGLE) return RecordingTapAction.NONE
         return when (singleTapRecordingCommand(interactionMode, state)) {
             BLE_RX_START_RECORDING -> RecordingTapAction.START_RECORDING
@@ -1861,7 +1849,6 @@ internal class VoiceProcessor(
             harborConfirmPending = pendingHarborCommand != null,
             harborConfirmAwaitingClarification =
                 pendingHarborCommand?.awaitingClarification == true,
-            harborSummaryActive = EvenG2ReadingSession.hasHarborSummary(),
         )
 
     private fun requestRecordingStart(event: RecordingTapEvent) {

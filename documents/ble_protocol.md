@@ -208,16 +208,16 @@ Nodeの現在値として見せない。
 Button A の single/double click）を使用する。Androidはタップ回数をホーム画面へ表示する。
 
 **FW `0.0.94+`**: single (`0x14`) / double (`0x12`) は notify-only。録音はホスト RX
-またはジェスチャー。Android の single 処理:
+またはジェスチャー。**G2 接続中は single が録音の開始/終了を一切行わない**
+（モードを問わず）。録音の開始/終了はダブルタップのみが担う。Android の single 処理:
 
 | 条件 | 動作 |
 |---|---|
 | リーダー、または Harbor の要約・質問表示中 | RX なし。`singleTapCount` で G2 ページ送り |
-| Harbor 待機中（録音開始） | RX `0x00` の後 ~150ms で RX `0x01`。`capturePurpose=COMMAND` |
-| Harbor 指示録音中 | RX `0x00`（停止） |
 | Harbor 確認待ち | RX なしで Harbor コマンドを実行 |
-| AI 対話・ホームが single・録音中 | RX `0x00`（停止） |
-| AI 対話・ホームが single・それ以外 | RX `0x00` の後 ~150ms で RX `0x01`（開始）。優先接続が Android ならその直前に RX `0x02` |
+| G2 接続中（上記以外。Harbor 待機中・指示録音中を含む） | RX なし（何もしない） |
+| G2 未接続・ホームが single・録音中 | RX `0x00`（停止） |
+| G2 未接続・ホームが single・それ以外 | RX `0x00` の後 ~150ms で RX `0x01`（開始）。優先接続が Android ならその直前に RX `0x02` |
 
 開始は **stop→start**。切断後に Node 側だけ録音中のまま残る「幽霊セッション」を
 クリアしてから開始する（単発の `0x01` では Node が既に `is_recording` だと無視される）。
@@ -313,8 +313,9 @@ Android は `GestureDiagStore` に蓄積する。停止直後にバッチが届�
 
 手首ジェスチャーの録音開始・停止は、検出スイッチ ON かつ通常モードのとき
 ファームウェア自律（TX `0x01` / `0x02`）。
-タップ録音はホスト承認（FW `0.0.94+`）で Android が RX を送る。ホーム設定の既定は single で、double に変更できる。
-Harbor 待機中の single はホーム設定に関係なく指示録音（COMMAND）の start/stop をホスト承認する。
+タップ録音はホスト承認（FW `0.0.94+`）で Android が RX を送る。ホーム設定の既定は single で、
+double に変更できるが、**G2接続中はこの設定に関係なく double のみが録音を開始/終了する**
+（Harbor 待機中を含め、single が録音を開始/終了することはない）。
 無音による自動停止（RX `0x00`）は廃止済み。
 
 | バイト | 意味 |

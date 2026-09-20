@@ -148,9 +148,11 @@ ROLE_ASSISTANT
 シングルタップ `0x14` / ダブルタップ `0x12` は同じ入力 Channel で受信し、Service が
 回数を UI と G2 ブリッジへ公開する。FW `0.0.94+` ではどちらも notify-only。
 ホームの設定で single / double のどちらをホスト承認録音に使うか選べる（既定 single）。
-リーダー / Harbor要約・質問表示中の single は G2 ページ送り。Harbor 待機中の single は
-ホーム設定に関係なく指示録音（COMMAND）の start/stop。G2 接続中の double はモード別指示録音で、
-未接続時の double はホーム設定に従う。通常処理中の double はパイプライン割り込み。
+ただし**G2接続中はこの設定に関係なく single が録音を開始/終了することは一切なく**、
+録音の開始/終了は常に double だけが担う。リーダー / Harbor要約・質問表示中の single は
+G2 ページ送り、Harbor 確認待ちの single は実行。それ以外（Harbor 待機中を含む）の single は
+何もしない。G2 接続中の double はモード別指示録音で、未接続時の double はホーム設定に従う。
+通常処理中の double はパイプライン割り込み。
 Harbor 確認画面では single = 実行、double = 取り消し（表示している
 「シングルタップで実行 / ダブルタップで取り消す」に合わせる）。確認待ち
 （`needs_clarification`）の画面だけは「ダブルタップで言い直す」で録音し直しになる。
@@ -208,12 +210,12 @@ Handy の接続 800 ms 後 claim より後（0 / 1000 / 1600 ms）に RX `0x02` 
 
 | 経路 | FW `0.0.95+` | Android |
 |---|---|---|
-| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | ホームで single 選択かつ AI 対話モード時に RX `0x01`/`0x00` でホスト承認 |
+| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | **G2 未接続時のみ**、ホームで single 選択かつ AI 対話モード時に RX `0x01`/`0x00` でホスト承認。G2 接続中は録音の開始/終了を一切行わない |
 | 手首ジェスチャー | 検出スイッチ ON 時のみ自律 `0x01`/`0x02`（**既定 OFF**） | ホーム「ジェスチャー録音」→ RX `0x07` |
 | リーダーの single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
-| Harbor の single | notify-only | 確認待ち = 実行、要約・質問の表示中 = ページ送り、待機中 = 指示録音（COMMAND）を start/stop |
+| Harbor の single | notify-only | 確認待ち = 実行。それ以外（要約・質問の表示中／待機中）は録音を一切開始せず、要約・質問のページ送りはG2側（`singleTapCount`）に委ねる |
 | Harbor の double | notify-only | 確認待ち = 取り消し。言い直し待ちのみ録音し直し |
-| ダブルタップ (`0x12`) | notify-only | G2 接続中はモード別指示録音（先頭「グラスモード変更」だけモード切替）。未接続時はホームの double 選択時だけ録音 start/stop |
+| ダブルタップ (`0x12`) | notify-only | G2 接続中はモード別指示録音（先頭「グラスモード変更」だけモード切替）。録音の開始/終了は接続中は常にダブルタップのみが担う。未接続時はホームの double 選択時だけ録音 start/stop |
 | M5 StickC single | RX `0x08 0x01` で notify-only（既定はローカルトグル） | 接続時に `0x08 0x01` を送り、上記のホスト承認へ統一 |
 
 無音による RX `0x00` 自動停止は廃止済み。  

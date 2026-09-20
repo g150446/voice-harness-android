@@ -107,22 +107,15 @@ class VoiceProcessorDoubleTapTest {
                 state = VoiceState.RECORDING,
             ),
         )
-        assertEquals(
-            RecordingTapAction.START_COMMAND,
-            recordingTapAction(
-                mode = RecordingTapMode.SINGLE,
-                event = RecordingTapEvent.SINGLE,
-                interactionMode = InteractionMode.HARBOR,
-                g2ClientActive = true,
-                state = VoiceState.READY,
-            ),
-        )
     }
 
     @Test
-    fun `Harbor single toggles command recording unless the glass pages a summary`() {
+    fun `Harbor single tap never starts or stops recording, with or without G2`() {
+        // Single tap is reserved for glass-side pagination (outside this function)
+        // and for confirming a pending Harbor command; it must never itself start,
+        // stop, or toggle a recording — only double tap does that (see below).
         assertEquals(
-            RecordingTapAction.START_COMMAND,
+            RecordingTapAction.NONE,
             recordingTapAction(
                 mode = RecordingTapMode.SINGLE,
                 event = RecordingTapEvent.SINGLE,
@@ -132,7 +125,7 @@ class VoiceProcessorDoubleTapTest {
             ),
         )
         assertEquals(
-            RecordingTapAction.START_COMMAND,
+            RecordingTapAction.NONE,
             recordingTapAction(
                 mode = RecordingTapMode.DOUBLE,
                 event = RecordingTapEvent.SINGLE,
@@ -142,7 +135,7 @@ class VoiceProcessorDoubleTapTest {
             ),
         )
         assertEquals(
-            RecordingTapAction.STOP_RECORDING,
+            RecordingTapAction.NONE,
             recordingTapAction(
                 mode = RecordingTapMode.SINGLE,
                 event = RecordingTapEvent.SINGLE,
@@ -170,8 +163,21 @@ class VoiceProcessorDoubleTapTest {
                 event = RecordingTapEvent.SINGLE,
                 interactionMode = InteractionMode.HARBOR,
                 g2ClientActive = true,
+                state = VoiceState.TRANSCRIBING,
+            ),
+        )
+    }
+
+    @Test
+    fun `AI single tap never starts or stops recording while G2 is active`() {
+        assertEquals(
+            RecordingTapAction.NONE,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.AI,
+                g2ClientActive = true,
                 state = VoiceState.READY,
-                harborSummaryActive = true,
             ),
         )
         assertEquals(
@@ -179,9 +185,9 @@ class VoiceProcessorDoubleTapTest {
             recordingTapAction(
                 mode = RecordingTapMode.SINGLE,
                 event = RecordingTapEvent.SINGLE,
-                interactionMode = InteractionMode.HARBOR,
+                interactionMode = InteractionMode.AI,
                 g2ClientActive = true,
-                state = VoiceState.TRANSCRIBING,
+                state = VoiceState.RECORDING,
             ),
         )
     }
