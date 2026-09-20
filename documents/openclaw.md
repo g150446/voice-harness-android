@@ -38,6 +38,15 @@ pairing ではなく、OpenAI-compatible endpoint の bearer token fallback を�
 最新の user turn だけを送る。Harbor コマンド解釈は `<session>:harbor` を使い、通常の
 OpenClaw 会話履歴と分離する。
 
+BLE接続されたHarness Nodeの音声、アプリ内マイク音声、アプリ内テキストは、入力元を
+区別せず同じ通常セッションキーへ送る。BLE音声は既存のBLE PCM → VAD → ASR →
+`BackendAssistantGateway` 経路を通り、アプリ内入力は既存のAssistant Activity経路を
+通るが、OpenClaw Gateway上では同じ会話を継続する。
+
+応答は、G2プラグイン接続中なら `EvenG2ReadingSession` へ優先表示する。G2未接続時は
+音声入力を電話TTS、テキスト入力をアプリ内表示へ届ける。G2表示に失敗した場合は音声
+入力だけ電話TTSへフォールバックする。
+
 ## API
 
 - `GET /v1/models`: 接続確認

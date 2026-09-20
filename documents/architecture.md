@@ -130,6 +130,10 @@ AI backend は ASR（`SttBackendId`）と LLM（`LlmBackendId`）を独立選択
 同一ローカルモデルは `BackendRegistry` で共有し二重ロードしない。OpenRouter / OpenClaw は LLM のみ。
 OpenClaw は Mac の Gateway `/v1/chat/completions` へ直接接続し、Harbor の
 `/v1/workspaces/{id}/instruction` 経路とは分離する。
+Harness NodeのBLE音声とアプリ内Assistantの音声／テキストは、入口は異なっても
+`BackendAssistantGateway` とOpenClawの安定セッションを共有する。応答はG2接続中は
+`EvenG2ReadingSession`を優先し、未接続時は音声入力を電話TTS、テキスト入力を
+Assistant UIへ届ける。
 
 ### デジタルアシスタント
 

@@ -34,6 +34,7 @@ class ResponseOutputTest {
         )
 
         assertFalse(decision.useSmartGlasses)
+        assertTrue(decision.usePhoneAudio)
         assertNull(decision.fallbackMessage)
     }
 
@@ -45,6 +46,7 @@ class ResponseOutputTest {
         )
 
         assertTrue(decision.useSmartGlasses)
+        assertFalse(decision.usePhoneAudio)
         assertNull(decision.fallbackMessage)
     }
 
@@ -56,6 +58,45 @@ class ResponseOutputTest {
         )
 
         assertFalse(decision.useSmartGlasses)
+        assertTrue(decision.usePhoneAudio)
+        assertEquals(SMART_GLASSES_FALLBACK_MESSAGE, decision.fallbackMessage)
+    }
+
+    @Test
+    fun decideResponseDelivery_prefersConnectedGlassesForAssistantOrigin() {
+        val decision = decideResponseDelivery(
+            target = ResponseOutputTarget.PHONE_AUDIO,
+            glassesResult = SmartGlassesDisplayResult.Started,
+            preferSmartGlasses = true,
+            allowPhoneAudio = true,
+        )
+
+        assertTrue(decision.useSmartGlasses)
+        assertFalse(decision.usePhoneAudio)
+    }
+
+    @Test
+    fun decideResponseDelivery_keepsTypedResponseSilentWhenGlassesUnavailable() {
+        val decision = decideResponseDelivery(
+            target = ResponseOutputTarget.PHONE_AUDIO,
+            glassesResult = null,
+            allowPhoneAudio = false,
+        )
+
+        assertFalse(decision.useSmartGlasses)
+        assertFalse(decision.usePhoneAudio)
+    }
+
+    @Test
+    fun decideResponseDelivery_doesNotSpeakTypedFallbackWhenGlassesFail() {
+        val decision = decideResponseDelivery(
+            target = ResponseOutputTarget.SMART_GLASSES,
+            glassesResult = SmartGlassesDisplayResult.Failed("not connected"),
+            allowPhoneAudio = false,
+        )
+
+        assertFalse(decision.useSmartGlasses)
+        assertFalse(decision.usePhoneAudio)
         assertEquals(SMART_GLASSES_FALLBACK_MESSAGE, decision.fallbackMessage)
     }
 

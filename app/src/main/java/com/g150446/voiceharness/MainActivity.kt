@@ -75,6 +75,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.g150446.voiceharness.ui.theme.HarnessVoiceTheme
 import com.g150446.voiceharness.assistant.AssistantRoleManager
+import com.g150446.voiceharness.assistant.AssistantSessionController
+import com.g150446.voiceharness.assistant.HarnessAssistantActivity
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -1125,6 +1127,22 @@ fun HomeScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("モデル設定")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = {
+                AssistantSessionController.beginAppSession(context)
+                context.startActivity(
+                    Intent(context, HarnessAssistantActivity::class.java).addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                    )
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("OpenClawチャット")
         }
 
         Spacer(modifier = Modifier.height(8.dp))

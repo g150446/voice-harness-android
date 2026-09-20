@@ -15,7 +15,7 @@ class OpenClawApiClientTest {
     )
 
     @Test
-    fun `session key is stable across chat requests and secret is bearer only`() {
+    fun `harness and app turns share a stable session and secret is bearer only`() {
         MockWebServer().use { server ->
             repeat(2) {
                 server.enqueue(
@@ -26,8 +26,8 @@ class OpenClawApiClientTest {
             }
             val client = client(server, "voice-harness:stable")
 
-            client.chat(request)
-            client.chat(request)
+            client.chat(request.copy(conversationHistory = listOf(ConversationTurn("user", "BLE voice"))))
+            client.chat(request.copy(conversationHistory = listOf(ConversationTurn("user", "typed text"))))
 
             val first = server.takeRequest()
             val second = server.takeRequest()
@@ -35,6 +35,7 @@ class OpenClawApiClientTest {
             assertEquals(first.getHeader("x-openclaw-session-key"), second.getHeader("x-openclaw-session-key"))
             assertEquals("Bearer gateway-secret", first.getHeader("Authorization"))
             assertTrue(first.body.readUtf8().contains("openclaw/default"))
+            assertTrue(second.body.readUtf8().contains("typed text"))
         }
     }
 

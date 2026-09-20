@@ -51,6 +51,19 @@ object AssistantSessionController {
     private val cancelledRequests = mutableSetOf<String>()
 
     fun beginSession(context: Context, onFinishSession: () -> Unit) {
+        beginSession(context, onFinishSession, allowScreenContext = true)
+    }
+
+    /** Starts the same assistant conversation from inside Voice Harness, without assist data. */
+    fun beginAppSession(context: Context) {
+        beginSession(context, onFinishSession = {}, allowScreenContext = false)
+    }
+
+    private fun beginSession(
+        context: Context,
+        onFinishSession: () -> Unit,
+        allowScreenContext: Boolean,
+    ) {
         // Synchronous so the Activity can attach immediately after onShow.
         runCatching {
             // Best-effort: drop prior session without blocking the binder thread long.
@@ -71,7 +84,7 @@ object AssistantSessionController {
                 sessionActive = true,
                 conversationId = conversationId,
                 locked = locked,
-                useScreenContext = !locked,
+                useScreenContext = allowScreenContext && !locked,
                 phase = AssistantPhase.IDLE,
                 statusText = if (locked) "ロック中" else "待機中",
             )

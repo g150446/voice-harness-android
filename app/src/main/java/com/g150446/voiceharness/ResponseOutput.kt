@@ -39,19 +39,24 @@ internal sealed interface SmartGlassesDisplayResult {
 
 internal data class ResponseDeliveryDecision(
     val useSmartGlasses: Boolean,
+    val usePhoneAudio: Boolean,
     val fallbackMessage: String? = null
 )
 
 internal fun decideResponseDelivery(
     target: ResponseOutputTarget,
-    glassesResult: SmartGlassesDisplayResult?
+    glassesResult: SmartGlassesDisplayResult?,
+    preferSmartGlasses: Boolean = false,
+    allowPhoneAudio: Boolean = true,
 ): ResponseDeliveryDecision = when {
-    target == ResponseOutputTarget.PHONE_AUDIO -> ResponseDeliveryDecision(useSmartGlasses = false)
+    target == ResponseOutputTarget.PHONE_AUDIO && !preferSmartGlasses ->
+        ResponseDeliveryDecision(useSmartGlasses = false, usePhoneAudio = allowPhoneAudio)
     glassesResult is SmartGlassesDisplayResult.Started -> {
-        ResponseDeliveryDecision(useSmartGlasses = true)
+        ResponseDeliveryDecision(useSmartGlasses = true, usePhoneAudio = false)
     }
     else -> ResponseDeliveryDecision(
         useSmartGlasses = false,
+        usePhoneAudio = allowPhoneAudio,
         fallbackMessage = SMART_GLASSES_FALLBACK_MESSAGE
     )
 }

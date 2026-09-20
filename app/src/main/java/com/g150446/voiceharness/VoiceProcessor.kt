@@ -1150,7 +1150,10 @@ internal class VoiceProcessor(
                         isSilent = false,
                         errorMessage = "",
                     )
-                    presentResponse(finalResponse)
+                    presentResponse(
+                        finalResponse,
+                        origin = QueryOrigin.HARNESS_NODE_VOICE,
+                    )
                 }
             }
         } catch (_: CancellationException) {
@@ -1267,10 +1270,19 @@ internal class VoiceProcessor(
                         speaking = speakResponse,
                     )
                     if (speakResponse) {
-                        presentResponse(reply.text.ifBlank { "リマインダーを設定しました" }, requestId)
+                        presentResponse(
+                            reply.text.ifBlank { "リマインダーを設定しました" },
+                            requestId = requestId,
+                            origin = origin,
+                            allowPhoneAudio = speakResponse,
+                        )
                     } else {
-                        BleConnectionService.setVoiceState(VoiceState.READY)
-                        BleConnectionService.releaseAssistantProcessing()
+                        presentResponse(
+                            reply.text.ifBlank { "リマインダーを設定しました" },
+                            requestId = requestId,
+                            origin = origin,
+                            allowPhoneAudio = false,
+                        )
                     }
                     return@onSuccess
                 }
@@ -1301,12 +1313,12 @@ internal class VoiceProcessor(
                     success = true,
                     speaking = speakResponse,
                 )
-                if (speakResponse) {
-                    presentResponse(response, requestId)
-                } else {
-                    BleConnectionService.setVoiceState(VoiceState.READY)
-                    BleConnectionService.releaseAssistantProcessing()
-                }
+                presentResponse(
+                    response,
+                    requestId = requestId,
+                    origin = origin,
+                    allowPhoneAudio = speakResponse,
+                )
             }.onFailure { error ->
                 val err = "Chat error: ${error.message}"
                 BleConnectionService.setErrorMessage(err)
@@ -1627,19 +1639,32 @@ internal class VoiceProcessor(
 
     // --- TTS ---
 
-    private suspend fun presentResponse(text: String, requestId: String? = null) {
+    private suspend fun presentResponse(
+        text: String,
+        requestId: String? = null,
+        origin: QueryOrigin? = null,
+        allowPhoneAudio: Boolean = true,
+    ) {
         if (isAssistantCancelled(requestId)) {
             BleConnectionService.releaseAssistantProcessing()
             return
         }
         commitPipelineTiming()
         val target = BleConnectionService.responseOutputTarget.value
-        val glassesResult = if (target == ResponseOutputTarget.SMART_GLASSES) {
+        val preferSmartGlasses = origin != null && EvenG2ReadingSession.isClientActive()
+        val glassesResult = if (
+            target == ResponseOutputTarget.SMART_GLASSES || preferSmartGlasses
+        ) {
             EvenG2ReadingSession.displayResponse(text)
         } else {
             null
         }
-        val decision = decideResponseDelivery(target, glassesResult)
+        val decision = decideResponseDelivery(
+            target = target,
+            glassesResult = glassesResult,
+            preferSmartGlasses = preferSmartGlasses,
+            allowPhoneAudio = allowPhoneAudio,
+        )
         if (decision.useSmartGlasses) {
             tts?.stop()
             BleConnectionService.setPhonePlaybackActive(false)
@@ -1654,7 +1679,16 @@ internal class VoiceProcessor(
             val failure = glassesResult as? SmartGlassesDisplayResult.Failed
             Log.w(TAG, "$it: ${failure?.message}", failure?.cause)
         }
-        speakResponse(text, requestId)
+        if (decision.usePhoneAudio) {
+            speakResponse(text, requestId)
+        } else {
+            tts?.stop()
+            BleConnectionService.setPhonePlaybackActive(false)
+            BleConnectionService.setVoiceState(VoiceState.READY)
+            BleConnectionService.releaseAssistantProcessing()
+            com.g150446.voiceharness.assistant.AssistantSessionController
+                .onSpeakingFinished(requestId)
+        }
     }
 
     private suspend fun presentReadingPassthrough(
