@@ -805,7 +805,10 @@ internal class VoiceProcessor(
             return HarborCommandTool.fallback(rawStt)
         }
         val llm = ModelManager.currentLlmBackend(appContext)
-        if (llm != LlmBackendId.GROQ && llm != LlmBackendId.OPENROUTER) {
+        if (llm != LlmBackendId.GROQ &&
+            llm != LlmBackendId.OPENROUTER &&
+            llm != LlmBackendId.OPENCLAW
+        ) {
             Log.w(TAG, "Harbor interpret requires cloud LLM; falling back to raw STT")
             return HarborCommandTool.fallback(rawStt)
         }

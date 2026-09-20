@@ -127,7 +127,9 @@ Serviceは `VoiceProcessor` を先に生成してから `BleManager` を開始�
  音声処理パイプライン（完全性検査 → 停止後 VAD → AI backend → TTS）を実行し、結果を
 companion objectの状態Flowへ書き込む。ViewModel / UIはその状態だけを観察する。
 AI backend は ASR（`SttBackendId`）と LLM（`LlmBackendId`）を独立選択する。
-同一ローカルモデルは `BackendRegistry` で共有し二重ロードしない。OpenRouter は LLM のみ。
+同一ローカルモデルは `BackendRegistry` で共有し二重ロードしない。OpenRouter / OpenClaw は LLM のみ。
+OpenClaw は Mac の Gateway `/v1/chat/completions` へ直接接続し、Harbor の
+`/v1/workspaces/{id}/instruction` 経路とは分離する。
 
 ### デジタルアシスタント
 

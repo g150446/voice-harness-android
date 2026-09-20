@@ -176,7 +176,10 @@ object ModelManager {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val stt = SttBackendId.fromStorage(prefs.getString(KEY_STT_BACKEND, SttBackendId.GEMMA.name))
         val editor = prefs.edit().putString(KEY_LLM_BACKEND, backend.name)
-        if (backend != LlmBackendId.OPENROUTER && backend.name == stt.name) {
+        if (backend != LlmBackendId.OPENROUTER &&
+            backend != LlmBackendId.OPENCLAW &&
+            backend.name == stt.name
+        ) {
             OnDeviceProfile.entries.firstOrNull { it.name == backend.name }?.let {
                 editor.putString(KEY_PROFILE, it.name)
             }

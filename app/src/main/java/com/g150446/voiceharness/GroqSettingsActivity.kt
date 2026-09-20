@@ -353,6 +353,65 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             }
         }
 
+        if (llmBackend == LlmBackendId.OPENCLAW) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("OpenClaw Gateway", fontSize = 14.sp)
+            Text(
+                "Gateway は公開せず、Mac のローカルネットワークまたは tailnet 内だけで使用してください。",
+                fontSize = 11.sp,
+            )
+            var gatewayUrl by remember { mutableStateOf(OpenClawPrefs.getBaseUrl(context)) }
+            var gatewayToken by remember { mutableStateOf(OpenClawPrefs.getToken(context)) }
+            OutlinedTextField(
+                value = gatewayUrl,
+                onValueChange = { gatewayUrl = it },
+                label = { Text("Gateway URL") },
+                supportingText = { Text("例: http://MacのTailscale-IP:18789") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = gatewayToken,
+                onValueChange = { gatewayToken = it },
+                label = { Text("Gateway token / password") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    OpenClawPrefs.setBaseUrl(context, gatewayUrl)
+                    OpenClawPrefs.setToken(context, gatewayToken)
+                    actionStatus = if (gatewayToken.isBlank()) {
+                        "OpenClaw token をクリアしました"
+                    } else {
+                        "OpenClaw 設定を保存しました"
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("OpenClaw 設定を保存") }
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    OpenClawPrefs.setBaseUrl(context, gatewayUrl)
+                    OpenClawPrefs.setToken(context, gatewayToken)
+                    actionStatus = "OpenClaw 接続確認中..."
+                    scope.launch {
+                        val backend = OpenClawLlmBackend(context.applicationContext)
+                        val result = backend.testConnection()
+                        backend.release()
+                        actionStatus = result.fold(
+                            onSuccess = { it },
+                            onFailure = { "接続失敗: ${it.message ?: "不明なエラー"}" },
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("OpenClaw 接続確認") }
+        }
+
         if (sttBackend == SttBackendId.GEMMA || sttBackend == SttBackendId.QWEN ||
             llmBackend == LlmBackendId.GEMMA || llmBackend == LlmBackendId.QWEN
         ) {
@@ -479,6 +538,7 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                     }
                 },
                 enabled = canLoad || llmBackend == LlmBackendId.OPENROUTER ||
+                    llmBackend == LlmBackendId.OPENCLAW ||
                     sttBackend == SttBackendId.GROQ || llmBackend == LlmBackendId.GROQ,
                 modifier = Modifier.fillMaxWidth()
             ) { Text("モデルを読み込む / 接続確認") }

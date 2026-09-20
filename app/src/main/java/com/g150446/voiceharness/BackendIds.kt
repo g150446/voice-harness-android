@@ -30,7 +30,8 @@ enum class LlmBackendId {
     GEMMA,
     QWEN,
     GROQ,
-    OPENROUTER;
+    OPENROUTER,
+    OPENCLAW;
 
     val displayName: String
         get() = when (this) {
@@ -38,9 +39,10 @@ enum class LlmBackendId {
             QWEN -> "LFM 2.5"
             GROQ -> "Cloud (Groq Chat)"
             OPENROUTER -> "OpenRouter"
+            OPENCLAW -> "OpenClaw"
         }
 
-    val isCloud: Boolean get() = this == GROQ || this == OPENROUTER
+    val isCloud: Boolean get() = this == GROQ || this == OPENROUTER || this == OPENCLAW
 
     companion object {
         fun fromStorage(value: String?): LlmBackendId =

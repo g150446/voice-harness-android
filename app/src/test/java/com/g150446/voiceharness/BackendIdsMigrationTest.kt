@@ -19,11 +19,13 @@ class BackendIdsMigrationTest {
         assertEquals(SttBackendId.GEMMA, SttBackendId.fromStorage(null))
         assertEquals(LlmBackendId.GEMMA, LlmBackendId.fromStorage(null))
         assertEquals(LlmBackendId.OPENROUTER, LlmBackendId.fromStorage("OPENROUTER"))
+        assertEquals(LlmBackendId.OPENCLAW, LlmBackendId.fromStorage("OPENCLAW"))
     }
 
     @Test
     fun `openrouter is llm only`() {
         assertEquals(true, LlmBackendId.OPENROUTER.isCloud)
+        assertEquals(true, LlmBackendId.OPENCLAW.isCloud)
         assertEquals(false, SttBackendId.entries.any { it.name == "OPENROUTER" })
     }
 }

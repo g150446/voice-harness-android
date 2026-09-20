@@ -8,10 +8,10 @@
 | 役割 | 選択肢 | 備考 |
 |---|---|---|
 | ASR | Gemma 4 E2B / Qwen3-ASR / Groq Whisper | |
-| LLM | Gemma 4 E2B / LFM 2.5 / Groq Chat / **OpenRouter** | OpenRouter は LLM のみ |
+| LLM | Gemma 4 E2B / LFM 2.5 / Groq Chat / **OpenRouter** / **OpenClaw** | OpenRouter / OpenClaw は LLM のみ |
 
 TTS は Android `TextToSpeech`（または Even Realities G2 表示）。  
-ローカルはネットワーク不要。Groq / OpenRouter はインターネットと API キーが必要。
+ローカルはネットワーク不要。Groq / OpenRouter / OpenClaw はネットワークと資格情報が必要。
 
 同じローカルモデルが ASR と LLM の両方で選ばれても、`BackendRegistry` が二重ロードしない。  
 設定変更で不要になったバックエンドだけ解放する（ASR 変更で進行中 LLM 会話を落とさない）。
@@ -21,6 +21,7 @@ TTS は Android `TextToSpeech`（または Even Realities G2 表示）。
 - ローカル Gemma: [`ondevice_gemma.md`](ondevice_gemma.md)
 - クラウド Groq: [`groq_cloud.md`](groq_cloud.md)
 - OpenRouter: [`openrouter.md`](openrouter.md)
+- OpenClaw: [`openclaw.md`](openclaw.md)
 - デジタルアシスタント: [`opendroid-integration.md`](opendroid-integration.md)
 - 実装計画: [`voice-harness-android-openrouter-plan.md`](voice-harness-android-openrouter-plan.md)
 - Qwen ASR + LFM 検証: [`lfm25_qwen_asr_validation.md`](lfm25_qwen_asr_validation.md)
@@ -37,7 +38,7 @@ models/
 └── LFM2.5-2.6B-Q4_K_M.gguf
 ```
 
-Groq / OpenRouter のみ使う場合、上記モデルは不要。
+Groq / OpenRouter / OpenClaw のみ使う場合、上記モデルは不要。
 
 ## ビルド
 

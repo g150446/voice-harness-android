@@ -16,6 +16,7 @@ internal object ModelDisplayIds {
             LlmBackendId.GROQ -> GroqChatRequestBuilder.CHAT_MODEL
             LlmBackendId.OPENROUTER ->
                 OpenRouterPrefs.getModelId(context).ifBlank { "未選択" }
+            LlmBackendId.OPENCLAW -> OpenClawChatRequestBuilder.MODEL
             LlmBackendId.GEMMA -> ModelManager.status.value.gemma.fileName ?: "gemma"
             LlmBackendId.QWEN -> ModelManager.status.value.lfmChat.fileName ?: "lfm-chat"
         }

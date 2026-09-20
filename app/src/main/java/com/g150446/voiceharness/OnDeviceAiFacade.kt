@@ -67,6 +67,7 @@ class OnDeviceAiFacade(
             LlmBackendId.QWEN -> registry.obtainQwen().ensureReady()
             LlmBackendId.GROQ -> registry.obtainGroq().ensureReady()
             LlmBackendId.OPENROUTER -> registry.obtainOpenRouter().ensureReady()
+            LlmBackendId.OPENCLAW -> registry.obtainOpenClaw().ensureReady()
         }
     }
 
@@ -112,10 +113,11 @@ class OnDeviceAiFacade(
             LlmBackendId.QWEN -> registry.obtainQwen().chat(request)
             LlmBackendId.GROQ -> registry.obtainGroq().chat(request)
             LlmBackendId.OPENROUTER -> registry.obtainOpenRouter().chat(request)
+            LlmBackendId.OPENCLAW -> registry.obtainOpenClaw().chat(request)
         }
 
     override fun cancel() {
-        registry.cancelOpenRouter()
+        registry.cancelCloudLlm()
     }
 
     override fun release() {
