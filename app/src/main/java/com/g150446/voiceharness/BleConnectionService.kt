@@ -427,6 +427,14 @@ class BleConnectionService : Service() {
         /**
          * When G2 becomes active again, resume a saved Harbor mode if still paired.
          * Called from the 500ms UI poll loop.
+         *
+         * Must not fire while reader passthrough is on: the home screen's "リーダーモード"
+         * switch enables it via [setReadingPassthroughEnabled] directly, without going
+         * through [setInteractionMode], so it never updates the saved preference checked
+         * here. Without this guard, a stale saved=HARBOR preference (from any earlier
+         * Harbor session) forces this back into Harbor mode every poll tick, and the
+         * HARBOR branch of setInteractionMode turns reader passthrough back off — Kindle
+         * content silently stops reaching the glasses.
          */
         fun syncInteractionModeWithG2Client(context: Context) {
             syncReaderModeWithG2Client(context)
@@ -434,6 +442,7 @@ class BleConnectionService : Service() {
             if (!EvenG2ReadingSession.isClientActive()) return
             if (saved == InteractionMode.HARBOR &&
                 _interactionMode.value != InteractionMode.HARBOR &&
+                !_readingPassthroughEnabled.value &&
                 _harborConnectionState.value.paired
             ) {
                 if (setInteractionMode(context, InteractionMode.HARBOR)) {

@@ -313,6 +313,7 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 - [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
 - [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Even G2 出力（現行）と Vuzix Z100 アーカイブ仕様
 - [`documents/harbor_confirm_voice_intent.md`](documents/harbor_confirm_voice_intent.md) — Harbor 確認画面のタップ割り当てと意図解析を1回にした経緯
+- [`documents/reader_harbor_mode_conflict.md`](documents/reader_harbor_mode_conflict.md) — リーダーモードがHarborモードに引き戻される回帰の原因と修正
 - [`even-g2/app/README.md`](even-g2/app/README.md) — Even Hub プラグイン（Voice Harness G2）
 - [`documents/even_g2_macless_deployment.md`](documents/even_g2_macless_deployment.md) — Macなし運用、非公開Beta配布、期限切れ表示の復旧
 - [`documents/vad.md`](documents/vad.md) — Silero VAD / FFT フォールバックの仕様とチューニング
