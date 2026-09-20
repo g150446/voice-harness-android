@@ -6,6 +6,9 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import com.g150446.voiceharness.BleConnectionService
+import com.g150446.voiceharness.LlmBackendId
+import com.g150446.voiceharness.ModelManager
+import com.g150446.voiceharness.OpenClawLlmBackend
 import com.g150446.voiceharness.QueryOrigin
 import com.g150446.voiceharness.ScreenContext
 import java.util.UUID
@@ -48,6 +51,7 @@ object AssistantSessionController {
     private var sessionOpen = false
     private var finishSession: (() -> Unit)? = null
     private var submitJob: Job? = null
+    private var historyJob: Job? = null
     private val cancelledRequests = mutableSetOf<String>()
 
     fun beginSession(context: Context, onFinishSession: () -> Unit) {
@@ -90,6 +94,54 @@ object AssistantSessionController {
             )
             Log.i(TAG, "Session begun id=$conversationId locked=$locked")
         }.onFailure { Log.e(TAG, "beginSession failed", it) }
+    }
+
+    /**
+     * Loads the OpenClaw session transcript (the browser-visible conversation) into the sheet.
+     * Gateway is the source of truth, so a successful load replaces the local message list.
+     * Skipped when OpenClaw is not the selected LLM or the device is locked.
+     */
+    fun refreshHistory(context: Context) {
+        val appContext = context.applicationContext
+        if (!_uiState.value.sessionActive || _uiState.value.locked) return
+        if (ModelManager.currentLlmBackend(appContext) != LlmBackendId.OPENCLAW) return
+        val convId = conversationId
+        historyJob?.cancel()
+        historyJob = scope.launch(Dispatchers.IO) {
+            _uiState.update {
+                if (it.phase == AssistantPhase.IDLE) it.copy(statusText = "履歴を読み込み中…") else it
+            }
+            val backend = OpenClawLlmBackend(appContext)
+            val result = backend.loadHistory()
+            backend.release()
+            if (convId != conversationId) return@launch
+            result.fold(
+                onSuccess = { history ->
+                    val fetched = history.mapIndexed { index, message ->
+                        AssistantChatMessage(
+                            id = "history-$index-${message.text.hashCode()}",
+                            role = message.role,
+                            content = message.text,
+                        )
+                    }
+                    _uiState.update {
+                        it.copy(
+                            messages = AssistantHistoryMerge.merge(it.messages, fetched, it.phase),
+                            statusText = if (it.phase == AssistantPhase.IDLE) "待機中" else it.statusText,
+                        )
+                    }
+                },
+                onFailure = { e ->
+                    Log.w(TAG, "History load failed: ${e.javaClass.simpleName}")
+                    _uiState.update {
+                        it.copy(
+                            statusText = if (it.phase == AssistantPhase.IDLE) "待機中" else it.statusText,
+                            errorMessage = "履歴を読み込めませんでした: ${e.message ?: "不明なエラー"}",
+                        )
+                    }
+                },
+            )
+        }
     }
 
     fun attachFinishHandler(onFinishSession: () -> Unit) {
@@ -319,6 +371,8 @@ object AssistantSessionController {
         activeRequestId?.let { cancelledRequests += it }
         submitJob?.cancel()
         submitJob = null
+        historyJob?.cancel()
+        historyJob = null
         BleConnectionService.cancelAssistantRequest(context, activeRequestId)
         ScreenContextStore.remove(screenToken)
         screenToken = null

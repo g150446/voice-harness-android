@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -102,6 +103,12 @@ class HarnessAssistantActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Picks up turns made elsewhere (browser, BLE voice) while the sheet was hidden.
+        AssistantSessionController.refreshHistory(applicationContext)
     }
 
     override fun onDestroy() {
@@ -277,7 +284,12 @@ private fun AssistantSheet(
                 }
 
                 Spacer(Modifier.height(8.dp))
+                val listState = rememberLazyListState()
+                LaunchedEffect(state.messages.size) {
+                    if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.lastIndex)
+                }
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f, fill = false)

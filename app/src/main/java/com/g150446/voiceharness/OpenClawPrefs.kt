@@ -8,6 +8,7 @@ object OpenClawPrefs {
     private const val KEY_BASE_URL = "base_url"
     private const val KEY_TOKEN_CIPHER = "token_cipher"
     private const val KEY_SESSION_KEY = "session_key"
+    private const val KEY_SELECTED_SESSION_KEY = "selected_session_key"
     const val DEFAULT_BASE_URL = "http://127.0.0.1:18789"
 
     fun getBaseUrl(context: Context): String = context
@@ -48,4 +49,25 @@ object OpenClawPrefs {
         prefs.edit().putString(KEY_SESSION_KEY, created).apply()
         return created
     }
+
+    /** Existing Gateway session (e.g. the one open in the browser) chosen in settings; null = app-owned session. */
+    fun getSelectedSessionKey(context: Context): String? = context
+        .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .getString(KEY_SELECTED_SESSION_KEY, null)
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+
+    fun setSelectedSessionKey(context: Context, key: String?) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .apply {
+                if (key.isNullOrBlank()) remove(KEY_SELECTED_SESSION_KEY)
+                else putString(KEY_SELECTED_SESSION_KEY, key.trim())
+            }
+            .apply()
+    }
+
+    /** Session used for chat and history: the selected Gateway session, else the app-owned one. */
+    fun getChatSessionKey(context: Context): String =
+        getSelectedSessionKey(context) ?: getOrCreateSessionKey(context)
 }

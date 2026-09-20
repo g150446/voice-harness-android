@@ -11,6 +11,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 
 internal class OpenClawApiClient(
     private val baseUrl: String,
@@ -49,8 +50,49 @@ internal class OpenClawApiClient(
         }
     }
 
+    /** Newest tail (up to [limit] messages) of [sessionKey] via `POST /tools/invoke` `sessions_history`. */
+    fun fetchHistory(sessionKey: String, limit: Int = HISTORY_LIMIT): List<OpenClawHistoryMessage> =
+        invokeTool("sessions_history", JSONObject().put("sessionKey", sessionKey).put("limit", limit))
+            .let(OpenClawHistoryParser::parseHistory)
+
+    /** Sessions visible to the Gateway operator, most recently updated first. */
+    fun listSessions(limit: Int = SESSION_LIST_LIMIT): List<OpenClawSessionInfo> =
+        invokeTool(
+            "sessions_list",
+            JSONObject()
+                .put("limit", limit)
+                .put("includeDerivedTitles", true)
+                .put("includeLastMessage", true),
+        ).let(OpenClawHistoryParser::parseSessions)
+
     fun cancel() {
         activeCall.getAndSet(null)?.cancel()
+    }
+
+    // Deliberately not tracked in activeCall: cancel() is for the in-flight chat turn only.
+    private fun invokeTool(tool: String, args: JSONObject): String {
+        val body = JSONObject().put("tool", tool).put("args", args).toString()
+        val call = httpClient.newBuilder()
+            .callTimeout(TOOL_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .build()
+            .newCall(
+                authorizedRequest("${normalizedBaseUrl()}/tools/invoke")
+                    .post(body.toRequestBody(JSON_MEDIA))
+                    .build(),
+            )
+        call.execute().use { response ->
+            val text = response.body.string()
+            if (!response.isSuccessful) {
+                error(
+                    OpenClawChatRequestBuilder.safeHttpError(
+                        response.code,
+                        text,
+                        notFound = "$tool が許可されていません。Gateway の tools.allow を確認してください。",
+                    ),
+                )
+            }
+            return text
+        }
     }
 
     private fun authorizedRequest(url: String): Request.Builder = Request.Builder()
@@ -94,6 +136,9 @@ internal class OpenClawApiClient(
 
     private companion object {
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+        const val HISTORY_LIMIT = 100
+        const val SESSION_LIST_LIMIT = 30
+        const val TOOL_CALL_TIMEOUT_SECONDS = 20L
     }
 }
 
@@ -126,6 +171,17 @@ class OpenClawLlmBackend(
         }
     }
 
+    suspend fun loadHistory(): Result<List<OpenClawHistoryMessage>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val client = configuredClient()
+            client.fetchHistory(OpenClawPrefs.getChatSessionKey(appContext))
+        }
+    }
+
+    suspend fun listSessions(): Result<List<OpenClawSessionInfo>> = withContext(Dispatchers.IO) {
+        runCatching { configuredClient().listSessions() }
+    }
+
     override fun cancel() {
         activeClient.getAndSet(null)?.cancel()
     }
@@ -142,7 +198,7 @@ class OpenClawLlmBackend(
         return OpenClawApiClient(
             baseUrl = baseUrl,
             token = token,
-            sessionKey = OpenClawPrefs.getOrCreateSessionKey(appContext),
+            sessionKey = OpenClawPrefs.getChatSessionKey(appContext),
             httpClient = httpClient,
         )
     }

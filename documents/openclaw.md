@@ -43,6 +43,21 @@ BLE接続されたHarness Nodeの音声、アプリ内マイク音声、アプ�
 `BackendAssistantGateway` 経路を通り、アプリ内入力は既存のAssistant Activity経路を
 通るが、OpenClaw Gateway上では同じ会話を継続する。
 
+### ブラウザのセッションと共有する
+
+設定の **会話セッションを選択（ブラウザと共有）** で、Gateway 上の既存セッション
+（Control UI で開いているもの等）を選べる。選ぶとチャット・BLE音声・アプリ内入力の
+送信先とチャット画面の履歴取得が、そのセッションキーになる。「アプリ専用セッションに
+戻す」で上記の `voice-harness:<UUID>` へ戻る。Harbor は選択キー + `:harbor` を使う。
+`subagent:` / `cron:` / `acp:` 系と `:harbor` 付きは一覧に出さない。
+
+チャット画面は開いたとき・画面に戻ったときに履歴を読み、Gateway の内容で表示を置き換える
+（応答生成中と、履歴が空のときは置き換えない）。端末ロック中は読まない。履歴は
+`POST /tools/invoke` の `sessions_history`（一覧は `sessions_list`）で取得する。これらが
+Gateway の tool policy で許可されていない場合は 404 になるため、`tools.allow` に追加する。
+`sessions_history` は表示用に整形されないので、アプリ側で thinking / tool-call XML /
+`NO_REPLY` 等を除去している。
+
 応答は、G2プラグイン接続中なら `EvenG2ReadingSession` へ優先表示する。G2未接続時は
 音声入力を電話TTS、テキスト入力をアプリ内表示へ届ける。G2表示に失敗した場合は音声
 入力だけ電話TTSへフォールバックする。

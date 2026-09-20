@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -22,6 +23,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -410,6 +412,73 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                 },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("OpenClaw 接続確認") }
+            Spacer(modifier = Modifier.height(8.dp))
+            var selectedSession by remember { mutableStateOf(OpenClawPrefs.getSelectedSessionKey(context)) }
+            var sessionChoices by remember { mutableStateOf<List<OpenClawSessionInfo>?>(null) }
+            Text(
+                "会話セッション: ${selectedSession ?: "アプリ専用 (${OpenClawPrefs.getOrCreateSessionKey(context)})"}",
+                fontSize = 11.sp,
+            )
+            OutlinedButton(
+                onClick = {
+                    OpenClawPrefs.setBaseUrl(context, gatewayUrl)
+                    OpenClawPrefs.setToken(context, gatewayToken)
+                    actionStatus = "OpenClaw セッション取得中..."
+                    scope.launch {
+                        val backend = OpenClawLlmBackend(context.applicationContext)
+                        val result = backend.listSessions()
+                        backend.release()
+                        result.fold(
+                            onSuccess = {
+                                actionStatus = ""
+                                sessionChoices = it
+                            },
+                            onFailure = { actionStatus = "セッション取得失敗: ${it.message ?: "不明なエラー"}" },
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("会話セッションを選択（ブラウザと共有）") }
+            sessionChoices?.let { choices ->
+                AlertDialog(
+                    onDismissRequest = { sessionChoices = null },
+                    title = { Text("OpenClaw セッション") },
+                    text = {
+                        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                            TextButton(
+                                onClick = {
+                                    OpenClawPrefs.setSelectedSessionKey(context, null)
+                                    selectedSession = null
+                                    sessionChoices = null
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("アプリ専用セッションに戻す") }
+                            if (choices.isEmpty()) Text("選択できるセッションがありません。", fontSize = 12.sp)
+                            choices.forEach { session ->
+                                TextButton(
+                                    onClick = {
+                                        OpenClawPrefs.setSelectedSessionKey(context, session.key)
+                                        selectedSession = session.key
+                                        sessionChoices = null
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Text(session.title, fontSize = 13.sp)
+                                        Text(session.key, fontSize = 10.sp)
+                                        if (session.preview.isNotBlank()) {
+                                            Text(session.preview.take(80), fontSize = 10.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { sessionChoices = null }) { Text("閉じる") }
+                    },
+                )
+            }
         }
 
         if (sttBackend == SttBackendId.GEMMA || sttBackend == SttBackendId.QWEN ||

@@ -88,11 +88,15 @@ object OpenClawChatRequestBuilder {
         )
     }
 
-    fun safeHttpError(code: Int, body: String?): String {
+    fun safeHttpError(
+        code: Int,
+        body: String?,
+        notFound: String = "Chat Completions が見つかりません。Gateway 側で有効化してください。",
+    ): String {
         val label = when (code) {
             401 -> "認証に失敗しました。Gateway token を確認してください。"
             403 -> "Gateway にこの操作の権限がありません。"
-            404 -> "Chat Completions が見つかりません。Gateway 側で有効化してください。"
+            404 -> notFound
             429 -> "Gateway の要求上限に達しました。しばらく待ってください。"
             in 500..599 -> "Gateway でエラーが発生しました。"
             else -> "Gateway への要求に失敗しました。"
