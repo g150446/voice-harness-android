@@ -1651,7 +1651,9 @@ internal class VoiceProcessor(
         }
         commitPipelineTiming()
         val target = BleConnectionService.responseOutputTarget.value
-        val preferSmartGlasses = origin != null && EvenG2ReadingSession.isClientActive()
+        // A connected G2 is the default destination for every assistant response,
+        // including tool confirmations that do not carry an input-origin marker.
+        val preferSmartGlasses = EvenG2ReadingSession.isClientActive()
         val glassesResult = if (
             target == ResponseOutputTarget.SMART_GLASSES || preferSmartGlasses
         ) {
