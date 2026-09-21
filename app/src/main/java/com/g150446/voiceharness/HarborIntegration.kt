@@ -37,20 +37,24 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-enum class InteractionMode { AI, READER, HARBOR }
+enum class InteractionMode { AI, READER, HARBOR, OPENCLAW }
 
 internal enum class CapturePurpose { AI_QUERY, COMMAND }
 
 internal fun parseInteractionMode(text: String): InteractionMode? {
     val normalized = text.lowercase(Locale.ROOT)
         .replace(Regex("[\\s、。,.!！?？・:_-]+"), "")
+    val openClaw = listOf("openclaw", "オープンクロー", "オープンクロウ", "オープンクロ")
+        .any(normalized::contains)
     val matches = buildSet {
+        if (openClaw) add(InteractionMode.OPENCLAW)
         if (listOf("ハーバー", "terminalharbor", "ターミナル").any(normalized::contains)) {
             add(InteractionMode.HARBOR)
         }
-        if (listOf("ai対話", "aiモード", "対話", "チャット").any(normalized::contains) ||
-            normalized.contains("ai")
-        ) {
+        // "OpenClawチャット" names the OpenClaw chat, not the on-device AI mode.
+        val aiWords = if (openClaw) listOf("ai対話", "aiモード") else
+            listOf("ai対話", "aiモード", "対話", "チャット")
+        if (aiWords.any(normalized::contains) || (!openClaw && normalized.contains("ai"))) {
             add(InteractionMode.AI)
         }
         if (listOf("リーダー", "読書", "reader").any(normalized::contains)) {
@@ -64,10 +68,12 @@ internal fun canEnableInteractionMode(
     mode: InteractionMode,
     g2Active: Boolean,
     harborPaired: Boolean,
+    openClawConfigured: Boolean = false,
 ): Boolean = when (mode) {
     InteractionMode.AI -> true
     InteractionMode.READER -> g2Active
     InteractionMode.HARBOR -> harborPaired
+    InteractionMode.OPENCLAW -> openClawConfigured
 }
 
 internal data class HarborEndpoint(val kind: String, val url: String)

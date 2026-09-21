@@ -69,14 +69,14 @@ internal fun shouldSuppressSingleTapAfterDouble(
 }
 
 /**
- * Whether a single tap should ask the node to start or stop recording via RX in AI mode.
+ * Whether a single tap should ask the node to start or stop recording via RX in AI / OpenClaw mode.
  * Harbor single recording is resolved in [recordingTapAction]; Reader never records.
  */
 internal fun singleTapRecordingCommand(
     interactionMode: InteractionMode,
     state: VoiceState,
 ): Byte? {
-    if (interactionMode != InteractionMode.AI) return null
+    if (interactionMode != InteractionMode.AI && interactionMode != InteractionMode.OPENCLAW) return null
     return when (state) {
         VoiceState.RECORDING -> BLE_RX_STOP_RECORDING
         VoiceState.READY, VoiceState.ERROR, VoiceState.SPEAKING,
@@ -611,6 +611,7 @@ internal class VoiceProcessor(
                     add(AsrVocabularyTerm("ハーバーモード"))
                     add(AsrVocabularyTerm("AI対話モード"))
                     add(AsrVocabularyTerm("リーダーモード"))
+                    add(AsrVocabularyTerm("OpenClawモード"))
                     add(AsrVocabularyTerm("Terminal Harbor"))
                     add(AsrVocabularyTerm("ページ進めて"))
                     add(AsrVocabularyTerm("ページ戻して"))
@@ -638,7 +639,7 @@ internal class VoiceProcessor(
                         }
                         turnKindlePages(command.pages, command.forward)
                     }
-                    InteractionMode.AI -> transcribeAndRespondOnDevice(wav)
+                    InteractionMode.AI, InteractionMode.OPENCLAW -> transcribeAndRespondOnDevice(wav)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -672,6 +673,7 @@ internal class VoiceProcessor(
                 InteractionMode.AI -> "AI対話モードに切り替えました"
                 InteractionMode.READER -> "リーダーモードに切り替えました"
                 InteractionMode.HARBOR -> "Harborモードに切り替えました"
+                InteractionMode.OPENCLAW -> "OpenClawモードに切り替えました"
             }
         )
         if (mode == InteractionMode.READER) {
@@ -1153,6 +1155,7 @@ internal class VoiceProcessor(
                     presentResponse(
                         finalResponse,
                         origin = QueryOrigin.HARNESS_NODE_VOICE,
+                        showConversation = true,
                     )
                 }
             }
@@ -1309,6 +1312,7 @@ internal class VoiceProcessor(
                     requestId = requestId,
                     origin = origin,
                     allowPhoneAudio = speakResponse,
+                    showConversation = true,
                 )
             }.onFailure { error ->
                 val err = "Chat error: ${error.message}"
@@ -1635,6 +1639,7 @@ internal class VoiceProcessor(
         requestId: String? = null,
         origin: QueryOrigin? = null,
         allowPhoneAudio: Boolean = true,
+        showConversation: Boolean = false,
     ) {
         if (isAssistantCancelled(requestId)) {
             BleConnectionService.releaseAssistantProcessing()
@@ -1648,7 +1653,18 @@ internal class VoiceProcessor(
         val glassesResult = if (
             target == ResponseOutputTarget.SMART_GLASSES || preferSmartGlasses
         ) {
-            EvenG2ReadingSession.displayResponse(text)
+            // OpenClaw mode mirrors the whole session, so a chat reply repaints the
+            // conversation rather than showing the reply alone.
+            if (showConversation && shouldMirrorOpenClawConversation(preferSmartGlasses) &&
+                BleConnectionService.showOpenClawConversation(
+                    BleConnectionService.transcription.value,
+                    text,
+                )
+            ) {
+                SmartGlassesDisplayResult.Started
+            } else {
+                EvenG2ReadingSession.displayResponse(text)
+            }
         } else {
             null
         }
@@ -1683,6 +1699,11 @@ internal class VoiceProcessor(
                 .onSpeakingFinished(requestId)
         }
     }
+
+    private fun shouldMirrorOpenClawConversation(g2Active: Boolean): Boolean =
+        g2Active &&
+            BleConnectionService.interactionMode.value == InteractionMode.OPENCLAW &&
+            ModelManager.currentLlmBackend(appContext) == LlmBackendId.OPENCLAW
 
     private suspend fun presentReadingPassthrough(
         command: String,

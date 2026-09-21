@@ -50,6 +50,8 @@ internal object EvenG2ReadingSession {
         val harborActionText: String? = null,
         val loading: Boolean = false,
         val error: String? = null,
+        /** Body is the OpenClaw conversation mirror (published as RESPONSE; never sent to the plugin). */
+        val conversation: Boolean = false,
     )
 
     private val state = MutableStateFlow(State())
@@ -73,6 +75,7 @@ internal object EvenG2ReadingSession {
                     harborActionText = null,
                     loading = false,
                     error = null,
+                    conversation = false,
                 )
             }
         }
@@ -94,6 +97,7 @@ internal object EvenG2ReadingSession {
                 harborActionText = null,
                 loading = false,
                 error = null,
+                conversation = false,
             )
         }
     }
@@ -111,7 +115,39 @@ internal object EvenG2ReadingSession {
                 harborActionText = null,
                 loading = false,
                 error = null,
+                conversation = false,
             )
+        }
+    }
+
+    /**
+     * OpenClaw conversation mirror. Sent to the plugin as an ordinary RESPONSE (so pagination
+     * and single-tap paging need no plugin change). An identical body does not bump the
+     * revision, which would reset the page; any other publisher clears [State.conversation],
+     * so the next mirror poll repaints over it.
+     */
+    fun publishConversation(text: String) {
+        val normalized = normalize(text) ?: return
+        state.update { current ->
+            if (
+                current.active && current.conversation &&
+                current.mode == EvenG2DisplayMode.RESPONSE && current.bodyText == normalized
+            ) {
+                current
+            } else {
+                current.copy(
+                    active = true,
+                    mode = EvenG2DisplayMode.RESPONSE,
+                    revision = current.revision + 1L,
+                    title = null,
+                    bodyText = normalized,
+                    harborSummaryText = null,
+                    harborActionText = null,
+                    loading = false,
+                    error = null,
+                    conversation = true,
+                )
+            }
         }
     }
 
@@ -157,6 +193,7 @@ internal object EvenG2ReadingSession {
                     harborActionText = normalizedAction,
                     loading = false,
                     error = normalizedError,
+                    conversation = false,
                 )
             }
         }
@@ -177,6 +214,7 @@ internal object EvenG2ReadingSession {
                     harborActionText = null,
                     loading = false,
                     error = null,
+                    conversation = false,
                 )
             }
         }

@@ -421,8 +421,22 @@ class BleConnectionService : Service() {
                     _interactionMode.value = InteractionMode.AI
                     setResponse("リーダーモードは再起動後は手動で開始してください")
                 }
+                InteractionMode.OPENCLAW -> {
+                    if (!isOpenClawConfigured(context)) {
+                        InteractionModePreferences(context).setMode(InteractionMode.AI)
+                        _interactionMode.value = InteractionMode.AI
+                        setResponse("OpenClawモードを解除しました: Gateway tokenが未設定です")
+                        return
+                    }
+                    _interactionMode.value = InteractionMode.OPENCLAW
+                    instance?.openClawMirrorController?.setMode(InteractionMode.OPENCLAW)
+                    setResponse("OpenClawモードを復元しました")
+                }
             }
         }
+
+        private fun isOpenClawConfigured(context: Context): Boolean =
+            OpenClawPrefs.getToken(context).isNotBlank()
 
         /**
          * When G2 becomes active again, resume a saved Harbor mode if still paired.
@@ -447,6 +461,15 @@ class BleConnectionService : Service() {
             ) {
                 if (setInteractionMode(context, InteractionMode.HARBOR)) {
                     setResponse("Harborモードを復元しました")
+                }
+            }
+            if (saved == InteractionMode.OPENCLAW &&
+                _interactionMode.value != InteractionMode.OPENCLAW &&
+                !_readingPassthroughEnabled.value &&
+                isOpenClawConfigured(context)
+            ) {
+                if (setInteractionMode(context, InteractionMode.OPENCLAW)) {
+                    setResponse("OpenClawモードを復元しました")
                 }
             }
         }
@@ -500,10 +523,13 @@ class BleConnectionService : Service() {
             val g2Active = EvenG2ReadingSession.isClientActive()
             val harborPaired = service?.harborMirrorController?.isPaired()
                 ?: hasStoredHarborCredentials(context)
-            if (!canEnableInteractionMode(mode, g2Active, harborPaired)) {
+            if (!canEnableInteractionMode(mode, g2Active, harborPaired, isOpenClawConfigured(context))) {
                 setErrorMessage(
-                    if (mode == InteractionMode.READER) "G2プラグインの接続が必要です"
-                    else "Terminal Harborをペアリングしてください",
+                    when (mode) {
+                        InteractionMode.READER -> "G2プラグインの接続が必要です"
+                        InteractionMode.OPENCLAW -> "OpenClawのGateway tokenを設定してください"
+                        else -> "Terminal Harborをペアリングしてください"
+                    },
                 )
                 return false
             }
@@ -526,8 +552,18 @@ class BleConnectionService : Service() {
                         EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborに接続中…")
                     }
                 }
+                InteractionMode.OPENCLAW -> {
+                    setReadingPassthroughEnabled(context, false, notifyG2 = false)
+                    // The mirrored conversation and every reply must come from OpenClaw.
+                    if (ModelManager.currentLlmBackend(context) != LlmBackendId.OPENCLAW) {
+                        switchLlmBackend(context, LlmBackendId.OPENCLAW)
+                    }
+                    setResponseOutputTarget(context, ResponseOutputTarget.SMART_GLASSES)
+                    EvenG2ReadingSession.publishResponse("OpenClawモード")
+                }
             }
             if (mode != InteractionMode.HARBOR) service?.harborMirrorController?.setMode(mode)
+            service?.openClawMirrorController?.setMode(mode)
             _interactionMode.value = mode
             InteractionModePreferences(context).setMode(mode)
             setErrorMessage("")
@@ -569,6 +605,10 @@ class BleConnectionService : Service() {
             instance?.harborMirrorController?.sendKey(workspaceId, key)
         fun confirmHarborCommand() = instance?.voiceProcessor?.handleSingleTap()
         fun cancelHarborCommand() = instance?.voiceProcessor?.handleDoubleTap()
+
+        /** Repaints the glass with the OpenClaw conversation after a reply; false = caller falls back. */
+        internal suspend fun showOpenClawConversation(user: String?, reply: String?): Boolean =
+            instance?.openClawMirrorController?.showNow(user, reply) ?: false
 
         internal fun harborSpeechHints(): List<String> =
             instance?.harborMirrorController?.speechHints().orEmpty()
@@ -674,6 +714,7 @@ class BleConnectionService : Service() {
     private var recordingOverlay: RecordingOverlayController? = null
     private var evenG2BridgeServer: EvenG2BridgeServer? = null
     private var harborMirrorController: HarborMirrorController? = null
+    private var openClawMirrorController: OpenClawMirrorController? = null
     private lateinit var drivingModeController: DrivingModeController
 
     override fun onCreate() {
@@ -715,6 +756,12 @@ class BleConnectionService : Service() {
                 controller.uiState.collect { _harborUiState.value = it }
             }
         }
+        val openClawHistory = OpenClawLlmBackend(applicationContext)
+        openClawMirrorController = OpenClawMirrorController(
+            scope = serviceScope,
+            loadHistory = openClawHistory::loadHistory,
+            voiceState = { _voiceState.value },
+        )
         recordingOverlay = RecordingOverlayController(applicationContext)
         drivingModeController = DrivingModeController(applicationContext)
         _drivingMode.value = drivingModeController.mode.value
@@ -739,6 +786,7 @@ class BleConnectionService : Service() {
                 kotlinx.coroutines.delay(500)
                 syncInteractionModeWithG2Client(applicationContext)
                 harborMirrorController?.setG2Active(EvenG2ReadingSession.isClientActive())
+                openClawMirrorController?.setG2Active(EvenG2ReadingSession.isClientActive())
                 publishEvenG2UiState()
             }
         }
@@ -877,6 +925,8 @@ class BleConnectionService : Service() {
         evenG2BridgeServer = null
         harborMirrorController?.setMode(InteractionMode.AI)
         harborMirrorController = null
+        openClawMirrorController?.setMode(InteractionMode.AI)
+        openClawMirrorController = null
         voiceProcessor?.shutdown()
         if (::drivingModeController.isInitialized) drivingModeController.stop()
         bleManager?.shutdown()

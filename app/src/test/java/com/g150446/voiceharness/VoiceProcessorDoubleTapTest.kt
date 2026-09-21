@@ -76,6 +76,20 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
+    fun `OpenClaw mode records on single tap exactly like AI mode`() {
+        for (state in VoiceState.entries) {
+            assertEquals(
+                singleTapRecordingCommand(InteractionMode.AI, state),
+                singleTapRecordingCommand(InteractionMode.OPENCLAW, state),
+            )
+        }
+        assertEquals(
+            BLE_RX_START_RECORDING,
+            singleTapRecordingCommand(InteractionMode.OPENCLAW, VoiceState.READY),
+        )
+    }
+
+    @Test
     fun `single mode routes single tap to recording and ignores double without G2`() {
         assertEquals(
             RecordingTapAction.START_RECORDING,

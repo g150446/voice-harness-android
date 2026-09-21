@@ -601,12 +601,14 @@ fun HomeScreen(
                 InteractionMode.AI to "AI対話",
                 InteractionMode.READER to "リーダー",
                 InteractionMode.HARBOR to "Harbor",
+                InteractionMode.OPENCLAW to "OpenClaw",
             ).forEach { (mode, label) ->
                 OutlinedButton(
                     onClick = { viewModel.setInteractionMode(mode) },
                     enabled = interactionMode != mode,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                ) { Text(label, fontSize = 11.sp) }
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                ) { Text(label, fontSize = 11.sp, maxLines = 1) }
             }
         }
         Text(
@@ -742,6 +744,7 @@ fun HomeScreen(
                 "G2プラグイン未接続（Even Hubで起動）"
             !smartGlassesState.connected -> "G2プラグインが応答していません"
             interactionMode == InteractionMode.HARBOR -> "G2でHarborモード中"
+            interactionMode == InteractionMode.OPENCLAW -> "G2でOpenClaw会話中"
             smartGlassesState.readingPassthroughActive -> "G2でリーダーモード中"
             smartGlassesState.displaying -> "G2に返答を表示中"
             else -> "G2プラグイン接続済み"

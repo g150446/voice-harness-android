@@ -18,6 +18,42 @@ class InteractionModeTest {
     }
 
     @Test
+    fun `OpenClaw commands select OpenClaw mode`() {
+        assertEquals(InteractionMode.OPENCLAW, parseInteractionMode("OpenClawモード"))
+        assertEquals(InteractionMode.OPENCLAW, parseInteractionMode("open claw"))
+        assertEquals(InteractionMode.OPENCLAW, parseInteractionMode("オープンクローモードにして"))
+        // "チャット" alone still means AI, but not next to the OpenClaw name.
+        assertEquals(InteractionMode.OPENCLAW, parseInteractionMode("OpenClawチャット"))
+        assertEquals(InteractionMode.AI, parseInteractionMode("チャットモード"))
+    }
+
+    @Test
+    fun `OpenClaw mixed with another mode is ambiguous`() {
+        assertNull(parseInteractionMode("ハーバーからOpenClawへ"))
+        assertNull(parseInteractionMode("OpenClawとリーダー"))
+    }
+
+    @Test
+    fun `OpenClaw mode requires a configured token but never G2`() {
+        assertTrue(
+            canEnableInteractionMode(
+                InteractionMode.OPENCLAW,
+                g2Active = false,
+                harborPaired = false,
+                openClawConfigured = true,
+            ),
+        )
+        assertFalse(
+            canEnableInteractionMode(
+                InteractionMode.OPENCLAW,
+                g2Active = true,
+                harborPaired = true,
+                openClawConfigured = false,
+            ),
+        )
+    }
+
+    @Test
     fun `ambiguous or unknown command does not switch`() {
         assertNull(parseInteractionMode("ハーバーからAIへ"))
         assertNull(parseInteractionMode("音楽モード"))
