@@ -1269,21 +1269,12 @@ internal class VoiceProcessor(
                         success = true,
                         speaking = speakResponse,
                     )
-                    if (speakResponse) {
-                        presentResponse(
-                            reply.text.ifBlank { "リマインダーを設定しました" },
-                            requestId = requestId,
-                            origin = origin,
-                            allowPhoneAudio = speakResponse,
-                        )
-                    } else {
-                        presentResponse(
-                            reply.text.ifBlank { "リマインダーを設定しました" },
-                            requestId = requestId,
-                            origin = origin,
-                            allowPhoneAudio = false,
-                        )
-                    }
+                    presentResponse(
+                        reply.text.ifBlank { "リマインダーを設定しました" },
+                        requestId = requestId,
+                        origin = origin,
+                        allowPhoneAudio = speakResponse,
+                    )
                     return@onSuccess
                 }
                 if (harborCall != null && BleConnectionService.harborConnectionState.value.paired) {
