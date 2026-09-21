@@ -3,6 +3,9 @@ package com.g150446.voiceharness
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.graphics.Rect
+import android.os.Build
+import android.view.Display
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.view.accessibility.AccessibilityNodeInfo
@@ -41,6 +44,27 @@ internal fun oppositePageTurn(gesture: PageTurnGesture): PageTurnGesture = when 
     PageTurnGesture.SWIPE_LEFT -> PageTurnGesture.SWIPE_RIGHT
     PageTurnGesture.SWIPE_RIGHT -> PageTurnGesture.SWIPE_LEFT
     PageTurnGesture.UNKNOWN -> PageTurnGesture.UNKNOWN
+}
+
+/** Where a page-turn swipe is sent: a display and the area (in that display's pixels) Kindle occupies. */
+internal data class SwipeTarget(val displayId: Int, val left: Int, val top: Int, val width: Int, val height: Int)
+
+internal data class SwipeLine(val startX: Float, val endX: Float, val y: Float)
+
+/** Horizontal swipe across the middle of [target]; SWIPE_LEFT moves the finger right → left. */
+internal fun pageTurnSwipeLine(direction: PageTurnGesture, target: SwipeTarget): SwipeLine? {
+    val fromRight = when (direction) {
+        PageTurnGesture.SWIPE_LEFT -> true
+        PageTurnGesture.SWIPE_RIGHT -> false
+        PageTurnGesture.UNKNOWN -> return null
+    }
+    val near = target.left + target.width * 0.18f
+    val far = target.left + target.width * 0.82f
+    return SwipeLine(
+        startX = if (fromRight) far else near,
+        endX = if (fromRight) near else far,
+        y = target.top + target.height * 0.50f,
+    )
 }
 
 internal enum class KindlePageTurnResult {
@@ -99,30 +123,46 @@ internal object KindlePageTurnController {
         }
     }
 
+    /**
+     * The display Kindle is on and the area it covers. On a foldable the book can be on the cover
+     * display while the default display is off; a gesture sent to the default display then lands
+     * nowhere yet still reports "completed".
+     */
+    private fun kindleSwipeTarget(current: AccessibilityService): SwipeTarget {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val displays = current.windowsOnAllDisplays
+            for (index in 0 until displays.size()) {
+                val displayId = displays.keyAt(index)
+                for (window in displays.valueAt(index)) {
+                    val root = window.root ?: continue
+                    val isKindle = isKindlePackage(root.packageName?.toString())
+                    @Suppress("DEPRECATION") root.recycle()
+                    if (!isKindle) continue
+                    val bounds = Rect().also(window::getBoundsInScreen)
+                    if (bounds.width() > 0 && bounds.height() > 0) {
+                        return SwipeTarget(displayId, bounds.left, bounds.top, bounds.width(), bounds.height())
+                    }
+                }
+            }
+        }
+        val metrics = current.resources.displayMetrics
+        return SwipeTarget(Display.DEFAULT_DISPLAY, 0, 0, metrics.widthPixels, metrics.heightPixels)
+    }
+
     suspend fun performSwipe(direction: PageTurnGesture): KindlePageTurnResult = withContext(Dispatchers.Main.immediate) {
         if (direction == PageTurnGesture.UNKNOWN) return@withContext KindlePageTurnResult.FAILED
         val current = service ?: return@withContext KindlePageTurnResult.UNAVAILABLE
         if (!isKindlePackage(foregroundPackage())) return@withContext KindlePageTurnResult.NOT_KINDLE
-        val metrics = current.resources.displayMetrics
-        val width = metrics.widthPixels.toFloat()
-        val height = metrics.heightPixels.toFloat()
-        val y = height * 0.50f
-        val startX: Float
-        val endX: Float
-        if (direction == PageTurnGesture.SWIPE_LEFT) {
-            startX = width * 0.82f
-            endX = width * 0.18f
-        } else {
-            startX = width * 0.18f
-            endX = width * 0.82f
-        }
+        val target = kindleSwipeTarget(current)
+        val line = pageTurnSwipeLine(direction, target) ?: return@withContext KindlePageTurnResult.FAILED
         val path = Path().apply {
-            moveTo(startX, y)
-            lineTo(endX, y)
+            moveTo(line.startX, line.y)
+            lineTo(line.endX, line.y)
         }
-        val gesture = GestureDescription.Builder()
+        val builder = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0L, SWIPE_DURATION_MS))
-            .build()
+        if (Build.VERSION.SDK_INT >= 30) builder.setDisplayId(target.displayId)
+        val gesture = builder.build()
         suspendCancellableCoroutine { continuation ->
             val dispatched = runCatching {
                 current.dispatchGesture(

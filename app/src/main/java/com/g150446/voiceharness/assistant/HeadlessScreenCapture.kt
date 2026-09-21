@@ -59,20 +59,23 @@ object HeadlessScreenCapture {
                 resultDeferred = deferred
                 appPackageName = app.packageName
                 active = true
-                val started = HarnessVoiceInteractionService.requestHeadlessCapture()
-                if (!started) {
-                    Log.d(TAG, "showSession unavailable")
+                try {
+                    val started = HarnessVoiceInteractionService.requestHeadlessCapture()
+                    if (!started) {
+                        Log.d(TAG, "showSession unavailable")
+                        return@withLock null
+                    }
+                    withTimeoutOrNull(WAIT_MS) { deferred.await() }
+                    if (!deferred.isCompleted) {
+                        deferred.complete(buildFilteredContext())
+                    }
+                    val result = deferred.await()
+                    finishSessionLocked()
+                    result
+                } finally {
+                    // Also on cancellation: a stuck `active` makes every later capture ineligible.
                     resetLocked()
-                    return@withLock null
                 }
-                withTimeoutOrNull(WAIT_MS) { deferred.await() }
-                if (!deferred.isCompleted) {
-                    deferred.complete(buildFilteredContext())
-                }
-                val result = deferred.await()
-                finishSessionLocked()
-                resetLocked()
-                result
             }
         } finally {
             inFlight.set(false)
@@ -190,13 +193,20 @@ object HeadlessScreenCapture {
     }
 
     private fun isEligible(context: Context): Boolean {
-        if (!AssistantRoleManager.isHeld(context)) return false
-        if (isDeviceLocked(context)) return false
-        if (!isInteractive(context)) return false
-        if (OwnAppUiTracker.isOwnUiShowing()) return false
-        if (AssistantSessionController.uiState.value.sessionActive) return false
-        if (active) return false
-        return true
+        val reason = ineligibleReason(context) ?: return true
+        // Which gate fails decides whether Kindle auto reader-mode can ever start.
+        Log.d(TAG, "Ineligible: $reason")
+        return false
+    }
+
+    private fun ineligibleReason(context: Context): String? = when {
+        !AssistantRoleManager.isHeld(context) -> "assistant role not held"
+        isDeviceLocked(context) -> "device locked"
+        !isInteractive(context) -> "screen not interactive"
+        OwnAppUiTracker.isOwnUiShowing() -> "own UI showing (resumed=${OwnAppUiTracker.resumedCount()})"
+        AssistantSessionController.uiState.value.sessionActive -> "assistant session active"
+        active -> "headless capture already active"
+        else -> null
     }
 
     private fun isDeviceLocked(context: Context): Boolean {

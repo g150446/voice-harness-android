@@ -33,4 +33,6 @@ object OwnAppUiTracker {
     }
 
     fun isOwnUiShowing(): Boolean = resumedCount.get() > 0
+
+    fun resumedCount(): Int = resumedCount.get()
 }
