@@ -128,13 +128,14 @@ Serviceは `VoiceProcessor` を先に生成してから `BleManager` を開始�
  音声処理パイプライン（完全性検査 → 停止後 VAD → AI backend → TTS）を実行し、結果を
 companion objectの状態Flowへ書き込む。ViewModel / UIはその状態だけを観察する。
 AI backend は ASR（`SttBackendId`）と LLM（`LlmBackendId`）を独立選択する。
-同一ローカルモデルは `BackendRegistry` で共有し二重ロードしない。OpenRouter / OpenClaw は LLM のみ。
-OpenClaw は Mac の Gateway `/v1/chat/completions` へ直接接続し、Harbor の
-`/v1/workspaces/{id}/instruction` 経路とは分離する。
+同一ローカルモデルは `BackendRegistry` で共有し二重ロードしない。OpenRouter は LLM のみ。
+OpenClaw は LLM ではなく応答先で、操作モードが OpenClaw のときだけ `OnDeviceAiFacade`
+（`isOpenClawRoute()`）が選択中の LLM の代わりに Mac の Gateway `/v1/chat/completions` へ送る。
+Harbor の `/v1/workspaces/{id}/instruction` 経路とは分離する。
 Harness NodeのBLE音声とアプリ内Assistantの音声／テキストは、入口は異なっても
 `BackendAssistantGateway` とOpenClawの安定セッションを共有する。応答はG2接続中は
 `EvenG2ReadingSession`を優先し、未接続時は音声入力を電話TTS、テキスト入力を
-Assistant UIへ届ける。
+Assistant UIへ届ける。Node音声だけは Harbor と同じく確認画面を経てから送る（`openclaw.md`）。
 
 ### デジタルアシスタント
 

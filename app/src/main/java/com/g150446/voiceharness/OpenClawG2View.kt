@@ -1,35 +1,40 @@
 package com.g150446.voiceharness
 
-/** Turns kept on the glass, newest first. Older ones are dropped, not paged. */
-internal const val OPENCLAW_G2_MAX_TURNS = 4
-/** Total body budget; keeps the plugin at a handful of single-tap pages. */
-internal const val OPENCLAW_G2_MAX_CHARS = 1_200
-/** A single message is cut here so one long reply cannot push everything else out. */
-internal const val OPENCLAW_G2_MAX_MESSAGE_CHARS = 500
+/** The question is cut short so page 1 is not spent on it; the reply gets the room. */
+internal const val OPENCLAW_G2_MAX_USER_CHARS = 120
+/** Safety cap on a reply; the plugin pages a long reply, so this only bounds runaway output. */
+internal const val OPENCLAW_G2_MAX_REPLY_CHARS = 3_000
 
 private const val USER_LABEL = "あなた"
 private const val ASSISTANT_LABEL = "OpenClaw"
+private const val THINKING_BODY = "考え中…"
 
 /**
- * Renders the OpenClaw session transcript for the Even G2 screen: the newest exchange first
- * (page 1), older exchanges on later pages. Returns null when there is nothing to show.
+ * Renders the newest exchange for the Even G2 screen: the last message we sent and OpenClaw's
+ * (final) reply to it, nothing older. Returns null when there is nothing to show.
  */
 internal fun openClawConversationG2Text(messages: List<OpenClawHistoryMessage>): String? {
-    val turns = groupTurns(messages)
-    if (turns.isEmpty()) return null
-    val blocks = ArrayList<String>()
-    var total = 0
-    for (turn in turns.asReversed().take(OPENCLAW_G2_MAX_TURNS)) {
-        val block = turn.joinToString("\n") { message ->
-            val label = if (message.role == "user") USER_LABEL else ASSISTANT_LABEL
-            "$label: ${truncate(message.text, OPENCLAW_G2_MAX_MESSAGE_CHARS)}"
-        }
-        // The newest turn is always shown; older ones only while they fit.
-        if (blocks.isNotEmpty() && total + block.length > OPENCLAW_G2_MAX_CHARS) break
-        blocks += block
-        total += block.length
+    val turn = lastTurn(messages) ?: return null
+    val question = turn.firstOrNull { it.role == "user" }
+    // The final assistant message is the reply; earlier ones are interim narration, and the live
+    // reply handed to showNow is also just the final message, so the two renderings agree.
+    val reply = turn.lastOrNull { it.role != "user" }?.text
+    return openClawExchangeG2Text(question?.text, reply)
+}
+
+/** Same layout as [openClawConversationG2Text] while the reply is still being generated. */
+internal fun openClawPendingG2Text(user: String): String =
+    openClawExchangeG2Text(user, THINKING_BODY) ?: "$ASSISTANT_LABEL: $THINKING_BODY"
+
+private fun openClawExchangeG2Text(user: String?, reply: String?): String? {
+    val blocks = ArrayList<String>(2)
+    user?.takeIf(String::isNotBlank)?.let {
+        blocks += "$USER_LABEL: ${truncate(it, OPENCLAW_G2_MAX_USER_CHARS)}"
     }
-    return blocks.joinToString("\n\n")
+    reply?.takeIf(String::isNotBlank)?.let {
+        blocks += "$ASSISTANT_LABEL: ${truncate(it, OPENCLAW_G2_MAX_REPLY_CHARS)}"
+    }
+    return blocks.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
 }
 
 /**
@@ -56,18 +61,18 @@ internal fun mergeLatestExchange(
     }
 }
 
-/** A turn starts at each user message; assistant messages attach to the turn before them. */
-private fun groupTurns(messages: List<OpenClawHistoryMessage>): List<List<OpenClawHistoryMessage>> {
-    val turns = ArrayList<MutableList<OpenClawHistoryMessage>>()
+/** The last turn: the newest user message with the assistant messages after it. */
+private fun lastTurn(messages: List<OpenClawHistoryMessage>): List<OpenClawHistoryMessage>? {
+    var turn: MutableList<OpenClawHistoryMessage>? = null
     for (message in messages) {
         if (message.text.isBlank()) continue
-        if (message.role == "user" || turns.isEmpty()) {
-            turns += mutableListOf(message)
+        if (message.role == "user" || turn == null) {
+            turn = mutableListOf(message)
         } else {
-            turns.last() += message
+            turn += message
         }
     }
-    return turns
+    return turn
 }
 
 private fun truncate(text: String, max: Int): String {

@@ -71,3 +71,10 @@ object OpenClawPrefs {
     fun getChatSessionKey(context: Context): String =
         getSelectedSessionKey(context) ?: getOrCreateSessionKey(context)
 }
+
+/**
+ * OpenClaw is a destination, not an LLM: while the OpenClaw interaction mode is on, every request
+ * (Node voice, in-app mic, in-app text) goes to the Gateway instead of the selected LLM.
+ */
+internal fun isOpenClawRoute(): Boolean =
+    BleConnectionService.interactionMode.value == InteractionMode.OPENCLAW

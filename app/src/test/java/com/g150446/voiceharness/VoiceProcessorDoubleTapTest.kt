@@ -480,4 +480,48 @@ class VoiceProcessorDoubleTapTest {
         // the command never having run.
         assertTrue(HARBOR_RESULT_HOLD_MS > HARBOR_MIRROR_POLL_MS)
     }
+
+    @Test
+    fun `OpenClaw send confirm uses single tap to send and double tap to cancel`() {
+        assertEquals(
+            RecordingTapAction.CONFIRM_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.OPENCLAW,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.CANCEL_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.OPENCLAW,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+                harborConfirmPending = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `OpenClaw single tap on G2 is left to glass pagination when nothing is pending`() {
+        for (mode in RecordingTapMode.entries) {
+            for (state in listOf(VoiceState.READY, VoiceState.ERROR, VoiceState.RESPONDING)) {
+                assertEquals(
+                    RecordingTapAction.NONE,
+                    recordingTapAction(
+                        mode = mode,
+                        event = RecordingTapEvent.SINGLE,
+                        interactionMode = InteractionMode.OPENCLAW,
+                        g2ClientActive = true,
+                        state = state,
+                    ),
+                )
+            }
+        }
+    }
 }

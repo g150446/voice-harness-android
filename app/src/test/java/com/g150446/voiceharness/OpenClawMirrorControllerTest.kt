@@ -21,6 +21,7 @@ class OpenClawMirrorControllerTest {
         var loads = 0
         var state = VoiceState.READY
         var g2 = true
+        var glassOwned = false
         val conversations = mutableListOf<String>()
         val statuses = mutableListOf<String>()
         val controller = OpenClawMirrorController(
@@ -31,6 +32,7 @@ class OpenClawMirrorControllerTest {
             publishConversation = { conversations += it },
             publishStatus = { statuses += it },
             dispatcher = StandardTestDispatcher(scope.testScheduler),
+            glassOwned = { glassOwned },
         )
     }
 
@@ -39,7 +41,7 @@ class OpenClawMirrorControllerTest {
         val f = Fixture(this)
         f.controller.setMode(InteractionMode.OPENCLAW)
         runCurrent()
-        assertEquals(listOf("あなた: q\nOpenClaw: a"), f.conversations)
+        assertEquals(listOf("あなた: q\n\nOpenClaw: a"), f.conversations)
         advanceTimeBy(OPENCLAW_MIRROR_POLL_MS + 1)
         assertEquals(2, f.loads)
         f.controller.setMode(InteractionMode.AI)
@@ -84,7 +86,7 @@ class OpenClawMirrorControllerTest {
         val f = Fixture(this)
         val shown = f.controller.showNow("next", "fresh")
         assertTrue(shown)
-        assertEquals("あなた: next\nOpenClaw: fresh\n\nあなた: q\nOpenClaw: a", f.conversations.single())
+        assertEquals("あなた: next\n\nOpenClaw: fresh", f.conversations.single())
     }
 
     @Test
@@ -93,5 +95,37 @@ class OpenClawMirrorControllerTest {
         f.history = emptyList()
         assertFalse(f.controller.showNow(null, null))
         assertTrue(f.conversations.isEmpty())
+    }
+
+    @Test
+    fun `showPending puts the sent message and thinking on the glass once`() = runTest {
+        val f = Fixture(this)
+        f.controller.setMode(InteractionMode.OPENCLAW)
+        runCurrent()
+        f.conversations.clear()
+        f.state = VoiceState.RESPONDING
+        f.controller.showPending("next")
+        advanceTimeBy(OPENCLAW_MIRROR_POLL_MS + 1)
+        advanceTimeBy(OPENCLAW_MIRROR_POLL_MS + 1)
+        assertEquals(listOf("あなた: next\n\nOpenClaw: 考え中…"), f.statuses)
+        assertTrue(f.conversations.isEmpty())
+        f.controller.setMode(InteractionMode.AI)
+        runCurrent()
+    }
+
+    @Test
+    fun `leaves the glass alone while another owner such as a send confirm holds it`() = runTest {
+        val f = Fixture(this)
+        f.glassOwned = true
+        f.controller.setMode(InteractionMode.OPENCLAW)
+        runCurrent()
+        advanceTimeBy(OPENCLAW_MIRROR_POLL_MS * 2 + 1)
+        assertTrue(f.conversations.isEmpty())
+
+        f.glassOwned = false
+        advanceTimeBy(OPENCLAW_MIRROR_POLL_MS + 1)
+        assertFalse(f.conversations.isEmpty())
+        f.controller.setMode(InteractionMode.AI)
+        runCurrent()
     }
 }

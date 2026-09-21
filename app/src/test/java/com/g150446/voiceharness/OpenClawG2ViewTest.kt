@@ -17,51 +17,79 @@ class OpenClawG2ViewTest {
     }
 
     @Test
-    fun `newest exchange comes first and each exchange keeps question then reply`() {
+    fun `only the last question and its reply are shown`() {
         val text = openClawConversationG2Text(
             listOf(user("one"), bot("A1"), user("two"), bot("A2")),
         )
-        assertEquals("あなた: two\nOpenClaw: A2\n\nあなた: one\nOpenClaw: A1", text)
+        assertEquals("あなた: two\n\nOpenClaw: A2", text)
     }
 
     @Test
-    fun `assistant message before any question is its own turn`() {
-        val text = openClawConversationG2Text(listOf(bot("hello"), user("hi"), bot("yo")))
-        assertEquals("あなた: hi\nOpenClaw: yo\n\nOpenClaw: hello", text)
-    }
-
-    @Test
-    fun `only the newest turns are kept`() {
+    fun `older turns are never shown`() {
         val history = (1..10).flatMap { listOf(user("q$it"), bot("a$it")) }
         val text = openClawConversationG2Text(history)!!
-        assertTrue(text.startsWith("あなた: q10"))
-        assertTrue(text.contains("q7"))
-        assertFalse(text.contains("q6"))
+        assertEquals("あなた: q10\n\nOpenClaw: a10", text)
+        assertFalse(text.contains("q9"))
     }
 
     @Test
-    fun `older turns are dropped once the budget is used but the newest is always shown`() {
-        val long = "あ".repeat(OPENCLAW_G2_MAX_MESSAGE_CHARS)
+    fun `an unanswered last question is shown alone`() {
+        assertEquals(
+            "あなた: two",
+            openClawConversationG2Text(listOf(user("one"), bot("A1"), user("two"))),
+        )
+    }
+
+    @Test
+    fun `assistant message before any question is shown as the reply-only turn`() {
+        assertEquals("OpenClaw: hello", openClawConversationG2Text(listOf(bot("hello"))))
+    }
+
+    @Test
+    fun `only the final assistant message is the reply`() {
         val text = openClawConversationG2Text(
-            listOf(user("old"), bot(long), user("new"), bot(long), bot(long)),
-        )!!
-        assertTrue(text.startsWith("あなた: new"))
-        assertFalse(text.contains("あなた: old"))
-        assertTrue(text.length <= OPENCLAW_G2_MAX_CHARS + 40)
+            listOf(user("q"), bot("let me check"), bot("final answer")),
+        )
+        assertEquals("あなた: q\n\nOpenClaw: final answer", text)
     }
 
     @Test
-    fun `a single long message is truncated with an ellipsis`() {
+    fun `a long question is cut short so the reply keeps the room`() {
+        val text = openClawConversationG2Text(
+            listOf(user("あ".repeat(500)), bot("reply")),
+        )!!
+        val question = text.substringBefore("\n\nOpenClaw:")
+        assertTrue(question.endsWith("…"))
+        assertTrue(question.length <= "あなた: ".length + OPENCLAW_G2_MAX_USER_CHARS + 1)
+    }
+
+    @Test
+    fun `a long reply keeps its length for glass paging and is only capped as a safety`() {
         val text = openClawConversationG2Text(listOf(user("q"), bot("x".repeat(2_000))))!!
-        assertTrue(text.endsWith("…"))
-        assertTrue(text.length < 600)
+        assertFalse(text.endsWith("…"))
+        assertTrue(text.length > 2_000)
+        val huge = openClawConversationG2Text(listOf(user("q"), bot("x".repeat(10_000))))!!
+        assertTrue(huge.endsWith("…"))
+        assertTrue(huge.length < OPENCLAW_G2_MAX_REPLY_CHARS + 40)
     }
 
     @Test
     fun `truncation never splits a surrogate pair`() {
-        val emoji = "😀".repeat(400)
+        val emoji = "😀".repeat(2_000)
         val text = openClawConversationG2Text(listOf(user("q"), bot(emoji)))!!
         assertFalse(Character.isHighSurrogate(text[text.length - 2]))
+    }
+
+    @Test
+    fun `pending text shows the sent message and thinking`() {
+        assertEquals("あなた: hi\n\nOpenClaw: 考え中…", openClawPendingG2Text(" hi "))
+    }
+
+    @Test
+    fun `merged live reply renders the same as the Gateway copy so the page does not reset`() {
+        val live = openClawConversationG2Text(mergeLatestExchange(emptyList(), "q", "answer"))
+        val stored = openClawConversationG2Text(listOf(user("q"), bot("interim"), bot("answer")))
+        assertEquals(live, stored)
     }
 
     @Test

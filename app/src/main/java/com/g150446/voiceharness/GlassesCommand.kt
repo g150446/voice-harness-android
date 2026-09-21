@@ -28,6 +28,14 @@ internal fun harborConfirmPrompt(
     )
 }
 
+/** OpenClaw voice confirm: same tap contract as Harbor, but the text is sent as spoken. */
+internal fun openClawConfirmPrompt(stt: String): String = buildString {
+    append("OpenClawへ送信\n")
+    append(stt.take(HARBOR_CONFIRM_STT_MAX))
+    if (stt.length > HARBOR_CONFIRM_STT_MAX) append("…")
+    append("\n\nシングルタップで送信\nダブルタップで取り消す")
+}
+
 internal data class ReaderPageCommand(val pages: Int, val forward: Boolean)
 
 internal fun glassesModeSwitchRemainder(text: String): String? {

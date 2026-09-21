@@ -242,6 +242,11 @@ internal class VoiceProcessor(
     /** stop-then-start job; cancelled by a newer double-tap or pipeline interruption. */
     private var pendingTapStartJob: Job? = null
     @Volatile private var pendingHarborCommand: PendingHarborCommand? = null
+    /**
+     * OpenClaw mode: the transcript from the Node waiting for a single-tap send (double tap cancels).
+     * Shares the Harbor confirm tap contract; nothing is interpreted, the text is sent as spoken.
+     */
+    @Volatile private var pendingOpenClawText: String? = null
     /** True while the Harbor intent is still being interpreted; taps are queued. */
     @Volatile private var harborConfirmInterpreting = false
     /** Atomic so a tap arriving as interpretation ends cannot be lost between read and clear. */
@@ -439,8 +444,8 @@ internal class VoiceProcessor(
                 g2ClientActive = EvenG2ReadingSession.isClientActive(),
                 sttBackend = ModelManager.currentSttBackend(appContext).name,
                 sttModel = ModelDisplayIds.sttModelId(appContext),
-                llmBackend = ModelManager.currentLlmBackend(appContext).name,
-                llmModel = ModelDisplayIds.llmModelId(appContext),
+                llmBackend = ModelDisplayIds.currentLlmBackendName(appContext),
+                llmModel = ModelDisplayIds.currentLlmModelId(appContext),
             )
         )
         pendingGestureDiags = emptyList()
@@ -639,7 +644,15 @@ internal class VoiceProcessor(
                         }
                         turnKindlePages(command.pages, command.forward)
                     }
-                    InteractionMode.AI, InteractionMode.OPENCLAW -> transcribeAndRespondOnDevice(wav)
+                    InteractionMode.OPENCLAW -> {
+                        if (AsrTextFilter.isGarbageOrEmpty(raw)) {
+                            showCommandError("指示を認識できませんでした")
+                            return@launch
+                        }
+                        presentOpenClawConfirm(raw)
+                        BleConnectionService.setVoiceState(VoiceState.READY)
+                    }
+                    InteractionMode.AI -> transcribeAndRespondOnDevice(wav)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -652,6 +665,42 @@ internal class VoiceProcessor(
                 }
             }
         }
+    }
+
+    internal fun isOpenClawConfirmPending(): Boolean = pendingOpenClawText != null
+
+    /** Node voice in OpenClaw mode: show what was heard and wait for the tap, like Harbor. */
+    private fun presentOpenClawConfirm(text: String) {
+        val stt = text.trim()
+        BleConnectionService.setTranscription(stt)
+        pendingOpenClawText = stt
+        BleConnectionService.setResponse(
+            "OpenClawへ送信: $stt\nシングルタップで送信 / ダブルタップで取り消す",
+        )
+        EvenG2ReadingSession.publishResponse(openClawConfirmPrompt(stt))
+    }
+
+    /** Single tap on the OpenClaw confirm prompt: send the transcript as a normal assistant request. */
+    private fun executeOpenClawConfirm() {
+        val stt = pendingOpenClawText
+        if (stt == null) {
+            Log.w(TAG, "OpenClaw confirm ignored: no pending text (expired or discarded)")
+            val message = "確認の有効期限が切れました。もう一度話してください"
+            BleConnectionService.setResponse(message)
+            EvenG2ReadingSession.publishResponse(message)
+            return
+        }
+        pendingOpenClawText = null
+        Log.i(TAG, "OpenClaw confirm executing: chars=${stt.length}")
+        handleAssistantRequest(
+            text = stt,
+            conversationId = HARNESS_CONVERSATION_ID,
+            requestId = UUID.randomUUID().toString(),
+            // Like Harbor, the glass shows the result; the phone speaks only when no glass can.
+            speakResponse = !EvenG2ReadingSession.isClientActive(),
+            screenToken = null,
+            origin = QueryOrigin.HARNESS_NODE_VOICE,
+        )
     }
 
     private suspend fun applyGlassesModeSwitch(remainder: String) {
@@ -807,10 +856,7 @@ internal class VoiceProcessor(
             return HarborCommandTool.fallback(rawStt)
         }
         val llm = ModelManager.currentLlmBackend(appContext)
-        if (llm != LlmBackendId.GROQ &&
-            llm != LlmBackendId.OPENROUTER &&
-            llm != LlmBackendId.OPENCLAW
-        ) {
+        if (llm != LlmBackendId.GROQ && llm != LlmBackendId.OPENROUTER) {
             Log.w(TAG, "Harbor interpret requires cloud LLM; falling back to raw STT")
             return HarborCommandTool.fallback(rawStt)
         }
@@ -915,6 +961,7 @@ internal class VoiceProcessor(
 
     private fun clearHarborConfirm(resumeMirror: Boolean) {
         pendingHarborCommand = null
+        pendingOpenClawText = null
         harborConfirmInterpreting = false
         harborConfirmRequested.set(false)
         if (resumeMirror) BleConnectionService.pauseHarborMirror(false)
@@ -1078,7 +1125,9 @@ internal class VoiceProcessor(
                 presentResponse(message)
                 return
             }
-            val harborPaired = BleConnectionService.harborConnectionState.value.paired
+            // OpenClaw answers as itself; it is not told about the Harbor tool.
+            val harborPaired = BleConnectionService.harborConnectionState.value.paired &&
+                !isOpenClawRoute()
             val harborContext = if (harborPaired) {
                 BleConnectionService.harborInterpretContext()
             } else {
@@ -1212,10 +1261,13 @@ internal class VoiceProcessor(
             BleConnectionService.setResponse("")
             BleConnectionService.setErrorMessage("")
             BleConnectionService.setVoiceState(VoiceState.RESPONDING)
+            // OpenClaw mode: the glass shows the sent message at once, whatever the input was.
+            BleConnectionService.showOpenClawPending(query)
             val ready = aiBackend.ensureReady()
             if (ready.isFailure) {
                 val err = ready.exceptionOrNull()?.message ?: "モデル準備に失敗しました"
                 BleConnectionService.setErrorMessage(err)
+                publishOpenClawFailure(err)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 BleConnectionService.releaseAssistantProcessing()
                 notifyAssistantUi(
@@ -1317,6 +1369,7 @@ internal class VoiceProcessor(
             }.onFailure { error ->
                 val err = "Chat error: ${error.message}"
                 BleConnectionService.setErrorMessage(err)
+                publishOpenClawFailure(err)
                 BleConnectionService.setVoiceState(VoiceState.ERROR)
                 BleConnectionService.releaseAssistantProcessing()
                 notifyAssistantUi(
@@ -1700,10 +1753,15 @@ internal class VoiceProcessor(
         }
     }
 
+    /** Replaces the "考え中…" the glass is showing when an OpenClaw request fails. */
+    private fun publishOpenClawFailure(message: String) {
+        if (isOpenClawRoute() && EvenG2ReadingSession.isClientActive()) {
+            EvenG2ReadingSession.publishResponse("OpenClaw\n\n${message.take(120)}")
+        }
+    }
+
     private fun shouldMirrorOpenClawConversation(g2Active: Boolean): Boolean =
-        g2Active &&
-            BleConnectionService.interactionMode.value == InteractionMode.OPENCLAW &&
-            ModelManager.currentLlmBackend(appContext) == LlmBackendId.OPENCLAW
+        g2Active && isOpenClawRoute()
 
     private suspend fun presentReadingPassthrough(
         command: String,
@@ -1861,7 +1919,7 @@ internal class VoiceProcessor(
     /** Single tap is routed to recording only while SINGLE mode owns it. */
     internal fun handleSingleTap() {
         val now = SystemClock.elapsedRealtime()
-        if (pendingHarborCommand == null &&
+        if (pendingHarborCommand == null && pendingOpenClawText == null &&
             shouldSuppressSingleTapAfterDouble(now, lastDoubleTapElapsedMs)
         ) {
             Log.i(TAG, "Single tap suppressed after recent double tap")
@@ -1877,7 +1935,10 @@ internal class VoiceProcessor(
             }
             RecordingTapAction.CANCEL_HARBOR -> cancelHarborConfirm("single tap")
             RecordingTapAction.CONFIRM_HARBOR -> {
-                if (harborConfirmInterpreting) {
+                if (pendingOpenClawText != null) {
+                    Log.i(TAG, "Single tap: confirm OpenClaw send")
+                    executeOpenClawConfirm()
+                } else if (harborConfirmInterpreting) {
                     harborConfirmRequested.set(true)
                     Log.i(TAG, "Single tap: Harbor confirm queued during interpretation")
                 } else {
@@ -1897,7 +1958,7 @@ internal class VoiceProcessor(
             g2ClientActive = EvenG2ReadingSession.isClientActive(),
             state = BleConnectionService.voiceState.value,
             capturePurpose = activeCapturePurpose,
-            harborConfirmPending = pendingHarborCommand != null,
+            harborConfirmPending = pendingHarborCommand != null || pendingOpenClawText != null,
             harborConfirmAwaitingClarification =
                 pendingHarborCommand?.awaitingClarification == true,
         )
@@ -1974,7 +2035,8 @@ internal class VoiceProcessor(
             }
             RecordingTapAction.START_RECORDING -> requestRecordingStart(RecordingTapEvent.DOUBLE)
             RecordingTapAction.START_COMMAND -> requestCommandStart(RecordingTapEvent.DOUBLE)
-            RecordingTapAction.CONFIRM_HARBOR -> executeHarborConfirm()
+            RecordingTapAction.CONFIRM_HARBOR ->
+                if (pendingOpenClawText != null) executeOpenClawConfirm() else executeHarborConfirm()
             RecordingTapAction.CANCEL_HARBOR -> cancelHarborConfirm("double tap")
             RecordingTapAction.NONE -> Log.d(TAG, "Double tap ignored")
         }

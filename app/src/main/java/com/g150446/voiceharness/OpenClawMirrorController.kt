@@ -29,6 +29,8 @@ internal class OpenClawMirrorController(
     private val publishConversation: (String) -> Unit = EvenG2ReadingSession::publishConversation,
     private val publishStatus: (String) -> Unit = EvenG2ReadingSession::publishResponse,
     private val dispatcher: CoroutineContext = Dispatchers.IO,
+    /** True while something outside the voice state owns the glass (e.g. a send-confirm prompt). */
+    private val glassOwned: () -> Boolean = { false },
 ) {
     @Volatile private var mode = InteractionMode.AI
     private var job: Job? = null
@@ -45,6 +47,16 @@ internal class OpenClawMirrorController(
 
     fun setG2Active(active: Boolean) {
         if (active) reconcile() else stopPolling()
+    }
+
+    /**
+     * Shows the question that was just sent with "考え中…" so the glass reflects a send at once,
+     * whatever the input (Node voice, in-app mic, in-app text). The poll stays quiet while the
+     * voice pipeline is waiting for the reply.
+     */
+    fun showPending(user: String) {
+        thinkingShown = true
+        publishStatus(openClawPendingG2Text(user))
     }
 
     /**
@@ -75,7 +87,7 @@ internal class OpenClawMirrorController(
     private suspend fun poll() {
         try {
             while (mode == InteractionMode.OPENCLAW && g2Active()) {
-                if (!holdForVoicePipeline()) fetchLock.withLock { pollOnce() }
+                if (!holdForVoicePipeline() && !glassOwned()) fetchLock.withLock { pollOnce() }
                 val wait = if (failures == 0) {
                     OPENCLAW_MIRROR_POLL_MS
                 } else {
@@ -93,7 +105,7 @@ internal class OpenClawMirrorController(
     private suspend fun pollOnce() {
         val result = loadHistory()
         // The pipeline may have started while the request was in flight; its own output wins.
-        if (isVoicePipelineBusy(voiceState())) return
+        if (isVoicePipelineBusy(voiceState()) || glassOwned()) return
         val history = result.getOrNull()
         if (history == null) {
             val message = result.exceptionOrNull()?.message ?: "接続できません"

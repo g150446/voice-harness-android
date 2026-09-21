@@ -16,10 +16,18 @@ internal object ModelDisplayIds {
             LlmBackendId.GROQ -> GroqChatRequestBuilder.CHAT_MODEL
             LlmBackendId.OPENROUTER ->
                 OpenRouterPrefs.getModelId(context).ifBlank { "未選択" }
-            LlmBackendId.OPENCLAW -> OpenClawChatRequestBuilder.MODEL
             LlmBackendId.GEMMA -> ModelManager.status.value.gemma.fileName ?: "gemma"
             LlmBackendId.QWEN -> ModelManager.status.value.lfmChat.fileName ?: "lfm-chat"
         }
+
+    /** LLM backend name for history: OpenClaw when that route is active, else the selected LLM. */
+    fun currentLlmBackendName(context: Context): String =
+        if (isOpenClawRoute()) OPENCLAW_BACKEND_NAME else ModelManager.currentLlmBackend(context).name
+
+    fun currentLlmModelId(context: Context): String =
+        if (isOpenClawRoute()) OpenClawChatRequestBuilder.MODEL else llmModelId(context)
+
+    private const val OPENCLAW_BACKEND_NAME = "OPENCLAW"
 
     fun sttLabel(context: Context): String {
         val backend = ModelManager.currentSttBackend(context)

@@ -8,7 +8,8 @@
 | 役割 | 選択肢 | 備考 |
 |---|---|---|
 | ASR | Gemma 4 E2B / Qwen3-ASR / Groq Whisper | |
-| LLM | Gemma 4 E2B / LFM 2.5 / Groq Chat / **OpenRouter** / **OpenClaw** | OpenRouter / OpenClaw は LLM のみ |
+| LLM | Gemma 4 E2B / LFM 2.5 / Groq Chat / **OpenRouter** | OpenRouter は LLM のみ |
+| 応答先 | **OpenClaw**（LLM 一覧とは別枠） | 操作モードが OpenClaw のときだけ LLM の代わりに使う |
 
 TTS は Android `TextToSpeech`（または Even Realities G2 表示）。  
 ローカルはネットワーク不要。Groq / OpenRouter / OpenClaw はネットワークと資格情報が必要。
@@ -38,7 +39,7 @@ models/
 └── LFM2.5-2.6B-Q4_K_M.gguf
 ```
 
-Groq / OpenRouter / OpenClaw のみ使う場合、上記モデルは不要。
+Groq / OpenRouter のクラウド構成や OpenClaw モードのみ使う場合、上記モデルは不要。
 
 ## ビルド
 

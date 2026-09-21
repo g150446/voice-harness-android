@@ -6,9 +6,8 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import com.g150446.voiceharness.BleConnectionService
-import com.g150446.voiceharness.LlmBackendId
-import com.g150446.voiceharness.ModelManager
 import com.g150446.voiceharness.OpenClawLlmBackend
+import com.g150446.voiceharness.isOpenClawRoute
 import com.g150446.voiceharness.QueryOrigin
 import com.g150446.voiceharness.ScreenContext
 import java.util.UUID
@@ -99,12 +98,12 @@ object AssistantSessionController {
     /**
      * Loads the OpenClaw session transcript (the browser-visible conversation) into the sheet.
      * Gateway is the source of truth, so a successful load replaces the local message list.
-     * Skipped when OpenClaw is not the selected LLM or the device is locked.
+     * Skipped when the OpenClaw mode is not on or the device is locked.
      */
     fun refreshHistory(context: Context) {
         val appContext = context.applicationContext
         if (!_uiState.value.sessionActive || _uiState.value.locked) return
-        if (ModelManager.currentLlmBackend(appContext) != LlmBackendId.OPENCLAW) return
+        if (!isOpenClawRoute()) return
         val convId = conversationId
         historyJob?.cancel()
         historyJob = scope.launch(Dispatchers.IO) {

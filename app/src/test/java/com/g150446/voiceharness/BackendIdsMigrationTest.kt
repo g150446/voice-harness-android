@@ -19,13 +19,17 @@ class BackendIdsMigrationTest {
         assertEquals(SttBackendId.GEMMA, SttBackendId.fromStorage(null))
         assertEquals(LlmBackendId.GEMMA, LlmBackendId.fromStorage(null))
         assertEquals(LlmBackendId.OPENROUTER, LlmBackendId.fromStorage("OPENROUTER"))
-        assertEquals(LlmBackendId.OPENCLAW, LlmBackendId.fromStorage("OPENCLAW"))
+    }
+
+    @Test
+    fun `OpenClaw is no longer an LLM and a stored OPENCLAW falls back to the default`() {
+        assertEquals(false, LlmBackendId.entries.any { it.name == "OPENCLAW" })
+        assertEquals(LlmBackendId.GEMMA, LlmBackendId.fromStorage("OPENCLAW"))
     }
 
     @Test
     fun `openrouter is llm only`() {
         assertEquals(true, LlmBackendId.OPENROUTER.isCloud)
-        assertEquals(true, LlmBackendId.OPENCLAW.isCloud)
         assertEquals(false, SttBackendId.entries.any { it.name == "OPENROUTER" })
     }
 }

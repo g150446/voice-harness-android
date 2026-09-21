@@ -42,7 +42,6 @@ internal class BackendRegistry(private val appContext: Context) {
             val needQwen = stt == SttBackendId.QWEN || llm == LlmBackendId.QWEN
             val needGroq = stt == SttBackendId.GROQ || llm == LlmBackendId.GROQ
             val needOpenRouter = llm == LlmBackendId.OPENROUTER
-            val needOpenClaw = llm == LlmBackendId.OPENCLAW
             if (!needGemma) releaseVoice(gemma, "Gemma")
             if (!needQwen) releaseVoice(qwen, "Qwen")
             if (!needGroq) releaseVoice(groq, "Groq")
@@ -55,9 +54,6 @@ internal class BackendRegistry(private val appContext: Context) {
                         Log.w(TAG, "Release OpenRouter failed: ${e.message}")
                     }
                 }
-            }
-            if (!needOpenClaw) {
-                openClaw.getAndSet(null)?.release()
             }
         }
     }

@@ -62,12 +62,12 @@ class OnDeviceAiFacade(
     override suspend fun ensureReady(): Result<Unit> {
         val sttReady = sttBackend().ensureReady()
         if (sttReady.isFailure) return sttReady
+        if (isOpenClawRoute()) return registry.obtainOpenClaw().ensureReady()
         return when (ModelManager.currentLlmBackend(appContext)) {
             LlmBackendId.GEMMA -> registry.obtainGemma().ensureReady()
             LlmBackendId.QWEN -> registry.obtainQwen().ensureReady()
             LlmBackendId.GROQ -> registry.obtainGroq().ensureReady()
             LlmBackendId.OPENROUTER -> registry.obtainOpenRouter().ensureReady()
-            LlmBackendId.OPENCLAW -> registry.obtainOpenClaw().ensureReady()
         }
     }
 
@@ -108,12 +108,13 @@ class OnDeviceAiFacade(
     }
 
     override suspend fun chat(request: ChatRequest): Result<ChatResult> =
-        when (ModelManager.currentLlmBackend(appContext)) {
+        if (isOpenClawRoute()) {
+            registry.obtainOpenClaw().chat(request)
+        } else when (ModelManager.currentLlmBackend(appContext)) {
             LlmBackendId.GEMMA -> registry.obtainGemma().chat(request)
             LlmBackendId.QWEN -> registry.obtainQwen().chat(request)
             LlmBackendId.GROQ -> registry.obtainGroq().chat(request)
             LlmBackendId.OPENROUTER -> registry.obtainOpenRouter().chat(request)
-            LlmBackendId.OPENCLAW -> registry.obtainOpenClaw().chat(request)
         }
 
     override fun cancel() {

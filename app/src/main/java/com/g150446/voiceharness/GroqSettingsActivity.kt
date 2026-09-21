@@ -355,8 +355,15 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             }
         }
 
-        if (llmBackend == LlmBackendId.OPENCLAW) {
-            Spacer(modifier = Modifier.height(16.dp))
+        // OpenClaw is a destination (interaction mode), not an LLM, so it has its own section.
+        run {
+            Spacer(modifier = Modifier.height(24.dp))
+            Text("OpenClaw（応答先。LLM とは別）", fontSize = 16.sp)
+            Text(
+                "ホームの操作モードで OpenClaw を選ぶと、音声・チャットの送信先が OpenClaw になります。",
+                fontSize = 11.sp,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
             Text("OpenClaw Gateway", fontSize = 14.sp)
             Text(
                 "Gateway は公開せず、Mac のローカルネットワークまたは tailnet 内だけで使用してください。",
@@ -607,7 +614,6 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                     }
                 },
                 enabled = canLoad || llmBackend == LlmBackendId.OPENROUTER ||
-                    llmBackend == LlmBackendId.OPENCLAW ||
                     sttBackend == SttBackendId.GROQ || llmBackend == LlmBackendId.GROQ,
                 modifier = Modifier.fillMaxWidth()
             ) { Text("モデルを読み込む / 接続確認") }
