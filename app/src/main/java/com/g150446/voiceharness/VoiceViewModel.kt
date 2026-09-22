@@ -212,6 +212,12 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshHarborPlan() {
         _selectedHarborWorkspaceId.value?.let(BleConnectionService::loadHarborWorkspacePlan)
     }
+    /** Newest page; pass a cursor to prepend the page before it. */
+    fun refreshHarborTranscript(before: String? = null) {
+        _selectedHarborWorkspaceId.value?.let {
+            BleConnectionService.loadHarborWorkspaceTranscript(it, before)
+        }
+    }
     fun createHarborTab() = _selectedHarborWorkspaceId.value?.let(BleConnectionService::createHarborTab)
     fun activateHarborTab(id: String) = _selectedHarborWorkspaceId.value?.let {
         BleConnectionService.activateHarborTab(it, id)

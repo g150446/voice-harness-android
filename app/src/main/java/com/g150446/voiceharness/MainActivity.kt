@@ -61,6 +61,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -1902,7 +1903,7 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
     val terminalFontSize by viewModel.harborFontSize.collectAsState()
     var instruction by remember { mutableStateOf("") }
     var deepHistory by remember { mutableStateOf(false) }
-    var showPlan by rememberSaveable { mutableStateOf(false) }
+    var pane by rememberSaveable { mutableStateOf(HarborPaneView.TERMINAL) }
     var keysExpanded by rememberSaveable { mutableStateOf(false) }
     var closeTab by remember { mutableStateOf<HarborTab?>(null) }
     var closeWorkspace by remember { mutableStateOf(false) }
@@ -1916,24 +1917,42 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
         if (!text.isNullOrBlank()) instruction = listOf(instruction, text).filter(String::isNotBlank).joinToString(" ")
     }
     BackHandler { viewModel.navigateBack() }
-    LaunchedEffect(workspaceId, deepHistory) {
+    LaunchedEffect(workspaceId, deepHistory, pane) {
+        // The tab strip and the terminal both come from this call, so it keeps running for
+        // the other panes too — just not every second.
         if (deepHistory) {
             viewModel.refreshHarborWorkspace(17_500)
             return@LaunchedEffect
         }
         while (true) {
             viewModel.refreshHarborWorkspace(500)
-            delay(1_000)
+            delay(if (pane == HarborPaneView.TERMINAL) 1_000 else 5_000)
         }
     }
-    LaunchedEffect(state.screenText, deepHistory, showPlan) {
-        if (!deepHistory && !showPlan) {
+    // Follow new output only while the user is parked at the bottom. The decision is made
+    // when a scroll gesture ends, not when the text changes: deciding on content change
+    // races with the growing maxValue and drags the reader back down mid-scroll.
+    val followSlackPx = with(LocalDensity.current) { 24.dp.roundToPx() }
+    var followBottom by remember { mutableStateOf(true) }
+    LaunchedEffect(terminalScroll, followSlackPx) {
+        snapshotFlow { terminalScroll.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) {
+                followBottom = terminalScroll.value >= terminalScroll.maxValue - followSlackPx
+            }
+        }
+    }
+    LaunchedEffect(state.screenText, deepHistory, pane) {
+        if (!deepHistory && pane == HarborPaneView.TERMINAL && followBottom) {
             delay(25)
             terminalScroll.scrollTo(terminalScroll.maxValue)
         }
     }
-    LaunchedEffect(workspaceId, showPlan) {
-        if (showPlan) viewModel.refreshHarborPlan()
+    LaunchedEffect(workspaceId, pane) {
+        when (pane) {
+            HarborPaneView.PLAN -> viewModel.refreshHarborPlan()
+            HarborPaneView.CHAT -> viewModel.refreshHarborTranscript()
+            HarborPaneView.TERMINAL -> Unit
+        }
     }
     closeTab?.let { tab ->
         AlertDialog(
@@ -1977,13 +1996,36 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
                 enabled = terminalFontSize < HarborFontSizePreferences.MAX_SIZE,
                 contentPadding = PaddingValues(6.dp),
             ) { Text("A+") }
-            TextButton(onClick = { deepHistory = !deepHistory }) { Text(if (deepHistory) "Live" else "履歴") }
-            TextButton(onClick = { showPlan = !showPlan }) { Text(if (showPlan) "端末" else "プラン") }
+            if (pane == HarborPaneView.TERMINAL) {
+                TextButton(onClick = { deepHistory = !deepHistory }) {
+                    Text(if (deepHistory) "Live" else "履歴")
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            HarborPaneView.entries.forEach { choice ->
+                TextButton(
+                    onClick = { pane = choice },
+                    contentPadding = PaddingValues(6.dp),
+                ) {
+                    Text(
+                        choice.label,
+                        fontWeight = if (pane == choice) FontWeight.Bold else FontWeight.Normal,
+                    )
+                }
+            }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             TextButton(
                 onClick = {
-                    if (showPlan) viewModel.refreshHarborPlan() else viewModel.refreshHarborWorkspace()
+                    // Keep the depth the user is looking at: refreshing out of 履歴 used to
+                    // drop 17,500 lines back to 500, and the deep fetch is one-shot.
+                    when {
+                        pane == HarborPaneView.PLAN -> viewModel.refreshHarborPlan()
+                        pane == HarborPaneView.CHAT -> viewModel.refreshHarborTranscript()
+                        deepHistory -> viewModel.refreshHarborWorkspace(17_500)
+                        else -> viewModel.refreshHarborWorkspace()
+                    }
                 },
             ) { Text("更新") }
             TextButton(onClick = viewModel::createHarborTab) { Text("+Tab") }
@@ -2001,15 +2043,22 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
         if (response.contains("シングルタップで実行") || response.contains("ダブルタップで言い直す")) {
             HarborConfirmPrompt(transcription = transcription, response = response, viewModel = viewModel)
         }
-        if (showPlan) {
-            HarborPlanPane(
+        when (pane) {
+            HarborPaneView.PLAN -> HarborPlanPane(
                 state = state,
                 fontSize = terminalFontSize,
                 scroll = planScroll,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
-        } else {
-            HarborMonospaceText(
+
+            HarborPaneView.CHAT -> HarborTranscriptPane(
+                state = state,
+                fontSize = terminalFontSize,
+                onLoadOlder = { viewModel.refreshHarborTranscript(it) },
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
+
+            HarborPaneView.TERMINAL -> HarborMonospaceText(
                 text = state.screenText.ifEmpty { "出力を待っています…" },
                 fontSize = terminalFontSize,
                 scroll = terminalScroll,
@@ -2145,6 +2194,100 @@ private fun HarborPlanPane(
                 )
             }
         }
+    }
+}
+
+/** Which view of a workspace the detail screen is showing. */
+private enum class HarborPaneView(val label: String) {
+    TERMINAL("端末"),
+    PLAN("プラン"),
+    CHAT("会話"),
+}
+
+/**
+ * The conversation with the agent, read from its own session log.
+ *
+ * The terminal keeps about one repaint of an agent's UI, so scrolling the terminal view back
+ * to the instruction behind a reply does not work however many rows are fetched. This pane
+ * pages backwards through the log instead, oldest at the top.
+ */
+@Composable
+private fun HarborTranscriptPane(
+    state: HarborUiState,
+    fontSize: Int,
+    onLoadOlder: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val messages = state.transcript
+    // Land on the newest message the first time a conversation appears; later pages are
+    // prepended, and the item keys keep the reading position where the user left it.
+    var anchored by remember(state.selectedWorkspaceId) { mutableStateOf(false) }
+    LaunchedEffect(messages.lastOrNull()?.cursor) {
+        if (!anchored && messages.isNotEmpty()) {
+            listState.scrollToItem(messages.lastIndex)
+            anchored = true
+        }
+    }
+
+    Column(modifier) {
+        val unavailable = state.transcriptUnavailable
+        when {
+            state.transcriptError != null ->
+                Text(state.transcriptError, color = MaterialTheme.colorScheme.error)
+
+            unavailable != null && messages.isEmpty() -> Text(harborTranscriptReasonText(unavailable))
+
+            messages.isEmpty() ->
+                Text(if (state.transcriptLoading) "会話を取得しています…" else "会話はまだありません")
+
+            else -> LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
+                item(key = "older") {
+                    when {
+                        state.transcriptHasMore && state.transcriptCursor != null -> TextButton(
+                            onClick = { onLoadOlder(state.transcriptCursor) },
+                            enabled = !state.transcriptLoading,
+                        ) {
+                            Text(if (state.transcriptLoading) "読み込み中…" else "さらに遡る")
+                        }
+
+                        else -> Text(
+                            "ここが会話の先頭です",
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(vertical = 6.dp),
+                        )
+                    }
+                }
+                items(messages, key = { it.cursor }) { message ->
+                    HarborTranscriptMessageBlock(message, state.transcriptAgent, fontSize)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HarborTranscriptMessageBlock(
+    message: HarborTranscriptMessage,
+    agent: String?,
+    fontSize: Int,
+) {
+    val speaker = if (message.isUser) "あなた" else agent ?: "エージェント"
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text(
+            listOfNotNull(speaker, message.at?.let(::harborPlanTimestamp)).joinToString(" · "),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (message.isUser) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        Text(
+            remember(message.text) { HarborTextLayout.collapseRuleRuns(message.text, 40) },
+            fontSize = fontSize.sp,
+        )
     }
 }
 

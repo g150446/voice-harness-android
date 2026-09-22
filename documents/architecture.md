@@ -170,10 +170,14 @@ Harbor 確認画面では single = 実行、double = 取り消し（表示して
 （`needs_clarification`）の画面だけは「ダブルタップで言い直す」で録音し直しになる。
 HarborモードはG2の接続状態から独立しており、Android画面とHarnessNodeだけでも動作する。
 Androidのworkspace詳細画面とG2は同じアクティブMac/workspaceを参照し、G2切断時はミラーだけを停止する。
-workspace 詳細画面は端末出力のほかに、`GET /v1/workspaces/{id}/plan` で取得したエージェントの
-プランファイル全文も表示できる（画面由来ではないので、スクロールで流れた部分も読める。
-取得できない場合は理由を出し、端末出力で代用しない）。端末幅の横罫線は表示幅を実測して
-縮め（`HarborTextLayout`）、キーのボタン群は既定で畳んでおく。
+workspace 詳細画面は **端末 / プラン / 会話** を切り替える。プランは
+`GET /v1/workspaces/{id}/plan`、会話は `GET /v1/workspaces/{id}/transcript` から取得する。
+どちらも画面由来ではないので、スクロールで流れた部分も読める（取得できない場合は理由を出し、
+端末出力で代用しない）。会話はページングで、`さらに遡る` が `next_before` カーソルで古い分を
+前に継ぎ足す（`mergeHarborTranscript`）。**AI エージェントの pane は端末のスクロールバックに
+履歴を残さない**（実測で約1画面分）ため、返答から指示まで遡る用途は端末表示では成立せず、
+会話表示がその役割を担う。端末幅の横罫線は表示幅を実測して縮め（`HarborTextLayout`）、
+キーのボタン群は既定で畳んでおく。端末表示の自動追従は、ユーザーが最下部にいるときだけ働く。
 確認プロンプト表示中は、ホームと workspace 詳細画面に実行／取り消す／言い直すボタンも出る。
 ボタンは `confirmHarborCommand`/`cancelHarborCommand` 経由で tap と同じ
 `handleSingleTap`/`handleDoubleTap` を呼ぶだけなので、G2 やHarnessNodeが無くても確定できる。

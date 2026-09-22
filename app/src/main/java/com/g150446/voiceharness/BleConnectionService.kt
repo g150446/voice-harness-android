@@ -614,6 +614,8 @@ class BleConnectionService : Service() {
             instance?.harborMirrorController?.loadWorkspace(id, lines)
         fun loadHarborWorkspacePlan(id: String) =
             instance?.harborMirrorController?.loadWorkspacePlan(id)
+        fun loadHarborWorkspaceTranscript(id: String, before: String? = null) =
+            instance?.harborMirrorController?.loadWorkspaceTranscript(id, before)
         fun createHarborTab(workspaceId: String) = instance?.harborMirrorController?.createTab(workspaceId)
         fun activateHarborTab(workspaceId: String, tabId: String) =
             instance?.harborMirrorController?.activateTab(workspaceId, tabId)

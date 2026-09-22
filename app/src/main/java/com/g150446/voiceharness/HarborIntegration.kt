@@ -206,6 +206,36 @@ data class HarborPlan(
     val reason: String? = null,
 )
 
+/** One turn of the agent conversation, from `GET /v1/workspaces/{id}/transcript`. */
+data class HarborTranscriptMessage(
+    val role: String,
+    val text: String,
+    val at: String? = null,
+    /** Opaque paging position; hand it back as `before` to read older messages. */
+    val cursor: String = "",
+    val truncated: Boolean = false,
+) {
+    val isUser: Boolean get() = role == "user"
+}
+
+/**
+ * A page of the conversation between the user and the agent in a workspace.
+ *
+ * An agent's TUI repaints in place, so the terminal keeps roughly one screenful of it and
+ * `/screen` cannot reach the instruction behind an earlier reply. This comes from the agent's
+ * own session log instead. As with [HarborPlan], [available] false is a normal answer with a
+ * [reason], and terminal text is never shown in its place.
+ */
+data class HarborTranscript(
+    val available: Boolean,
+    val capability: String,
+    val agent: String? = null,
+    val messages: List<HarborTranscriptMessage> = emptyList(),
+    val hasMore: Boolean = false,
+    val nextBefore: String? = null,
+    val reason: String? = null,
+)
+
 data class HarborUiState(
     val devices: List<HarborDevice> = emptyList(),
     val workspaces: List<HarborWorkspace> = emptyList(),
@@ -216,6 +246,14 @@ data class HarborUiState(
     val plan: HarborPlan? = null,
     val planError: String? = null,
     val planLoading: Boolean = false,
+    /** Oldest first, grown at the front as older pages are loaded. */
+    val transcript: List<HarborTranscriptMessage> = emptyList(),
+    val transcriptAgent: String? = null,
+    val transcriptHasMore: Boolean = false,
+    val transcriptCursor: String? = null,
+    val transcriptUnavailable: HarborTranscript? = null,
+    val transcriptError: String? = null,
+    val transcriptLoading: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
 )
@@ -377,6 +415,87 @@ internal fun parseHarborPlan(code: Int, json: JSONObject): HarborPlan {
         updatedAt = json.optString("updated_at").trim().takeIf(String::isNotEmpty),
     )
 }
+
+/**
+ * Parses a `/transcript` page.
+ *
+ * Messages arrive oldest first within a page; [HarborTranscript.nextBefore] walks to the page
+ * before it. A message the bridge had to cut carries its own marker, so nothing here has to
+ * guess whether text is complete.
+ */
+internal fun parseHarborTranscript(code: Int, json: JSONObject): HarborTranscript {
+    val capability = json.optString("capability").ifBlank { "unknown" }
+    val agent = json.optString("agent").trim().takeIf(String::isNotEmpty)
+    if (code !in 200..299 || !json.optBoolean("available", false)) {
+        return HarborTranscript(
+            available = false,
+            capability = capability,
+            agent = agent,
+            reason = json.optString("reason").ifBlank { "unknown" },
+        )
+    }
+    val rows = json.optJSONArray("messages") ?: JSONArray()
+    val messages = buildList {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val role = row.optString("role").trim()
+            val text = row.optString("text")
+            if (role.isEmpty() || text.isBlank()) continue
+            add(
+                HarborTranscriptMessage(
+                    role = role,
+                    text = text,
+                    at = row.optString("at").trim().takeIf(String::isNotEmpty),
+                    cursor = row.optString("cursor").trim(),
+                    truncated = row.optBoolean("truncated", false),
+                ),
+            )
+        }
+    }
+    return HarborTranscript(
+        available = true,
+        capability = capability,
+        agent = agent,
+        messages = messages,
+        hasMore = json.optBoolean("has_more", false),
+        nextBefore = json.optString("next_before").trim().takeIf(String::isNotEmpty),
+    )
+}
+
+/**
+ * Folds a freshly fetched page into what is already on screen.
+ *
+ * A null [before] is the newest page and replaces everything, so a reopened conversation does
+ * not show a stale tail. An older page goes in front, minus anything already shown: the log
+ * can grow between requests, and repeating a message reads as the agent saying it twice.
+ */
+internal fun mergeHarborTranscript(
+    current: List<HarborTranscriptMessage>,
+    page: List<HarborTranscriptMessage>,
+    before: String?,
+): List<HarborTranscriptMessage> {
+    if (before == null) return page
+    val seen = current.mapTo(mutableSetOf()) { it.cursor }
+    return page.filterNot { it.cursor in seen } + current
+}
+
+/** Why there is no conversation to show. Never implies the terminal view has it. */
+internal fun harborTranscriptReasonText(transcript: HarborTranscript): String =
+    when (transcript.reason) {
+        "no_agent" -> "このworkspaceではエージェントが動いていません。"
+        "unsupported_agent" -> "このエージェントは会話の取得に対応していません。"
+        "session_unidentified" ->
+            "このpaneのセッションを特定できません。Claude Codeなら Terminal Harbor で " +
+                "`wezterm agent-session install-hooks --agent claude --apply` を実行して" +
+                "起動し直してください。"
+        "stale_session" -> "セッション登録が古くなっています。エージェントを起動し直してください。"
+        "transcript_missing" -> "セッションの記録が見つかりません。"
+        "ambiguous_session" ->
+            "同じ条件のセッションが複数あり、どれがこのpaneのものか特定できません。"
+        "stale_cursor" -> "会話の位置が変わりました。もう一度開き直してください。"
+        "unsupported_api" -> "このTerminal Harborは会話の取得に未対応です（API 1.12.0以降が必要）。"
+        else -> "会話を取得できませんでした。"
+    }
 
 /** Why there is no plan to show, in the user's language. Never implies the screen has one. */
 internal fun harborPlanReasonText(plan: HarborPlan): String = when (plan.reason) {
@@ -735,6 +854,33 @@ internal class HarborApiClient(
         return parseHarborPlan(response.code, JSONObject(String(response.body)))
     }
 
+    /**
+     * One page of the agent conversation. Like [fetchPlan] it has no `/screen` fallback: the
+     * terminal holds one repaint of the agent's UI, not the exchange being asked for.
+     */
+    fun fetchTranscript(
+        credentials: HarborCredentials,
+        workspaceId: String,
+        limit: Int = 20,
+        before: String? = null,
+    ): HarborTranscript {
+        val query = buildString {
+            append("?limit=").append(limit.coerceIn(1, 200))
+            before?.takeIf(String::isNotBlank)?.let { append("&before=").append(Uri.encode(it)) }
+        }
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/transcript$query"
+        val response = authorized(credentials, "GET", path)
+        if (response.code == 404) {
+            return HarborTranscript(
+                available = false,
+                capability = "unknown",
+                reason = "unsupported_api",
+            )
+        }
+        checkOk(response)
+        return parseHarborTranscript(response.code, JSONObject(String(response.body)))
+    }
+
     fun fetchInterpretContext(credentials: HarborCredentials): HarborInterpretContext? {
         val workspaces = listWorkspaces(credentials)
         val workspace = workspaces.firstOrNull { it.selected } ?: return null
@@ -1058,6 +1204,50 @@ internal class HarborMirrorController(
                         plan = null,
                         planError = error.message ?: "プランを取得できませんでした。",
                         planLoading = false,
+                    )
+                }
+        }
+    }
+
+    /**
+     * One page of the agent conversation. `before` null loads the newest page and replaces
+     * what is shown; a cursor prepends the page before it, which is how 「さらに遡る」 walks
+     * back to the instruction that produced a reply.
+     */
+    fun loadWorkspaceTranscript(workspaceId: String, before: String? = null) {
+        val creds = credentials ?: return
+        _uiState.value = _uiState.value.copy(transcriptLoading = true, transcriptError = null)
+        scope.launch(Dispatchers.IO) {
+            runCatching { client.fetchTranscript(creds, workspaceId, before = before) }
+                .onSuccess { page ->
+                    val current = _uiState.value
+                    if (!page.available) {
+                        _uiState.value = current.copy(
+                            transcript = if (before == null) emptyList() else current.transcript,
+                            transcriptUnavailable = page,
+                            transcriptError = null,
+                            transcriptLoading = false,
+                        )
+                        return@onSuccess
+                    }
+                    _uiState.value = current.copy(
+                        transcript = mergeHarborTranscript(
+                            current.transcript,
+                            page.messages,
+                            before,
+                        ),
+                        transcriptAgent = page.agent ?: current.transcriptAgent,
+                        transcriptHasMore = page.hasMore,
+                        transcriptCursor = page.nextBefore,
+                        transcriptUnavailable = null,
+                        transcriptError = null,
+                        transcriptLoading = false,
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        transcriptError = error.message ?: "会話を取得できませんでした。",
+                        transcriptLoading = false,
                     )
                 }
         }
