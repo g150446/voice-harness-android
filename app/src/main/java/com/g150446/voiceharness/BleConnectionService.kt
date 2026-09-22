@@ -464,6 +464,7 @@ class BleConnectionService : Service() {
          */
         fun syncInteractionModeWithG2Client(context: Context) {
             syncReaderModeWithG2Client(context)
+            syncResponseOutputTargetWithG2Client(context)
             val saved = InteractionModePreferences(context).mode()
             if (!EvenG2ReadingSession.isClientActive()) return
             if (saved == InteractionMode.HARBOR &&
@@ -657,6 +658,14 @@ class BleConnectionService : Service() {
             setReadingPassthroughEnabled(context, false, notifyG2 = false)
             _interactionMode.value = InteractionMode.AI
             // Keep saved preference as READER so the user can re-enable manually.
+        }
+
+        /** Fall back to phone audio when the G2 plugin stops polling (no auto-ON). */
+        fun syncResponseOutputTargetWithG2Client(context: Context) {
+            if (_responseOutputTarget.value != ResponseOutputTarget.SMART_GLASSES) return
+            if (EvenG2ReadingSession.isClientActive()) return
+            Log.i(TAG, "Response output auto-switch to phone audio: G2 plugin inactive")
+            setResponseOutputTarget(context, ResponseOutputTarget.PHONE_AUDIO)
         }
 
         /** Kindle became the foreground app while accessibility is watching. */

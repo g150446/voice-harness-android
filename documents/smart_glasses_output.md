@@ -90,6 +90,14 @@ G2を選択しても返答は電話画面と履歴へ残る。履歴エントリ
 モデルIDが付く。Even Hubプラグインが bridge をポーリング中（`isClientActive`）なら表示成功として
 TTSを抑止し、未接続なら同じ返答をTTSへ戻す。
 
+出力先トグル自体も、G2側を選んだままプラグインのポーリングが途絶えると自動で音声側へ戻る。
+`BleConnectionService` の500msポーリングループ（`syncInteractionModeWithG2Client`）が
+`syncResponseOutputTargetWithG2Client` を毎tick呼び、出力先が `SMART_GLASSES` かつ
+`EvenG2ReadingSession.isClientActive()` が false（ハートビート2秒切れ）になった時点で
+`setResponseOutputTarget(PHONE_AUDIO)` を呼んで永続化・`StateFlow`更新・G2表示クリアまで行う。
+リーダーモード自動OFF（`syncReaderModeWithG2Client`）と同じ仕組み。再接続でも自動ではG2へ
+戻らない（ユーザーが再度トグルする）。
+
 ### UIと永続設定（G2）
 
 | 選択 | 動作 |
