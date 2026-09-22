@@ -18,7 +18,7 @@ HarnessNode → BLE PCM → ASR → Chat → response
                                                        → Even Hub plugin → G2
 ```
 
-アプリには排他的な `AI対話`、`リーダー`、`Harbor`、`OpenClaw` の4操作モードがある。リーダーはG2を必要とするが、
+アプリには排他的な `AI対話`、`リーダー`、`Harbor`、`OpenClaw`、`EPUB` の5操作モードがある（EPUBは `epub_reader.md`）。リーダーはG2を必要とするが、
 HarborはAndroid画面とHarnessNodeだけでも有効にできる。G2接続中の
 ダブルタップはモード別の指示録音になる。発話の先頭が `グラスモード変更` のときだけ
 モード切替として扱う。G2未接続時のダブルタップはホームの録音タップ設定に従う。

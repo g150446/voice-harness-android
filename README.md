@@ -170,7 +170,7 @@ QR/URLと`npm run dev`はプラグイン開発時だけ使用する。配布パ�
 
 ### G2操作モード
 
-ホームの「操作モード」で **AI対話 / リーダー / Harbor** を切り替えられる。
+ホームの「操作モード」で **AI対話 / リーダー / Harbor / OpenClaw / EPUB** を切り替えられる（EPUB は [`documents/epub_reader.md`](documents/epub_reader.md)）。
 リーダーとTerminal Harborは、それぞれの欄にあるトグルからもON/OFFできる。
 選択したモードは端末に保存され、アプリ再起動後も G2 再接続と（Harbor の場合）ペアリングが揃えば自動復帰する。
 G2接続中のダブルタップは、今の操作モード向けの指示録音になる。リーダーでは「5つページ進めて」

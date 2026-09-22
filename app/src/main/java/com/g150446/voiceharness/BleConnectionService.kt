@@ -1,5 +1,6 @@
 package com.g150446.voiceharness
 
+import com.g150446.voiceharness.epub.EpubReaderHub
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -421,6 +422,17 @@ class BleConnectionService : Service() {
                     _interactionMode.value = InteractionMode.AI
                     setResponse("リーダーモードは再起動後は手動で開始してください")
                 }
+                InteractionMode.EPUB -> {
+                    if (!EpubReaderHub.get(context).hasLastBook()) {
+                        InteractionModePreferences(context).setMode(InteractionMode.AI)
+                        _interactionMode.value = InteractionMode.AI
+                        setResponse("EPUBモードを解除しました: 開いた本がありません")
+                        return
+                    }
+                    // The glass shows the book once the plugin polls (see the service loop).
+                    _interactionMode.value = InteractionMode.EPUB
+                    setResponse("EPUBモードを復元しました")
+                }
                 InteractionMode.OPENCLAW -> {
                     if (!isOpenClawConfigured(context)) {
                         InteractionModePreferences(context).setMode(InteractionMode.AI)
@@ -523,11 +535,13 @@ class BleConnectionService : Service() {
             val g2Active = EvenG2ReadingSession.isClientActive()
             val harborPaired = service?.harborMirrorController?.isPaired()
                 ?: hasStoredHarborCredentials(context)
-            if (!canEnableInteractionMode(mode, g2Active, harborPaired, isOpenClawConfigured(context))) {
+            val epubReady = EpubReaderHub.get(context).hasLastBook()
+            if (!canEnableInteractionMode(mode, g2Active, harborPaired, isOpenClawConfigured(context), epubReady)) {
                 setErrorMessage(
                     when (mode) {
                         InteractionMode.READER -> "G2プラグインの接続が必要です"
                         InteractionMode.OPENCLAW -> "OpenClawのGateway tokenを設定してください"
+                        InteractionMode.EPUB -> "先にEPUBを開いてください（EPUBライブラリ）"
                         else -> "Terminal Harborをペアリングしてください"
                     },
                 )
@@ -552,6 +566,11 @@ class BleConnectionService : Service() {
                         EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborに接続中…")
                     }
                 }
+                InteractionMode.EPUB -> {
+                    setReadingPassthroughEnabled(context, false, notifyG2 = false)
+                    setResponseOutputTarget(context, ResponseOutputTarget.SMART_GLASSES)
+                    // The book itself is published once the mode is set (below).
+                }
                 InteractionMode.OPENCLAW -> {
                     setReadingPassthroughEnabled(context, false, notifyG2 = false)
                     // OpenClaw is a destination, not an LLM: the mode itself routes requests to it.
@@ -563,6 +582,7 @@ class BleConnectionService : Service() {
             service?.openClawMirrorController?.setMode(mode)
             _interactionMode.value = mode
             InteractionModePreferences(context).setMode(mode)
+            if (mode == InteractionMode.EPUB) EpubReaderHub.enterAsync(context)
             setErrorMessage("")
             service?.publishEvenG2UiState()
             return true
@@ -718,6 +738,7 @@ class BleConnectionService : Service() {
     private var evenG2BridgeServer: EvenG2BridgeServer? = null
     private var harborMirrorController: HarborMirrorController? = null
     private var openClawMirrorController: OpenClawMirrorController? = null
+    private var wasG2Active = false
     private lateinit var drivingModeController: DrivingModeController
 
     override fun onCreate() {
@@ -791,6 +812,11 @@ class BleConnectionService : Service() {
                 syncInteractionModeWithG2Client(applicationContext)
                 harborMirrorController?.setG2Active(EvenG2ReadingSession.isClientActive())
                 openClawMirrorController?.setG2Active(EvenG2ReadingSession.isClientActive())
+                val g2Active = EvenG2ReadingSession.isClientActive()
+                if (g2Active && !wasG2Active && _interactionMode.value == InteractionMode.EPUB) {
+                    EpubReaderHub.enterAsync(applicationContext)
+                }
+                wasG2Active = g2Active
                 publishEvenG2UiState()
             }
         }

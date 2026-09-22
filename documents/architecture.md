@@ -39,6 +39,7 @@ BleConnectionService 付帯:
   RecordingOverlayController … RECORDING 中の他アプリ上インジケータ
   HeadlessScreenCapture ……… ROLE_ASSISTANT 時の Assist/スクショ（不適格の理由をログへ出す）
   HarborMirrorController …… 複数Macの暗号化資格情報、Harbor API/UI状態、G2ミラーを一元管理
+  EpubReaderHub/Controller … EPUBモード中、開いている本の位置を保持し、本文チャンクと目次をG2へ出す（phone画面・音声・G2のadvance要求から操作）
   OpenClawMirrorController …… OpenClawモード中、セッション履歴（アプリのチャット画面と同じ）をG2へミラー（読み取り専用）
 
 BleManager ── Channel<BleVoiceInput> ──▶ BleConnectionService ──▶ VoiceProcessor

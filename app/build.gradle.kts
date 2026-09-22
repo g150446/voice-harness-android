@@ -148,6 +148,7 @@ dependencies {
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.14.0")
     implementation("ai.liquid.leap:leap-sdk:0.10.7")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.jsoup:jsoup:1.18.3")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")

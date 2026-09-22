@@ -1,5 +1,6 @@
 package com.g150446.voiceharness
 
+import com.g150446.voiceharness.epub.EpubLibraryActivity
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -602,6 +603,7 @@ fun HomeScreen(
                 InteractionMode.READER to "リーダー",
                 InteractionMode.HARBOR to "Harbor",
                 InteractionMode.OPENCLAW to "OpenClaw",
+                InteractionMode.EPUB to "EPUB",
             ).forEach { (mode, label) ->
                 OutlinedButton(
                     onClick = { viewModel.setInteractionMode(mode) },
@@ -745,6 +747,7 @@ fun HomeScreen(
             !smartGlassesState.connected -> "G2プラグインが応答していません"
             interactionMode == InteractionMode.HARBOR -> "G2でHarborモード中"
             interactionMode == InteractionMode.OPENCLAW -> "G2でOpenClaw会話中"
+            interactionMode == InteractionMode.EPUB -> "G2でEPUB表示中"
             smartGlassesState.readingPassthroughActive -> "G2でリーダーモード中"
             smartGlassesState.displaying -> "G2に返答を表示中"
             else -> "G2プラグイン接続済み"
@@ -1146,6 +1149,17 @@ fun HomeScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("OpenClawチャット")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedButton(
+            onClick = {
+                context.startActivity(Intent(context, EpubLibraryActivity::class.java))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("EPUBライブラリ")
         }
 
         Spacer(modifier = Modifier.height(8.dp))

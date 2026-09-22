@@ -93,4 +93,28 @@ class InteractionModeTest {
             ),
         )
     }
+
+    @Test
+    fun `EPUB reader is named by voice without colliding with the Kindle reader`() {
+        assertEquals(InteractionMode.EPUB, parseInteractionMode("EPUBモード"))
+        assertEquals(InteractionMode.EPUB, parseInteractionMode("イーパブリーダー"))
+        assertEquals(InteractionMode.EPUB, parseInteractionMode("epubリーダー"))
+        assertEquals(InteractionMode.READER, parseInteractionMode("リーダー"))
+        assertEquals(InteractionMode.READER, parseInteractionMode("リーダーモード"))
+        assertEquals(InteractionMode.AI, parseInteractionMode("AI対話"))
+    }
+
+    @Test
+    fun `EPUB mode needs an opened book and never needs G2`() {
+        assertTrue(
+            canEnableInteractionMode(
+                InteractionMode.EPUB, g2Active = false, harborPaired = false, epubReady = true,
+            ),
+        )
+        assertFalse(
+            canEnableInteractionMode(
+                InteractionMode.EPUB, g2Active = true, harborPaired = true, epubReady = false,
+            ),
+        )
+    }
 }

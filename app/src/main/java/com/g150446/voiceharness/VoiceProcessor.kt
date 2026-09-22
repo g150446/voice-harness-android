@@ -1,5 +1,6 @@
 package com.g150446.voiceharness
 
+import com.g150446.voiceharness.epub.EpubReaderHub
 import android.content.Context
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
@@ -497,7 +498,10 @@ internal class VoiceProcessor(
             recordingCuePlayer.playStopped()
         }
 
-        if (capturePurpose == CapturePurpose.COMMAND) {
+        // EPUB mode has no chat: every recording is a spoken command, with or without the glass.
+        if (capturePurpose == CapturePurpose.COMMAND ||
+            BleConnectionService.interactionMode.value == InteractionMode.EPUB
+        ) {
             processCommandRecording(pcmData, recordingDurationMs, pcmDurationMs)
             return
         }
@@ -617,6 +621,11 @@ internal class VoiceProcessor(
                     add(AsrVocabularyTerm("AI対話モード"))
                     add(AsrVocabularyTerm("リーダーモード"))
                     add(AsrVocabularyTerm("OpenClawモード"))
+                    add(AsrVocabularyTerm("EPUBモード"))
+                    if (interactionMode == InteractionMode.EPUB) {
+                        add(AsrVocabularyTerm("目次"))
+                        EpubReaderHub.get(appContext).speechHints().forEach { add(AsrVocabularyTerm(it)) }
+                    }
                     add(AsrVocabularyTerm("Terminal Harbor"))
                     add(AsrVocabularyTerm("ページ進めて"))
                     add(AsrVocabularyTerm("ページ戻して"))
@@ -643,6 +652,10 @@ internal class VoiceProcessor(
                             return@launch
                         }
                         turnKindlePages(command.pages, command.forward)
+                    }
+                    InteractionMode.EPUB -> {
+                        BleConnectionService.setResponse(EpubReaderHub.get(appContext).handleVoice(raw))
+                        BleConnectionService.setVoiceState(VoiceState.READY)
                     }
                     InteractionMode.OPENCLAW -> {
                         if (AsrTextFilter.isGarbageOrEmpty(raw)) {
@@ -723,6 +736,7 @@ internal class VoiceProcessor(
                 InteractionMode.READER -> "リーダーモードに切り替えました"
                 InteractionMode.HARBOR -> "Harborモードに切り替えました"
                 InteractionMode.OPENCLAW -> "OpenClawモードに切り替えました"
+                InteractionMode.EPUB -> "EPUBモードに切り替えました"
             }
         )
         if (mode == InteractionMode.READER) {
@@ -2193,6 +2207,12 @@ internal class VoiceProcessor(
     }
 
     internal fun requestEvenG2PageAdvance(expectedRevision: Long) {
+        if (BleConnectionService.interactionMode.value == InteractionMode.EPUB) {
+            scope.launch(Dispatchers.IO) {
+                EpubReaderHub.get(appContext).advanceFromGlass()
+            }
+            return
+        }
         scope.launch(Dispatchers.IO) {
             val completed = runCatching {
                 if (EvenG2ReadingSession.snapshot(BleConnectionService.doubleTapStatus.value.count).revision != expectedRevision) {

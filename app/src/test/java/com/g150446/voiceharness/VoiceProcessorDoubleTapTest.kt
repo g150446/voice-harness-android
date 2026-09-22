@@ -524,4 +524,30 @@ class VoiceProcessorDoubleTapTest {
             }
         }
     }
+
+    @Test
+    fun `EPUB mode single tap never records and double tap on G2 records a command`() {
+        for (mode in RecordingTapMode.entries) {
+            assertEquals(
+                RecordingTapAction.NONE,
+                recordingTapAction(
+                    mode = mode,
+                    event = RecordingTapEvent.SINGLE,
+                    interactionMode = InteractionMode.EPUB,
+                    g2ClientActive = false,
+                    state = VoiceState.READY,
+                ),
+            )
+        }
+        assertEquals(
+            RecordingTapAction.START_COMMAND,
+            recordingTapAction(
+                mode = RecordingTapMode.DOUBLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.EPUB,
+                g2ClientActive = true,
+                state = VoiceState.READY,
+            ),
+        )
+    }
 }

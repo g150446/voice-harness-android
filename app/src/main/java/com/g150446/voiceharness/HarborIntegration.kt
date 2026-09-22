@@ -37,7 +37,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-enum class InteractionMode { AI, READER, HARBOR, OPENCLAW }
+enum class InteractionMode { AI, READER, HARBOR, OPENCLAW, EPUB }
 
 internal enum class CapturePurpose { AI_QUERY, COMMAND }
 
@@ -46,7 +46,9 @@ internal fun parseInteractionMode(text: String): InteractionMode? {
         .replace(Regex("[\\s、。,.!！?？・:_-]+"), "")
     val openClaw = listOf("openclaw", "オープンクロー", "オープンクロウ", "オープンクロ")
         .any(normalized::contains)
+    val epub = listOf("epub", "イーパブ", "イーパッブ", "イーバブ").any(normalized::contains)
     val matches = buildSet {
+        if (epub) add(InteractionMode.EPUB)
         if (openClaw) add(InteractionMode.OPENCLAW)
         if (listOf("ハーバー", "terminalharbor", "ターミナル").any(normalized::contains)) {
             add(InteractionMode.HARBOR)
@@ -57,7 +59,8 @@ internal fun parseInteractionMode(text: String): InteractionMode? {
         if (aiWords.any(normalized::contains) || (!openClaw && normalized.contains("ai"))) {
             add(InteractionMode.AI)
         }
-        if (listOf("リーダー", "読書", "reader").any(normalized::contains)) {
+        // "EPUBリーダー" names the EPUB reader, not the Kindle reader.
+        if (!epub && listOf("リーダー", "読書", "reader").any(normalized::contains)) {
             add(InteractionMode.READER)
         }
     }
@@ -69,11 +72,13 @@ internal fun canEnableInteractionMode(
     g2Active: Boolean,
     harborPaired: Boolean,
     openClawConfigured: Boolean = false,
+    epubReady: Boolean = false,
 ): Boolean = when (mode) {
     InteractionMode.AI -> true
     InteractionMode.READER -> g2Active
     InteractionMode.HARBOR -> harborPaired
     InteractionMode.OPENCLAW -> openClawConfigured
+    InteractionMode.EPUB -> epubReady
 }
 
 internal data class HarborEndpoint(val kind: String, val url: String)

@@ -78,6 +78,18 @@
             android:theme="@style/Theme.HarnessVoice" />
 
         <activity
+            android:name=".epub.EpubLibraryActivity"
+            android:exported="false"
+            android:label="EPUB Library"
+            android:theme="@style/Theme.HarnessVoice" />
+
+        <activity
+            android:name=".epub.EpubReaderActivity"
+            android:exported="false"
+            android:label="EPUB Reader"
+            android:theme="@style/Theme.HarnessVoice" />
+
+        <activity
             android:name=".assistant.HarnessAssistantActivity"
             android:exported="false"
             android:excludeFromRecents="true"
