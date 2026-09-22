@@ -14,11 +14,15 @@ internal fun harborConfirmPrompt(
     stt: String,
     aiComment: String? = null,
     awaitingClarification: Boolean = false,
+    stepsPreview: String = "",
 ): String = buildString {
     append("確認\n")
     append(stt.take(HARBOR_CONFIRM_STT_MAX))
     if (stt.length > HARBOR_CONFIRM_STT_MAX) append("…")
     aiComment?.takeIf { it.isNotBlank() }?.let { append("\n\nAI: ").append(it) }
+    // A single tap can now run several keys in a row, so the sequence itself has to be on
+    // the glass — the summary sentence alone would hide what is about to be typed.
+    stepsPreview.takeIf { it.isNotBlank() }?.let { append("\n送信: ").append(it) }
     append(
         if (awaitingClarification) {
             "\n\nダブルタップで言い直す"

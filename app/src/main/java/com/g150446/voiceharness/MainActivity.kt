@@ -18,9 +18,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -57,12 +59,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -1895,9 +1902,12 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
     val terminalFontSize by viewModel.harborFontSize.collectAsState()
     var instruction by remember { mutableStateOf("") }
     var deepHistory by remember { mutableStateOf(false) }
+    var showPlan by rememberSaveable { mutableStateOf(false) }
+    var keysExpanded by rememberSaveable { mutableStateOf(false) }
     var closeTab by remember { mutableStateOf<HarborTab?>(null) }
     var closeWorkspace by remember { mutableStateOf(false) }
     val terminalScroll = rememberScrollState()
+    val planScroll = rememberScrollState()
     val speechLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -1916,11 +1926,14 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
             delay(1_000)
         }
     }
-    LaunchedEffect(state.screenText, deepHistory) {
-        if (!deepHistory) {
+    LaunchedEffect(state.screenText, deepHistory, showPlan) {
+        if (!deepHistory && !showPlan) {
             delay(25)
             terminalScroll.scrollTo(terminalScroll.maxValue)
         }
+    }
+    LaunchedEffect(workspaceId, showPlan) {
+        if (showPlan) viewModel.refreshHarborPlan()
     }
     closeTab?.let { tab ->
         AlertDialog(
@@ -1965,9 +1978,14 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
                 contentPadding = PaddingValues(6.dp),
             ) { Text("A+") }
             TextButton(onClick = { deepHistory = !deepHistory }) { Text(if (deepHistory) "Live" else "履歴") }
+            TextButton(onClick = { showPlan = !showPlan }) { Text(if (showPlan) "端末" else "プラン") }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = viewModel::refreshHarborWorkspace) { Text("更新") }
+            TextButton(
+                onClick = {
+                    if (showPlan) viewModel.refreshHarborPlan() else viewModel.refreshHarborWorkspace()
+                },
+            ) { Text("更新") }
             TextButton(onClick = viewModel::createHarborTab) { Text("+Tab") }
             TextButton(onClick = { closeWorkspace = true }) { Text("workspace終了") }
         }
@@ -1983,24 +2001,39 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
         if (response.contains("シングルタップで実行") || response.contains("ダブルタップで言い直す")) {
             HarborConfirmPrompt(transcription = transcription, response = response, viewModel = viewModel)
         }
-        Text(
-            state.screenText.ifEmpty { "出力を待っています…" },
-            fontFamily = FontFamily.Monospace,
-            fontSize = terminalFontSize.sp,
-            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(terminalScroll),
-        )
-        listOf(
-            listOf("left" to "←", "up" to "↑", "down" to "↓", "right" to "→"),
-            listOf("escape" to "ESC", "ctrl-c" to "^C"),
-            listOf("space" to "SPC", "tab" to "Tab", "shift-tab" to "⇧Tab"),
-        ).forEach { keys ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                keys.forEach { (key, label) ->
-                    TextButton(
-                        onClick = { viewModel.sendHarborKey(key) },
-                        contentPadding = PaddingValues(6.dp),
-                        modifier = Modifier.weight(1f),
-                    ) { Text(label) }
+        if (showPlan) {
+            HarborPlanPane(
+                state = state,
+                fontSize = terminalFontSize,
+                scroll = planScroll,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
+        } else {
+            HarborMonospaceText(
+                text = state.screenText.ifEmpty { "出力を待っています…" },
+                fontSize = terminalFontSize,
+                scroll = terminalScroll,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
+        }
+        TextButton(
+            onClick = { keysExpanded = !keysExpanded },
+            contentPadding = PaddingValues(6.dp),
+        ) { Text(if (keysExpanded) "キー ▴" else "キー ▾") }
+        if (keysExpanded) {
+            listOf(
+                listOf("left" to "←", "up" to "↑", "down" to "↓", "right" to "→"),
+                listOf("escape" to "ESC", "ctrl-c" to "^C"),
+                listOf("space" to "SPC", "tab" to "Tab", "shift-tab" to "⇧Tab"),
+            ).forEach { keys ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    keys.forEach { (key, label) ->
+                        TextButton(
+                            onClick = { viewModel.sendHarborKey(key) },
+                            contentPadding = PaddingValues(6.dp),
+                            modifier = Modifier.weight(1f),
+                        ) { Text(label) }
+                    }
                 }
             }
         }
@@ -2038,6 +2071,89 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
         }
     }
 }
+
+/**
+ * Monospace terminal-ish text, with over-long horizontal rules shortened to the width this
+ * composable actually has. The column count is measured from the current font size rather
+ * than assumed, so `A−`/`A+` and rotation both keep separators on one row.
+ */
+@Composable
+private fun HarborMonospaceText(
+    text: String,
+    fontSize: Int,
+    scroll: ScrollState,
+    modifier: Modifier = Modifier,
+) {
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    BoxWithConstraints(modifier) {
+        val widthPx = with(density) { maxWidth.toPx() }
+        val columns = remember(widthPx, fontSize) {
+            val style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = fontSize.sp)
+            val sampleWidth = measurer.measure(AnnotatedString(RULE_SAMPLE), style).size.width
+            if (sampleWidth <= 0 || widthPx <= 0f) {
+                HarborTextLayout.FALLBACK_COLUMNS
+            } else {
+                val charWidth = sampleWidth.toFloat() / RULE_SAMPLE.length
+                (widthPx / charWidth).toInt().coerceAtLeast(HarborTextLayout.MIN_KEPT_RUN)
+            }
+        }
+        val shown = remember(text, columns) { HarborTextLayout.collapseRuleRuns(text, columns) }
+        Text(
+            shown,
+            fontFamily = FontFamily.Monospace,
+            fontSize = fontSize.sp,
+            modifier = Modifier.fillMaxWidth().verticalScroll(scroll),
+        )
+    }
+}
+
+private const val RULE_SAMPLE = "──────────"
+
+/**
+ * The agent's plan file, which is a different thing from the terminal screen: the screen only
+ * holds what has not scrolled away. When Harbor has no plan to give, the reason is shown on
+ * its own — substituting screen text here would pass a partial view off as the plan.
+ */
+@Composable
+private fun HarborPlanPane(
+    state: HarborUiState,
+    fontSize: Int,
+    scroll: ScrollState,
+    modifier: Modifier = Modifier,
+) {
+    val plan = state.plan
+    Column(modifier) {
+        when {
+            state.planError != null -> Text(state.planError, color = MaterialTheme.colorScheme.error)
+            plan == null -> Text(if (state.planLoading) "プランを取得しています…" else "プラン未取得")
+            !plan.available -> Text(harborPlanReasonText(plan))
+            else -> {
+                Text(
+                    listOfNotNull(
+                        "${plan.agent ?: "エージェント"}のプランファイル",
+                        plan.updatedAt?.let { "更新 ${harborPlanTimestamp(it)}" },
+                    ).joinToString(" · "),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                HarborMonospaceText(
+                    text = plan.text,
+                    fontSize = fontSize,
+                    scroll = scroll,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+/** Harbor sends the plan file's mtime as RFC 3339; show it in the phone's own time zone. */
+private fun harborPlanTimestamp(value: String): String = runCatching {
+    java.time.OffsetDateTime.parse(value)
+        .atZoneSameInstant(java.time.ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("MM/dd HH:mm"))
+}.getOrDefault(value)
 
 /**
  * Wraps the Harbor confirm prompt in a card so it's visually distinct from the surrounding

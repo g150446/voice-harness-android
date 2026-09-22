@@ -7,7 +7,7 @@ import org.json.JSONObject
 object OpenClawChatRequestBuilder {
     const val MODEL = "openclaw/default"
 
-    fun buildRequestBody(request: ChatRequest): String {
+    fun buildRequestBody(request: ChatRequest, model: String = MODEL): String {
         val includeHarbor = request.harborToolEnabled || request.forceHarborCommand
         val systemPrompt = GroqChatRequestBuilder.buildSystemPromptForOpenRouter(
             languageCode = request.languageCode,
@@ -20,7 +20,7 @@ object OpenClawChatRequestBuilder {
         val latestUser = request.conversationHistory.lastOrNull { it.role == "user" }
             ?: error("OpenClaw に送るユーザーメッセージがありません。")
         return JSONObject().apply {
-            put("model", MODEL)
+            put("model", model.ifBlank { MODEL })
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", systemPrompt))
                 put(JSONObject().apply {

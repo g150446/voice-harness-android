@@ -39,6 +39,7 @@ BleConnectionService 付帯:
   RecordingOverlayController … RECORDING 中の他アプリ上インジケータ
   HeadlessScreenCapture ……… ROLE_ASSISTANT 時の Assist/スクショ（不適格の理由をログへ出す）
   HarborMirrorController …… 複数Macの暗号化資格情報、Harbor API/UI状態、G2ミラーを一元管理
+                             確定済みコマンドは planHarborSubmit で呼び出し列に落としてから順に実行する
   EpubReaderHub/Controller … EPUBモード中、開いている本の位置を保持し、本文チャンクと目次をG2へ出す（phone画面・音声・G2のadvance要求から操作）
   OpenClawMirrorController …… OpenClawモード中、セッション履歴（アプリのチャット画面と同じ）をG2へミラー（読み取り専用）
 
@@ -132,7 +133,9 @@ AI backend は ASR（`SttBackendId`）と LLM（`LlmBackendId`）を独立選択
 同一ローカルモデルは `BackendRegistry` で共有し二重ロードしない。OpenRouter は LLM のみ。
 OpenClaw は LLM ではなく応答先で、操作モードが OpenClaw のときだけ `OnDeviceAiFacade`
 （`isOpenClawRoute()`）が選択中の LLM の代わりに Mac の Gateway `/v1/chat/completions` へ送る。
-Harbor の `/v1/workspaces/{id}/instruction` 経路とは分離する。
+Harbor モードは別入口の `OpenClawHarborInterpreter` から、ワークスペース単位のセッションで
+同じ Gateway に解釈だけを依頼する。**解釈は共有・実行経路は分離**で、Harbor の
+`/v1/workspaces/{id}/instruction` と `/key` を叩くのは常にアプリ側（タップ確認の後）。
 Harness NodeのBLE音声とアプリ内Assistantの音声／テキストは、入口は異なっても
 `BackendAssistantGateway` とOpenClawの安定セッションを共有する。応答はG2接続中は
 `EvenG2ReadingSession`を優先し、未接続時は音声入力を電話TTS、テキスト入力を
@@ -167,6 +170,10 @@ Harbor 確認画面では single = 実行、double = 取り消し（表示して
 （`needs_clarification`）の画面だけは「ダブルタップで言い直す」で録音し直しになる。
 HarborモードはG2の接続状態から独立しており、Android画面とHarnessNodeだけでも動作する。
 Androidのworkspace詳細画面とG2は同じアクティブMac/workspaceを参照し、G2切断時はミラーだけを停止する。
+workspace 詳細画面は端末出力のほかに、`GET /v1/workspaces/{id}/plan` で取得したエージェントの
+プランファイル全文も表示できる（画面由来ではないので、スクロールで流れた部分も読める。
+取得できない場合は理由を出し、端末出力で代用しない）。端末幅の横罫線は表示幅を実測して
+縮め（`HarborTextLayout`）、キーのボタン群は既定で畳んでおく。
 確認プロンプト表示中は、ホームと workspace 詳細画面に実行／取り消す／言い直すボタンも出る。
 ボタンは `confirmHarborCommand`/`cancelHarborCommand` 経由で tap と同じ
 `handleSingleTap`/`handleDoubleTap` を呼ぶだけなので、G2 やHarnessNodeが無くても確定できる。

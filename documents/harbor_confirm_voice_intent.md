@@ -20,6 +20,12 @@ STT → Android の LLM（harbor_command tool）→ G2 に確認表示 → タ�
 | `KEY` | `POST /v1/workspaces/{id}/key` |
 | `SWITCH_WORKSPACE` | `POST /v1/workspaces/{id}/activate` |
 
+> 2026-09-22 追記: 「Android の LLM」は **OpenClaw（ワークスペース単位のセッション）→
+> Groq / OpenRouter → 決定論的 fallback** の順に変わった。どのエンジンを使っても
+> 「解釈は確認画面の前に 1 回だけ」「実行はアプリが直接」は変わらない。OpenClaw は 15 秒で
+> 打ち切って次のエンジンへ落とす — ここで挙げた 6.4 秒の分類器を却下した理由がそのまま効く。
+> また `KEY` は Enter 以外も送れるようになり、`steps[]` で複数手順を 1 回の確認にまとめられる。
+
 タップの割り当ては G2 の表示文言に一致させる。
 
 | 画面 | single | double |

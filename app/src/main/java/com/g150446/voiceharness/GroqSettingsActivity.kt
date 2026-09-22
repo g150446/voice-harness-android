@@ -371,6 +371,8 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
             )
             var gatewayUrl by remember { mutableStateOf(OpenClawPrefs.getBaseUrl(context)) }
             var gatewayToken by remember { mutableStateOf(OpenClawPrefs.getToken(context)) }
+            var chatAgent by remember { mutableStateOf(OpenClawPrefs.getAgent(context)) }
+            var harborAgent by remember { mutableStateOf(OpenClawPrefs.getHarborAgent(context)) }
             OutlinedTextField(
                 value = gatewayUrl,
                 onValueChange = { gatewayUrl = it },
@@ -389,10 +391,41 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                 visualTransformation = PasswordVisualTransformation(),
             )
             Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = chatAgent,
+                onValueChange = { chatAgent = it },
+                label = { Text("OpenClaw エージェント") },
+                supportingText = {
+                    Text(
+                        "Gateway で複数の agent を運用している場合は openclaw/main のように " +
+                            "名前で指定してください（fleet には既定の agent がありません）。" +
+                            "単一 agent なら ${OpenClawPrefs.DEFAULT_AGENT} のままで動きます。",
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = harborAgent,
+                onValueChange = { harborAgent = it },
+                label = { Text("Terminal Harbor 解釈エージェント") },
+                supportingText = {
+                    Text(
+                        "Harbor モードの音声を解釈する agent target。実行はアプリ側のタップ確認のままです。" +
+                            "既定は ${OpenClawPrefs.DEFAULT_HARBOR_AGENT}。",
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = {
                     OpenClawPrefs.setBaseUrl(context, gatewayUrl)
                     OpenClawPrefs.setToken(context, gatewayToken)
+                    OpenClawPrefs.setAgent(context, chatAgent)
+                    OpenClawPrefs.setHarborAgent(context, harborAgent)
                     actionStatus = if (gatewayToken.isBlank()) {
                         "OpenClaw token をクリアしました"
                     } else {
@@ -406,6 +439,9 @@ private fun ModelSettingsScreen(modifier: Modifier = Modifier) {
                 onClick = {
                     OpenClawPrefs.setBaseUrl(context, gatewayUrl)
                     OpenClawPrefs.setToken(context, gatewayToken)
+                    // Saved first so the check exercises the agents that are typed in.
+                    OpenClawPrefs.setAgent(context, chatAgent)
+                    OpenClawPrefs.setHarborAgent(context, harborAgent)
                     actionStatus = "OpenClaw 接続確認中..."
                     scope.launch {
                         val backend = OpenClawLlmBackend(context.applicationContext)

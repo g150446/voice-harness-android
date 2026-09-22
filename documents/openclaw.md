@@ -38,8 +38,23 @@ pairing ではなく、OpenAI-compatible endpoint の bearer token fallback を�
 
 初回に `voice-harness:<UUID>` を1個生成して端末に永続化し、毎回
 `x-openclaw-session-key` で再利用する。Gateway は同じ会話を継続するため、各要求では
-最新の user turn だけを送る。OpenClaw モードでは Harbor tool を渡さない（Harbor コマンド解釈は
-Groq / OpenRouter のみ。旧 `<session>:harbor` キーはコード上に残るが使われない）。
+最新の user turn だけを送る。
+
+Terminal Harbor の音声解釈は、ワークスペースごとに別セッションを使う:
+`<アプリ所有キー>:harbor:<workspaceId>`。土台は必ず**アプリ所有キー**で、設定で選んだ
+ブラウザ共有セッションではない（端末操作を他人の会話スレッドにぶら下げないため）。
+詳細は「Terminal Harbor の音声解釈」節。
+
+### 複数 agent（fleet）の Gateway
+
+Gateway に agent が2つ以上あると、OpenClaw は既定の agent を持たなくなり、
+**どの agent のものか分からないセッションを拒否する**（`AgentSelectionRequiredError`）。
+そのためアプリは、agent 名を含む target（`openclaw/main` など）が設定されている場合、
+セッションキーを `agent:<id>:<key>` の形に前置きして送る。`/tools/invoke` にも呼び出し元の
+`sessionKey` を同梱する。agent が1つだけの Gateway では従来どおり前置きしない。
+
+設定の **OpenClaw エージェント** / **Terminal Harbor 解釈エージェント** がその target。
+単一 agent なら `openclaw/default` のままでよい。
 
 BLE接続されたHarness Nodeの音声、アプリ内マイク音声、アプリ内テキストは、入力元を
 区別せず同じ通常セッションキーへ送る。BLE音声は既存のBLE PCM → VAD → ASR →
@@ -52,7 +67,8 @@ BLE接続されたHarness Nodeの音声、アプリ内マイク音声、アプ�
 （Control UI で開いているもの等）を選べる。選ぶとチャット・BLE音声・アプリ内入力の
 送信先とチャット画面の履歴取得が、そのセッションキーになる。「アプリ専用セッションに
 戻す」で上記の `voice-harness:<UUID>` へ戻る。
-`subagent:` / `cron:` / `acp:` 系と `:harbor` 付きは一覧に出さない。
+`subagent:` / `cron:` / `acp:` 系と、`:harbor` / `:harbor:<workspaceId>` の解釈用セッションは
+一覧に出さない。
 
 チャット画面は開いたとき・画面に戻ったときに履歴を読み、Gateway の内容で表示を置き換える
 （応答生成中と、履歴が空のときは置き換えない）。端末ロック中は読まない。履歴は
@@ -67,10 +83,31 @@ Gateway の tool policy で許可されていない場合は 404 になるため
 
 ## API
 
-- `GET /v1/models`: 接続確認
-- `POST /v1/chat/completions`: `model=openclaw/default`
+- `GET /v1/models`: 接続確認。設定した agent target が一覧にあることも確認する
+- `POST /v1/chat/completions`: `model` は agent target（既定 `openclaw/default`）
 - 401 / 403 / 404 / 429 / 5xx は秘密を含まない日本語エラーへ変換
 - ダブルタップ等の既存キャンセルは進行中 OkHttp call を cancel
+
+## Terminal Harbor の音声解釈
+
+Harbor モードの音声は、ワークスペース単位の OpenClaw セッションが解釈する。
+
+- **OpenClaw は解釈だけを行う。** 実行は従来どおりアプリが HMAC 署名付きで
+  `/v1/workspaces/{id}/instruction` と `/key` を呼び、G2 のシングルタップ確認を必ず経由する。
+  Gateway 側プラグインの `harbor_send_*` は使わない。
+- **経路の優先順**: OpenClaw（設定済みなら）→ 失敗・15 秒超過なら Groq / OpenRouter →
+  それも不可なら認識文をそのまま送る決定論的 fallback。Mac が tailnet 外でも Harbor
+  音声操作が死なないようにするため。
+- **セッション**: `<アプリ所有キー>:harbor:<workspaceId>`。ワークスペースを跨いでも文脈が
+  混ざらず、「さっきの続き」が同じ端末を指す。
+- **語彙**: `key` はブリッジが受け付ける `enter / escape / shift-tab / tab / up / down /
+  left / right / space / ctrl-c` 全種。`steps[]` で複数手順を 1 回の確認にまとめられる
+  （例:「モデルを変えて」→ `/model` 貼付 → ↓ → Enter）。確認画面には手順のプレビュー行を出す。
+- **解釈専用エージェント（推奨）**: Gateway 側で
+  `agents.entries.harbor-voice.tools.deny = ["harbor_send_instruction", "harbor_send_key",
+  "harbor_activate_workspace", "exec"]` を設定し、アプリの「Terminal Harbor 解釈エージェント」に
+  `openclaw/harbor-voice` を入れる。エージェントが自分のツールでタップ確認を素通りして
+  端末に打ち込むことがなくなる。agent を増やすと fleet になるので、上の「複数 agent」も参照。
 
 ## OpenClawモード（G2）
 

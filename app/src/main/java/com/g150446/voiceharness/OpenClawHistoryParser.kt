@@ -44,7 +44,8 @@ object OpenClawHistoryParser {
             for (index in 0 until rows.length()) {
                 val row = rows.optJSONObject(index) ?: continue
                 val key = row.optString("key").trim()
-                if (key.isEmpty() || RESERVED_KEY.containsMatchIn(key) || key.endsWith(":harbor")) continue
+                // `:harbor` and `:harbor:<workspace>` are interpretation sessions, not chats.
+                if (key.isEmpty() || RESERVED_KEY.containsMatchIn(key) || isHarborSessionKey(key)) continue
                 val title = listOf("displayName", "derivedTitle", "label", "title")
                     .map { row.optString(it).trim() }
                     .firstOrNull(String::isNotEmpty)

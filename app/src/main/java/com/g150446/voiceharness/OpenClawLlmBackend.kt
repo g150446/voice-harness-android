@@ -18,16 +18,27 @@ internal class OpenClawApiClient(
     private val token: String,
     private val sessionKey: String,
     private val httpClient: OkHttpClient,
+    /** Base for Harbor-scoped sessions; the app-owned key even when chat uses another one. */
+    private val harborSessionBase: String = sessionKey,
+    /** Agent target for ordinary chat. */
+    private val model: String = OpenClawChatRequestBuilder.MODEL,
+    /** Agent target for Harbor interpretation, which may differ from the chat agent. */
+    private val harborModel: String = OpenClawChatRequestBuilder.MODEL,
 ) {
     private val activeCall = AtomicReference<Call?>(null)
 
     fun chat(request: ChatRequest): ChatResult {
-        val key = if (request.harborToolEnabled || request.forceHarborCommand) {
-            "$sessionKey:harbor"
-        } else {
-            sessionKey
-        }
-        val body = OpenClawChatRequestBuilder.buildRequestBody(request)
+        val harborScoped = request.harborToolEnabled || request.forceHarborCommand
+        val target = if (harborScoped) harborModel else model
+        val key = agentScopedSessionKey(
+            target,
+            if (harborScoped) {
+                harborSessionKey(harborSessionBase, request.harborContext?.workspaceId)
+            } else {
+                sessionKey
+            },
+        )
+        val body = OpenClawChatRequestBuilder.buildRequestBody(request, model = target)
         val call = httpClient.newCall(
             authorizedRequest("${normalizedBaseUrl()}/v1/chat/completions")
                 .addHeader("x-openclaw-session-key", key)
@@ -43,8 +54,17 @@ internal class OpenClawApiClient(
         )
         return execute(call) { body ->
             val data = JSONObjectCompat.modelIds(body)
+            // Also check the configured targets: on a multi-agent Gateway the generic
+            // `openclaw/default` exists but names no agent, so "it is listed" is not enough.
             if (data.none { it == "openclaw" || it == OpenClawChatRequestBuilder.MODEL }) {
                 error("Gateway は応答しましたが OpenClaw agent target がありません。")
+            }
+            val missing = listOf(model, harborModel)
+                .filter { openClawAgentId(it) != null }
+                .distinct()
+                .filterNot(data::contains)
+            if (missing.isNotEmpty()) {
+                error("Gateway に agent ${missing.joinToString(", ")} がありません。")
             }
             "OpenClaw Gateway に接続しました。"
         }
@@ -71,7 +91,13 @@ internal class OpenClawApiClient(
 
     // Deliberately not tracked in activeCall: cancel() is for the in-flight chat turn only.
     private fun invokeTool(tool: String, args: JSONObject): String {
-        val body = JSONObject().put("tool", tool).put("args", args).toString()
+        // A Gateway running several agents refuses a tool call it cannot attribute to one,
+        // so the calling session travels with the request. Harmless on a single-agent one.
+        val body = JSONObject()
+            .put("tool", tool)
+            .put("args", args)
+            .put("sessionKey", agentScopedSessionKey(model, sessionKey))
+            .toString()
         val call = httpClient.newBuilder()
             .callTimeout(TOOL_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .build()
@@ -174,7 +200,14 @@ class OpenClawLlmBackend(
     suspend fun loadHistory(): Result<List<OpenClawHistoryMessage>> = withContext(Dispatchers.IO) {
         runCatching {
             val client = configuredClient()
-            client.fetchHistory(OpenClawPrefs.getChatSessionKey(appContext))
+            // The same key the chat turns go to, agent scope included, or the history read
+            // would look up a session that was never written.
+            client.fetchHistory(
+                agentScopedSessionKey(
+                    OpenClawPrefs.getAgent(appContext),
+                    OpenClawPrefs.getChatSessionKey(appContext),
+                ),
+            )
         }
     }
 
@@ -200,6 +233,9 @@ class OpenClawLlmBackend(
             token = token,
             sessionKey = OpenClawPrefs.getChatSessionKey(appContext),
             httpClient = httpClient,
+            harborSessionBase = OpenClawPrefs.getOrCreateSessionKey(appContext),
+            model = OpenClawPrefs.getAgent(appContext),
+            harborModel = OpenClawPrefs.getHarborAgent(appContext),
         )
     }
 

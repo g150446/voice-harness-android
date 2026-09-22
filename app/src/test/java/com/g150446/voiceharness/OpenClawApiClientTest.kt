@@ -97,6 +97,8 @@ class OpenClawApiClientTest {
             assertTrue(body.contains("\"sessions_history\""))
             assertTrue(body.contains("\"sessionKey\":\"main\""))
             assertTrue(body.contains("\"limit\":50"))
+            // The caller's own session rides along so a multi-agent Gateway can attribute it.
+            assertTrue(body.contains("\"sessionKey\":\"voice-harness:stable\""))
             assertEquals(listOf(OpenClawHistoryMessage("user", "hi")), history)
         }
     }
@@ -138,6 +140,127 @@ class OpenClawApiClientTest {
             assertTrue(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started) < 20)
         }
     }
+
+    @Test
+    fun `each workspace gets its own interpretation session`() {
+        MockWebServer().use { server ->
+            repeat(2) {
+                server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}]}"""))
+            }
+            val client = client(server, "voice-harness:stable")
+
+            client.chat(request.copy(forceHarborCommand = true, harborContext = context("ws-a")))
+            client.chat(request.copy(forceHarborCommand = true, harborContext = context("ws-b")))
+
+            assertEquals(
+                "voice-harness:stable:harbor:ws-a",
+                server.takeRequest().getHeader("x-openclaw-session-key"),
+            )
+            assertEquals(
+                "voice-harness:stable:harbor:ws-b",
+                server.takeRequest().getHeader("x-openclaw-session-key"),
+            )
+        }
+    }
+
+    @Test
+    fun `interpretation hangs off the app session even when chat uses a shared one`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}]}"""))
+            val client = OpenClawApiClient(
+                baseUrl = server.url("/").toString(),
+                token = "gateway-secret",
+                sessionKey = "browser-session",
+                httpClient = OkHttpClient(),
+                harborSessionBase = "voice-harness:app",
+            )
+
+            client.chat(request.copy(forceHarborCommand = true, harborContext = context("ws-a")))
+
+            assertEquals(
+                "voice-harness:app:harbor:ws-a",
+                server.takeRequest().getHeader("x-openclaw-session-key"),
+            )
+        }
+    }
+
+    @Test
+    fun `interpretation targets the configured agent and pins the harbor tool`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}]}"""))
+            val client = OpenClawApiClient(
+                baseUrl = server.url("/").toString(),
+                token = "gateway-secret",
+                sessionKey = "voice-harness:stable",
+                httpClient = OkHttpClient(),
+                harborModel = "openclaw/harbor-voice",
+            )
+
+            client.chat(request.copy(forceHarborCommand = true, harborContext = context("ws-a")))
+
+            val body = server.takeRequest().body.readUtf8()
+            assertTrue(body.contains("openclaw/harbor-voice"))
+            assertTrue(body.contains("\"tool_choice\""))
+            assertTrue(body.contains(HARBOR_COMMAND_TOOL_NAME))
+            assertTrue(body.contains("shift-tab"))
+        }
+    }
+
+    @Test
+    fun `a named agent scopes both the chat and the interpretation session`() {
+        MockWebServer().use { server ->
+            repeat(2) {
+                server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"ok"}}]}"""))
+            }
+            val client = OpenClawApiClient(
+                baseUrl = server.url("/").toString(),
+                token = "gateway-secret",
+                sessionKey = "voice-harness:stable",
+                httpClient = OkHttpClient(),
+                model = "openclaw/main",
+                harborModel = "openclaw/harbor-voice",
+            )
+
+            client.chat(request)
+            client.chat(request.copy(forceHarborCommand = true, harborContext = context("ws-a")))
+
+            assertEquals(
+                "agent:main:voice-harness:stable",
+                server.takeRequest().getHeader("x-openclaw-session-key"),
+            )
+            assertEquals(
+                "agent:harbor-voice:voice-harness:stable:harbor:ws-a",
+                server.takeRequest().getHeader("x-openclaw-session-key"),
+            )
+        }
+    }
+
+    @Test
+    fun `an ordinary chat still goes to the default agent`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"hi"}}]}"""))
+            val client = OpenClawApiClient(
+                baseUrl = server.url("/").toString(),
+                token = "gateway-secret",
+                sessionKey = "voice-harness:stable",
+                httpClient = OkHttpClient(),
+                harborModel = "openclaw/harbor-voice",
+            )
+
+            client.chat(request)
+
+            val body = server.takeRequest().body.readUtf8()
+            assertTrue(body.contains("openclaw/default"))
+            assertTrue(!body.contains("openclaw/harbor-voice"))
+        }
+    }
+
+    private fun context(workspaceId: String) = HarborInterpretContext(
+        workspaceId = workspaceId,
+        workspaceName = workspaceId,
+        conversation = "",
+        availableWorkspaces = listOf(workspaceId),
+    )
 
     private fun client(server: MockWebServer, sessionKey: String) = OpenClawApiClient(
         baseUrl = server.url("/").toString(),

@@ -211,6 +211,7 @@ internal class VoiceProcessor(
     private val reminderRepository = ReminderRepository(appContext)
     private val aiFacade = OnDeviceAiFacade(appContext)
     private val aiBackend: VoiceAiBackend get() = aiFacade
+    private val harborInterpreter by lazy { OpenClawHarborInterpreter(appContext) }
     private val assistantGateway: AssistantGateway = BackendAssistantGateway(aiFacade)
 
     private val pcmBuffer = ByteArrayOutputStream()
@@ -795,6 +796,7 @@ internal class VoiceProcessor(
             stt = stt,
             aiComment = interpreted.intentSummary,
             awaitingClarification = interpreted.needsClarification,
+            stepsPreview = HarborCommandTool.stepsPreview(interpreted),
         )
         harborConfirmInterpreting = false
         if (harborConfirmRequested.getAndSet(false)) {
@@ -808,8 +810,17 @@ internal class VoiceProcessor(
         args: HarborCommandArgs,
     ) {
         BleConnectionService.pauseHarborMirror(true)
-        val normalized = if (args.action == HarborCommandAction.KEY || HarborCommandTool.isEnterRequest(stt)) {
-            args.copy(action = HarborCommandAction.KEY, key = args.key ?: "enter", command = "")
+        // A planned sequence is left as the model decided it; only a bare single action may
+        // be rewritten into Enter from the transcript.
+        val enterRewrite = args.steps.size <= 1 && args.key == null &&
+            HarborCommandTool.isEnterRequest(stt)
+        val normalized = if (args.action == HarborCommandAction.KEY || enterRewrite) {
+            args.copy(
+                action = HarborCommandAction.KEY,
+                key = args.key ?: "enter",
+                command = "",
+                steps = if (enterRewrite) emptyList() else args.steps,
+            )
         } else {
             args
         }
@@ -820,6 +831,7 @@ internal class VoiceProcessor(
             stt = stt,
             aiComment = normalized.intentSummary,
             awaitingClarification = normalized.needsClarification,
+            stepsPreview = HarborCommandTool.stepsPreview(normalized),
         )
         saveHistoryEntry(
             transcription = stt,
@@ -833,10 +845,15 @@ internal class VoiceProcessor(
         stt: String,
         aiComment: String?,
         awaitingClarification: Boolean,
+        stepsPreview: String = "",
     ) {
-        val prompt = harborConfirmPrompt(stt, aiComment, awaitingClarification)
+        val prompt = harborConfirmPrompt(stt, aiComment, awaitingClarification, stepsPreview)
         val phoneResponse = buildString {
             aiComment?.takeIf { it.isNotBlank() }?.let { append(it) }
+            if (stepsPreview.isNotBlank()) {
+                if (isNotEmpty()) append('\n')
+                append("送信: ").append(stepsPreview)
+            }
             if (isNotEmpty()) append('\n')
             append(
                 if (awaitingClarification) {
@@ -853,6 +870,9 @@ internal class VoiceProcessor(
     /** Drops the pending command and returns the glass to the live workspace. */
     private fun cancelHarborConfirm(reason: String) {
         Log.i(TAG, "Harbor confirm cancelled ($reason)")
+        // A double tap during 「解析中…」 has to stop the Gateway call too; OkHttp will not
+        // notice the coroutine going away on its own.
+        harborInterpreter.cancel()
         clearHarborConfirm(resumeMirror = true)
         val message = "指示を取り消しました"
         BleConnectionService.setResponse(message)
@@ -860,9 +880,53 @@ internal class VoiceProcessor(
         BleConnectionService.setVoiceState(VoiceState.READY)
     }
 
+    /**
+     * OpenClaw first, then the cloud LLM, then the raw transcript.
+     *
+     * OpenClaw keeps one session per workspace, so it remembers the last few exchanges about
+     * this terminal and can answer 「さっきの続き」 — but it lives on the user's Mac, and Harbor
+     * voice control has to keep working when that Mac is off the tailnet, so a failure here is
+     * a fall-through rather than an error.
+     */
     private suspend fun interpretHarborCommand(
         rawStt: String,
         harborContext: HarborInterpretContext? = null,
+    ): HarborCommandArgs {
+        val request = ChatRequest(
+            conversationHistory = listOf(ConversationTurn(role = "user", content = rawStt)),
+            languageCode = responseLanguageCode ?: "ja",
+            harborToolEnabled = true,
+            forceHarborCommand = true,
+            harborContext = harborContext,
+        )
+        val args = interpretWithOpenClaw(request, rawStt)
+            ?: interpretWithCloudLlm(request, rawStt)
+        return args.copy(workspaceId = harborContext?.workspaceId)
+    }
+
+    /** Null when OpenClaw is unconfigured, unreachable, or did not decide on a command. */
+    private suspend fun interpretWithOpenClaw(
+        request: ChatRequest,
+        rawStt: String,
+    ): HarborCommandArgs? {
+        if (!harborInterpreter.isConfigured()) return null
+        val result = harborInterpreter.interpret(request)
+        val chat = result.getOrElse { error ->
+            Log.w(TAG, "Harbor interpret via OpenClaw failed: ${error.message}")
+            return null
+        }
+        val call = chat.toolCalls.firstOrNull { it.name == HARBOR_COMMAND_TOOL_NAME }
+        if (call == null) {
+            Log.w(TAG, "Harbor interpret via OpenClaw returned no command; trying cloud LLM")
+            return null
+        }
+        Log.i(TAG, "Harbor interpret via OpenClaw")
+        return HarborCommandTool.parse(call.argumentsJson, fallbackCommand = rawStt)
+    }
+
+    private suspend fun interpretWithCloudLlm(
+        request: ChatRequest,
+        rawStt: String,
     ): HarborCommandArgs {
         val ready = aiBackend.ensureReady()
         if (ready.isFailure) {
@@ -874,15 +938,7 @@ internal class VoiceProcessor(
             Log.w(TAG, "Harbor interpret requires cloud LLM; falling back to raw STT")
             return HarborCommandTool.fallback(rawStt)
         }
-        val result = aiBackend.chat(
-            ChatRequest(
-                conversationHistory = listOf(ConversationTurn(role = "user", content = rawStt)),
-                languageCode = responseLanguageCode ?: "ja",
-                harborToolEnabled = true,
-                forceHarborCommand = true,
-                harborContext = harborContext,
-            )
-        )
+        val result = aiBackend.chat(request)
         if (result.isFailure) {
             Log.w(TAG, "Harbor interpret failed: ${result.exceptionOrNull()?.message}")
             return HarborCommandTool.fallback(rawStt)
@@ -939,13 +995,14 @@ internal class VoiceProcessor(
                 Log.i(TAG, "Harbor confirm result: $message")
                 BleConnectionService.setResponse(message)
                 EvenG2ReadingSession.publishResponse(message)
-                val historyResponse = when (pending.args.action) {
-                    HarborCommandAction.KEY ->
-                        "Harbor key: ${pending.args.key ?: "enter"}\n$message"
-                    HarborCommandAction.SWITCH_WORKSPACE ->
+                val historyResponse = when {
+                    pending.args.action == HarborCommandAction.SWITCH_WORKSPACE ->
                         "Harbor切り替え: ${pending.args.workspace.orEmpty()}\n$message"
-                    HarborCommandAction.INSTRUCTION ->
-                        "Harborへ送信: ${pending.args.command}\n$message"
+                    pending.args.steps.size > 1 ->
+                        "Harbor手順: ${HarborCommandTool.stepsPreview(pending.args)}\n$message"
+                    pending.args.action == HarborCommandAction.KEY ->
+                        "Harbor key: ${pending.args.key ?: "enter"}\n$message"
+                    else -> "Harborへ送信: ${pending.args.command}\n$message"
                 }
                 saveHistoryEntry(
                     transcription = pending.stt,

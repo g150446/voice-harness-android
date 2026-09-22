@@ -6,11 +6,33 @@ import java.util.Locale
 
 internal const val HARBOR_COMMAND_TOOL_NAME = "harbor_command"
 
+/** Pause inserted between steps so a TUI has finished with one key before the next arrives. */
+internal const val HARBOR_STEP_DELAY_MS = 300
+
 internal enum class HarborCommandAction {
     INSTRUCTION,
     KEY,
     SWITCH_WORKSPACE,
 }
+
+internal enum class HarborStepAction {
+    INSTRUCTION,
+    KEY,
+}
+
+/**
+ * One thing to do in the workspace. A sequence of these is what makes a request like
+ * 「モデルを Opus にして」 expressible: the agent's own UI needs `/model`, then arrow keys
+ * chosen from what the screen shows, then Enter — all under a single confirmation.
+ */
+internal data class HarborCommandStep(
+    val action: HarborStepAction,
+    val command: String = "",
+    val key: String? = null,
+    /** Press Enter after the text. False leaves it typed but unsent (Harbor's 貼付). */
+    val submit: Boolean = true,
+    val waitMs: Int = HARBOR_STEP_DELAY_MS,
+)
 
 internal data class HarborCommandArgs(
     val action: HarborCommandAction = HarborCommandAction.INSTRUCTION,
@@ -18,16 +40,81 @@ internal data class HarborCommandArgs(
     val key: String? = null,
     /** Workspace name or directory to activate when [action] is SWITCH_WORKSPACE. */
     val workspace: String? = null,
+    /**
+     * Workspace the interpretation was made against. Execution targets this rather than
+     * whatever is selected at tap time, so a switch between confirm and tap cannot redirect
+     * an approved instruction into another workspace.
+     */
+    val workspaceId: String? = null,
     val intentSummary: String,
     val needsClarification: Boolean = false,
     val question: String? = null,
-)
+    val steps: List<HarborCommandStep> = emptyList(),
+) {
+    /** The steps to execute; a legacy single-action command is one step. */
+    val effectiveSteps: List<HarborCommandStep>
+        get() = when {
+            steps.isNotEmpty() -> steps
+            action == HarborCommandAction.KEY ->
+                listOf(HarborCommandStep(HarborStepAction.KEY, key = key ?: "enter"))
+            action == HarborCommandAction.INSTRUCTION ->
+                listOf(HarborCommandStep(HarborStepAction.INSTRUCTION, command = command))
+            else -> emptyList()
+        }
+}
 
 /**
  * Tool definition and parsing for Terminal Harbor command interpretation.
  * Used both in Harbor confirm flow and in AI dialogue when Harbor is paired.
  */
 internal object HarborCommandTool {
+    /** Exactly what the Terminal Harbor bridge accepts (`terminal_key_code`). */
+    val ALLOWED_KEYS = listOf(
+        "enter",
+        "escape",
+        "shift-tab",
+        "tab",
+        "up",
+        "down",
+        "left",
+        "right",
+        "space",
+        "ctrl-c",
+    )
+
+    const val MAX_STEPS = 6
+    const val MAX_WAIT_MS = 3_000
+
+    private val KEY_ALIASES = mapOf(
+        "return" to "enter",
+        "cr" to "enter",
+        "esc" to "escape",
+        "shift+tab" to "shift-tab",
+        "shift_tab" to "shift-tab",
+        "backtab" to "shift-tab",
+        "ctrl+c" to "ctrl-c",
+        "ctrl_c" to "ctrl-c",
+        "^c" to "ctrl-c",
+        "arrowup" to "up",
+        "arrowdown" to "down",
+        "arrowleft" to "left",
+        "arrowright" to "right",
+        "spacebar" to "space",
+    )
+
+    private val KEY_LABELS = mapOf(
+        "enter" to "Enter",
+        "escape" to "Esc",
+        "shift-tab" to "⇧Tab",
+        "tab" to "Tab",
+        "up" to "↑",
+        "down" to "↓",
+        "left" to "←",
+        "right" to "→",
+        "space" to "Space",
+        "ctrl-c" to "^C",
+    )
+
     private val ENTER_STT = Regex(
         "(エンター|エンターキー|enter|return|改行).*(送|押|叩)|" +
             "(送|押|叩).*(エンター|エンターキー|enter|return)|" +
@@ -49,6 +136,32 @@ internal object HarborCommandTool {
         return stripped.ifBlank { trimmed }
     }
 
+    /** Canonical Harbor key name, or null when the caller named something Harbor cannot send. */
+    fun normalizeKeyName(raw: String?): String? {
+        val value = raw?.trim()?.lowercase(Locale.ROOT)?.replace(" ", "").orEmpty()
+        if (value.isEmpty()) return null
+        val canonical = KEY_ALIASES[value] ?: value
+        return canonical.takeIf { ALLOWED_KEYS.contains(it) }
+    }
+
+    fun keyLabel(key: String): String = KEY_LABELS[key] ?: key
+
+    /** One line naming every step, so a single tap never runs something the user cannot see. */
+    fun stepsPreview(args: HarborCommandArgs): String {
+        if (args.action == HarborCommandAction.SWITCH_WORKSPACE) return ""
+        val steps = args.effectiveSteps
+        if (steps.size <= 1 && args.action != HarborCommandAction.KEY) return ""
+        return steps.joinToString(" → ") { step ->
+            when (step.action) {
+                HarborStepAction.KEY -> keyLabel(step.key ?: "enter")
+                HarborStepAction.INSTRUCTION -> {
+                    val text = step.command.take(24) + if (step.command.length > 24) "…" else ""
+                    if (step.submit) text else "$text(貼付)"
+                }
+            }
+        }
+    }
+
     const val SYSTEM_APPENDIX =
         "The user can operate their own PC terminal through Terminal Harbor. " +
             "Attached Terminal Harbor context shows the selected workspace and the AI coding agent " +
@@ -60,8 +173,17 @@ internal object HarborCommandTool {
             "harbor_command function. " +
             "You do not execute the command yourself; the user confirms before it is sent. " +
             "Use action=instruction with command set to the exact text to type/send to the agent " +
-            "or shell. Use action=key with key=enter when the user wants to press Enter/Return " +
-            "(for example エンターを送って / この内容で送信). " +
+            "or shell. Use action=key with one of the listed key names for a single key press " +
+            "(エンターを送って / この内容で送信 → enter; 止めて → escape; 中断して → ctrl-c). " +
+            "Use steps for anything that takes more than one key or line, so the whole sequence " +
+            "runs under one confirmation. " +
+            "Claude Code specifics: plan mode is toggled with the shift-tab key, and the current " +
+            "mode is written in the terminal context — read it there instead of guessing, and " +
+            "send shift-tab only as many times as it takes to reach the mode they asked for. " +
+            "Switching model is the /model command: send instruction \"/model\" with submit=false, " +
+            "then move with up/down according to the choices the context shows, then enter. " +
+            "If the context does not show the current mode or the model list, do not guess the " +
+            "number of key presses: set needs_clarification instead. " +
             "Use action=switch_workspace only when moving to another workspace is the whole " +
             "request, with nothing to do once you arrive (「harbor に切り替えて」 / 「〜に移動して」); " +
             "set workspace to one of the listed workspaces. " +
@@ -100,8 +222,9 @@ internal object HarborCommandTool {
                         put(
                             "description",
                             "instruction = type/send text to the terminal or agent. " +
-                                "key = send a key event (currently only enter). " +
-                                "switch_workspace = activate a different workspace.",
+                                "key = send one key event. " +
+                                "switch_workspace = activate a different workspace. " +
+                                "Ignored when steps is set.",
                         )
                     })
                     put("command", JSONObject().apply {
@@ -111,13 +234,55 @@ internal object HarborCommandTool {
                             "Exact instruction or text to send when action=instruction.",
                         )
                     })
-                    put("key", JSONObject().apply {
-                        put("type", "string")
-                        put("enum", JSONArray().apply { put("enter") })
+                    put("key", keySchema("Key name when action=key."))
+                    put("submit", JSONObject().apply {
+                        put("type", "boolean")
                         put(
                             "description",
-                            "Key name when action=key. Use enter for Enter/Return.",
+                            "Press Enter after the text (default true). Use false for a slash " +
+                                "command whose menu you then navigate with keys.",
                         )
+                    })
+                    put("steps", JSONObject().apply {
+                        put("type", "array")
+                        put("maxItems", MAX_STEPS)
+                        put(
+                            "description",
+                            "Ordered steps for a request that needs more than one key or line. " +
+                                "Executed in order under a single user confirmation.",
+                        )
+                        put("items", JSONObject().apply {
+                            put("type", "object")
+                            put("properties", JSONObject().apply {
+                                put("action", JSONObject().apply {
+                                    put("type", "string")
+                                    put("enum", JSONArray().apply {
+                                        put("instruction")
+                                        put("key")
+                                    })
+                                })
+                                put("command", JSONObject().apply {
+                                    put("type", "string")
+                                    put("description", "Text to send when action=instruction.")
+                                })
+                                put("key", keySchema("Key name when action=key."))
+                                put("submit", JSONObject().apply {
+                                    put("type", "boolean")
+                                    put("description", "Press Enter after the text (default true).")
+                                })
+                                put("wait_ms", JSONObject().apply {
+                                    put("type", "integer")
+                                    put("minimum", 0)
+                                    put("maximum", MAX_WAIT_MS)
+                                    put(
+                                        "description",
+                                        "Pause after this step, in milliseconds, when the agent " +
+                                            "needs longer to redraw. Default $HARBOR_STEP_DELAY_MS.",
+                                    )
+                                })
+                            })
+                            put("required", JSONArray().apply { put("action") })
+                        })
                     })
                     put("workspace", JSONObject().apply {
                         put("type", "string")
@@ -158,12 +323,18 @@ internal object HarborCommandTool {
         })
     }
 
+    private fun keySchema(description: String): JSONObject = JSONObject().apply {
+        put("type", "string")
+        put("enum", JSONArray().apply { ALLOWED_KEYS.forEach(::put) })
+        put("description", description)
+    }
+
     fun parse(argumentsJson: String, fallbackCommand: String = ""): HarborCommandArgs {
         val sttFallback = fallbackCommand.trim()
         return try {
             val obj = JSONObject(argumentsJson.ifBlank { "{}" })
             val actionRaw = obj.optString("action", "instruction").trim().lowercase(Locale.ROOT)
-            val keyRaw = obj.optString("key", "").trim().lowercase(Locale.ROOT)
+            val explicitKey = normalizeKeyName(obj.optString("key", ""))
             val rawCommand = obj.optString("command", "").trim()
                 .ifBlank { sttFallback }
             val command = stripTrailingSendTrigger(rawCommand)
@@ -189,15 +360,59 @@ internal object HarborCommandTool {
                 }
             }
 
-            val looksLikeEnter = isEnterRequest(sttFallback) ||
-                actionRaw == "key" ||
-                keyRaw == "enter" ||
-                command.equals("enter", ignoreCase = true) ||
-                command.equals("return", ignoreCase = true) ||
-                command.contains("エンター")
+            val steps = parseSteps(obj.optJSONArray("steps"))
+            if (steps.isNotEmpty() && !needsClarification) {
+                // A multi-step plan is the model's considered sequence; the Enter heuristics
+                // below exist for one-shot utterances and would flatten it into a single key.
+                val first = steps.first()
+                return HarborCommandArgs(
+                    action = if (first.action == HarborStepAction.KEY) {
+                        HarborCommandAction.KEY
+                    } else {
+                        HarborCommandAction.INSTRUCTION
+                    },
+                    command = first.command,
+                    key = first.key,
+                    workspace = null,
+                    intentSummary = intentSummary.ifBlank { defaultStepsSummary(steps) },
+                    needsClarification = false,
+                    question = null,
+                    steps = steps,
+                )
+            }
 
-            val args = if (looksLikeEnter && !needsClarification) {
-                HarborCommandArgs(
+            val looksLikeEnter = explicitKey == null && !needsClarification && (
+                isEnterRequest(sttFallback) ||
+                    command.equals("enter", ignoreCase = true) ||
+                    command.equals("return", ignoreCase = true) ||
+                    command.contains("エンター")
+                )
+
+            val args = when {
+                needsClarification -> HarborCommandArgs(
+                    action = HarborCommandAction.INSTRUCTION,
+                    command = command,
+                    key = null,
+                    workspace = null,
+                    intentSummary = question ?: intentSummary.ifBlank { "もう一度お願いします" },
+                    needsClarification = true,
+                    question = question,
+                )
+
+                explicitKey != null || actionRaw == "key" -> {
+                    val key = explicitKey ?: "enter"
+                    HarborCommandArgs(
+                        action = HarborCommandAction.KEY,
+                        command = "",
+                        key = key,
+                        workspace = null,
+                        intentSummary = intentSummary.ifBlank { "${keyLabel(key)}キーを送りますか？" },
+                        needsClarification = false,
+                        question = null,
+                    )
+                }
+
+                looksLikeEnter -> HarborCommandArgs(
                     action = HarborCommandAction.KEY,
                     command = "",
                     key = "enter",
@@ -206,29 +421,80 @@ internal object HarborCommandTool {
                     needsClarification = false,
                     question = null,
                 )
-            } else {
-                HarborCommandArgs(
-                    action = HarborCommandAction.INSTRUCTION,
-                    command = command,
-                    key = null,
-                    workspace = null,
-                    intentSummary = intentSummary.ifBlank {
-                        if (command.isNotBlank()) "「$command」を送りますか？" else "そのまま送信します"
-                    },
-                    needsClarification = needsClarification,
-                    question = question,
-                ).let { base ->
-                    if (base.needsClarification) {
-                        base.copy(intentSummary = question ?: base.intentSummary)
-                    } else {
-                        base
-                    }
+
+                else -> {
+                    val submit = obj.optBoolean("submit", true)
+                    HarborCommandArgs(
+                        action = HarborCommandAction.INSTRUCTION,
+                        command = command,
+                        key = null,
+                        workspace = null,
+                        intentSummary = intentSummary.ifBlank {
+                            if (command.isNotBlank()) {
+                                if (submit) "「$command」を送りますか？" else "「$command」を貼り付けますか？"
+                            } else {
+                                "そのまま送信します"
+                            }
+                        },
+                        needsClarification = false,
+                        question = null,
+                        // Only an unsent paste needs an explicit step; a plain send is the
+                        // legacy single-action shape every existing call site already handles.
+                        steps = if (submit) {
+                            emptyList()
+                        } else {
+                            listOf(
+                                HarborCommandStep(
+                                    action = HarborStepAction.INSTRUCTION,
+                                    command = command,
+                                    submit = false,
+                                ),
+                            )
+                        },
+                    )
                 }
             }
             normalizeWithStt(args, sttFallback)
         } catch (_: Exception) {
             fallback(sttFallback)
         }
+    }
+
+    private fun parseSteps(array: JSONArray?): List<HarborCommandStep> {
+        if (array == null) return emptyList()
+        val steps = mutableListOf<HarborCommandStep>()
+        for (index in 0 until array.length()) {
+            if (steps.size >= MAX_STEPS) break
+            val item = array.optJSONObject(index) ?: continue
+            val action = item.optString("action").trim().lowercase(Locale.ROOT)
+            val waitMs = item.optInt("wait_ms", HARBOR_STEP_DELAY_MS).coerceIn(0, MAX_WAIT_MS)
+            if (action == "key") {
+                // A key Harbor cannot send is dropped rather than guessed at: sending the
+                // wrong key into someone's terminal is worse than sending one fewer.
+                val key = normalizeKeyName(item.optString("key")) ?: continue
+                steps += HarborCommandStep(HarborStepAction.KEY, key = key, waitMs = waitMs)
+            } else {
+                val command = item.optString("command").trim()
+                if (command.isEmpty()) continue
+                steps += HarborCommandStep(
+                    action = HarborStepAction.INSTRUCTION,
+                    command = stripTrailingSendTrigger(command),
+                    submit = item.optBoolean("submit", true),
+                    waitMs = waitMs,
+                )
+            }
+        }
+        return steps
+    }
+
+    private fun defaultStepsSummary(steps: List<HarborCommandStep>): String {
+        val preview = steps.joinToString(" → ") { step ->
+            when (step.action) {
+                HarborStepAction.KEY -> keyLabel(step.key ?: "enter")
+                HarborStepAction.INSTRUCTION -> step.command.take(20)
+            }
+        }
+        return "$preview を実行しますか？"
     }
 
     fun fallback(rawStt: String): HarborCommandArgs {
@@ -264,11 +530,16 @@ internal object HarborCommandTool {
     private fun normalizeWithStt(args: HarborCommandArgs, stt: String): HarborCommandArgs {
         if (args.needsClarification) return args
         if (args.action == HarborCommandAction.SWITCH_WORKSPACE) return args
+        // Only a single-step command may be rewritten from the transcript. A planned
+        // sequence, or a key the model named outright, is left as it decided.
+        if (args.steps.size > 1) return args
+        if (args.key != null) return args
         if (isEnterRequest(stt) && args.action != HarborCommandAction.KEY) {
             return args.copy(
                 action = HarborCommandAction.KEY,
                 command = "",
                 key = "enter",
+                steps = emptyList(),
                 intentSummary = args.intentSummary.ifBlank { "Enterキーを送りますか？" },
             )
         }

@@ -209,6 +209,9 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshHarborWorkspace(lines: Int = 500) {
         _selectedHarborWorkspaceId.value?.let { BleConnectionService.loadHarborWorkspace(it, lines) }
     }
+    fun refreshHarborPlan() {
+        _selectedHarborWorkspaceId.value?.let(BleConnectionService::loadHarborWorkspacePlan)
+    }
     fun createHarborTab() = _selectedHarborWorkspaceId.value?.let(BleConnectionService::createHarborTab)
     fun activateHarborTab(id: String) = _selectedHarborWorkspaceId.value?.let {
         BleConnectionService.activateHarborTab(it, id)

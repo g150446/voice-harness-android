@@ -46,14 +46,21 @@ Voice HarnessはTerminal Harborの `harbor://pair` URIからHMAC鍵を導出し�
 
 1. ASR（既定はユーザー設定のSTT）で文字起こしし、G2に STT を即表示する
 2. 選択中ワークスペースの直近会話（最大2,000行）、agent 情報、切替可能なワークスペース一覧を
-   取得し、クラウド LLM（Groq / OpenRouter、tools対応）へ `harbor_command` tool を強制する。
+   取得し、解釈エンジンへ `harbor_command` tool を強制する。エンジンは
+   **OpenClaw（ワークスペース単位のセッション）→ 失敗時は Groq / OpenRouter → 決定論的 fallback**
+   の順（`documents/openclaw.md` の「Terminal Harbor の音声解釈」）。
    意図確認コメントは「いま Terminal Harbor 上で動いている AI エージェントの会話」を踏まえる
-3. シングルタップで実行。確定した action をそのまま実行し、Harbor 側で解釈し直さない:
-   - `action=instruction` → `POST /v1/workspaces/{id}/instruction`
-   - `action=key`（Enter）→ `POST /v1/workspaces/{id}/key` with `{"key":"enter"}`
+3. シングルタップで実行。確定した内容をそのまま実行し、Harbor 側で解釈し直さない:
+   - `action=instruction` → `POST /v1/workspaces/{id}/instruction`（`submit=false` なら貼付のみ）
+   - `action=key` → `POST /v1/workspaces/{id}/key`。`enter / escape / shift-tab / tab /
+     up / down / left / right / space / ctrl-c` を送れる（Claude Code のプランモードは `shift-tab`）
+   - `steps[]` → 上記を順に実行。手順間は既定 300ms 空け、確認画面には手順のプレビューを出す
    - `action=switch_workspace` → `POST /v1/workspaces/{id}/activate`
+   送信先は解釈時のワークスペース id に固定する（確認とタップの間に選択が変わっても、
+   承認済みの指示が別の端末へ飛ばないようにするため）
 4. ダブルタップで取り消し（pending 破棄・ミラー再開・「指示を取り消しました」）。
-   15秒無操作でも同じ取り消し。ただし確認待ち（`needs_clarification`）の画面だけは
+   時間切れによる自動取り消しは無い（pending は次の発話・エラー・モード変更でも消える）。
+   ただし確認待ち（`needs_clarification`）の画面だけは
    「ダブルタップで言い直す」と表示し、そちらは録音し直しになる
 
 **意図解析はAndroid側の1回だけ**で、Harbor の `POST /v1/voice/intent` は使わない。
@@ -127,8 +134,8 @@ TTSを抑止し、未接続なら同じ返答をTTSへ戻す。
 **ダブルタップ**は G2 接続中、今のモード向けの指示録音に使う。待機中の1回目で録音を開始し、
 話した後の2回目で確定する。リーダーは Kindle 実ページの送り／戻し。Harbor は認識結果を
 G2に即表示し、LLMの `harbor_command` で意図コメントを併記した確認画面を出す。確認待ち中は
-録音タップ設定より優先し、シングル＝実行（`POST /v1/voice/intent`、unsupported なら
-`POST /instruction`）、ダブル＝言い直し（コマンド再録音）。15秒無操作でも取り消す。
+録音タップ設定より優先し、シングル＝実行（確定済みの `instruction` / `key` / `steps` を
+そのまま送る）、ダブル＝言い直し（コマンド再録音）。時間切れの自動取り消しは無い。
 Harbor 待機中（確認待ちでも要約・質問の表示でもない）の **シングルタップ**は何も行わない。
 指示録音の開始/終了はG2接続中は常にダブルタップだけが担う（AI・リーダー・Harborいずれの
 モードも共通）。要約・質問の表示中は G2 のページ送りを優先し、シングルは録音に使わない。M5 StickC ファームには

@@ -189,6 +189,23 @@ data class HarborDevice(
     val active: Boolean,
 )
 
+/**
+ * The plan file an agent wrote, from `GET /v1/workspaces/{id}/plan`.
+ *
+ * This is never derived from the terminal screen: the screen only holds the rows that are
+ * still on it, so a plan read from there is cut off at whatever has scrolled past. [available]
+ * false is a normal answer with a [reason] — the caller shows that reason and must not put
+ * screen text in its place.
+ */
+data class HarborPlan(
+    val available: Boolean,
+    val capability: String,
+    val agent: String? = null,
+    val text: String = "",
+    val updatedAt: String? = null,
+    val reason: String? = null,
+)
+
 data class HarborUiState(
     val devices: List<HarborDevice> = emptyList(),
     val workspaces: List<HarborWorkspace> = emptyList(),
@@ -196,6 +213,9 @@ data class HarborUiState(
     val selectedWorkspaceId: String? = null,
     val screenText: String = "",
     val speechHints: List<String> = emptyList(),
+    val plan: HarborPlan? = null,
+    val planError: String? = null,
+    val planLoading: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
 )
@@ -220,6 +240,160 @@ internal fun filterHarborDisplayText(text: String): String {
 
 internal fun shouldPublishHarborPoll(paused: Boolean, coroutineActive: Boolean): Boolean =
     !paused && coroutineActive
+
+/** One signed call against Terminal Harbor, already bound to the workspace it targets. */
+internal sealed interface HarborOperation {
+    val workspaceId: String
+    val waitMs: Int
+
+    data class Activate(override val workspaceId: String, override val waitMs: Int = 0) :
+        HarborOperation
+
+    data class Instruction(
+        override val workspaceId: String,
+        val text: String,
+        val submit: Boolean,
+        override val waitMs: Int = HARBOR_STEP_DELAY_MS,
+    ) : HarborOperation
+
+    data class Key(
+        override val workspaceId: String,
+        val key: String,
+        override val waitMs: Int = HARBOR_STEP_DELAY_MS,
+    ) : HarborOperation
+}
+
+internal data class HarborSubmitPlan(
+    val operations: List<HarborOperation>,
+    val message: String,
+)
+
+/**
+ * Turns a confirmed command into the exact calls to make, and refuses anything Harbor cannot
+ * carry out — before the first one is sent, so a bad key in the middle of a sequence cannot
+ * leave the terminal half-way through something the user approved as a whole.
+ *
+ * The target workspace is the one the interpretation was made against. Resolving it at send
+ * time instead would let a switch between the confirmation and the tap redirect approved text
+ * into another terminal.
+ */
+internal fun planHarborSubmit(
+    args: HarborCommandArgs,
+    workspaces: List<HarborWorkspace>,
+): HarborSubmitPlan {
+    if (args.action == HarborCommandAction.SWITCH_WORKSPACE) {
+        val target = args.workspace?.trim().orEmpty()
+        if (target.isEmpty()) error("切り替え先のワークスペースが空です")
+        val match = resolveHarborWorkspace(target, workspaces)
+            ?: error("「$target」というワークスペースが見つかりません")
+        return HarborSubmitPlan(
+            operations = listOf(HarborOperation.Activate(match.id)),
+            message = "${match.name} に切り替えました",
+        )
+    }
+
+    val targetId = args.workspaceId?.takeIf { id -> workspaces.any { it.id == id } }
+        ?: workspaces.firstOrNull { it.selected }?.id
+        ?: error("選択中のワークスペースがありません")
+
+    val steps = args.effectiveSteps
+    if (steps.isEmpty()) error("送信する指示が空です")
+    val operations = steps.map { step ->
+        when (step.action) {
+            HarborStepAction.KEY -> {
+                val key = HarborCommandTool.normalizeKeyName(step.key)
+                    ?: error("「${step.key}」は送信できないキーです")
+                HarborOperation.Key(targetId, key, step.waitMs)
+            }
+
+            HarborStepAction.INSTRUCTION -> {
+                val text = step.command.trim()
+                if (text.isEmpty()) error("送信する指示が空です")
+                HarborOperation.Instruction(targetId, text, step.submit, step.waitMs)
+            }
+        }
+    }
+    return HarborSubmitPlan(operations, describeHarborSteps(steps))
+}
+
+/** What was just sent, in one line the glass can hold next to the terminal mirror. */
+internal fun describeHarborSteps(steps: List<HarborCommandStep>): String {
+    if (steps.size == 1) {
+        val step = steps.first()
+        return when (step.action) {
+            HarborStepAction.KEY -> "${HarborCommandTool.keyLabel(step.key ?: "enter")}キーを送りました"
+            HarborStepAction.INSTRUCTION ->
+                if (step.submit) "指示を送りました" else "指示を貼り付けました"
+        }
+    }
+    val sequence = steps.joinToString(" → ") { step ->
+        when (step.action) {
+            HarborStepAction.KEY -> HarborCommandTool.keyLabel(step.key ?: "enter")
+            HarborStepAction.INSTRUCTION -> step.command.take(20)
+        }
+    }
+    return "$sequence を送りました"
+}
+
+/**
+ * Parses a `/plan` response.
+ *
+ * A success is always whole: the bridge sends `complete: true` and a SHA-256 of the bytes it
+ * read. Both are checked here, because showing a partial plan as if it were the plan is worse
+ * than showing nothing — the user would act on half a document without knowing it.
+ */
+internal fun parseHarborPlan(code: Int, json: JSONObject): HarborPlan {
+    val capability = json.optString("capability").ifBlank { "unknown" }
+    val agent = json.optString("agent").trim().takeIf(String::isNotEmpty)
+    if (code == 413) {
+        return HarborPlan(
+            available = false,
+            capability = capability,
+            agent = agent,
+            reason = json.optString("reason").ifBlank { "plan_too_large" },
+        )
+    }
+    if (!json.optBoolean("available", false)) {
+        return HarborPlan(
+            available = false,
+            capability = capability,
+            agent = agent,
+            reason = json.optString("reason").ifBlank { "unknown" },
+        )
+    }
+    val text = json.optString("text")
+    if (!json.optBoolean("complete", false)) {
+        error("Terminal Harborが不完全なプランを返しました")
+    }
+    val expected = json.optString("content_sha256").lowercase(Locale.ROOT)
+    if (expected.isNotEmpty() && expected != sha256Hex(text.toByteArray(Charsets.UTF_8))) {
+        error("プランの内容が壊れています（ハッシュ不一致）")
+    }
+    return HarborPlan(
+        available = true,
+        capability = capability,
+        agent = agent,
+        text = text,
+        updatedAt = json.optString("updated_at").trim().takeIf(String::isNotEmpty),
+    )
+}
+
+/** Why there is no plan to show, in the user's language. Never implies the screen has one. */
+internal fun harborPlanReasonText(plan: HarborPlan): String = when (plan.reason) {
+    "plan_not_created" -> "このセッションはまだプランを作成していません。"
+    "agent_has_no_plan_file" -> "このエージェント（${plan.agent ?: "Codex"}）はプランファイルを持ちません。"
+    "unsupported_agent" -> "このエージェントはプラン取得に対応していません。"
+    "no_agent" -> "このworkspaceではエージェントが動いていません。"
+    "session_unidentified" ->
+        "Claude Codeのhookが未登録です。Terminal Harborで " +
+            "`wezterm agent-session install-hooks --agent claude --apply` を実行し、" +
+            "Claude Codeを起動し直してください。"
+    "stale_session" -> "セッション登録が古くなっています。Claude Codeを起動し直してください。"
+    "plan_file_missing" -> "プランファイルが見つかりません。"
+    "plan_too_large" -> "プランが大きすぎて取得できません（1MiB超）。"
+    "unsupported_api" -> "このTerminal Harborはプラン取得に未対応です（API 1.11.0以降が必要）。"
+    else -> "プランを取得できませんでした。"
+}
 
 internal fun parseHarborG2View(json: JSONObject): HarborG2View {
     if (json.optString("view") != "summary") {
@@ -547,6 +721,20 @@ internal class HarborApiClient(
         return HarborScreen(JSONObject(String(response.body)).optString("text"))
     }
 
+    /**
+     * The agent's own plan file. Deliberately has no `/screen` fallback: a screen snapshot is
+     * a different thing and [parseHarborPlan] would have no way to label it as one.
+     */
+    fun fetchPlan(credentials: HarborCredentials, workspaceId: String): HarborPlan {
+        val path = "/v1/workspaces/${Uri.encode(workspaceId)}/plan"
+        val response = authorized(credentials, "GET", path)
+        if (response.code == 404) {
+            return HarborPlan(available = false, capability = "unknown", reason = "unsupported_api")
+        }
+        if (response.code != 413) checkOk(response)
+        return parseHarborPlan(response.code, JSONObject(String(response.body)))
+    }
+
     fun fetchInterpretContext(credentials: HarborCredentials): HarborInterpretContext? {
         val workspaces = listWorkspaces(credentials)
         val workspace = workspaces.firstOrNull { it.selected } ?: return null
@@ -849,6 +1037,32 @@ internal class HarborMirrorController(
         }
     }
 
+    /**
+     * Fetched on demand rather than on the one-second screen poll: a plan changes when the
+     * agent writes one, not every tick, and each call is another signed request.
+     */
+    fun loadWorkspacePlan(workspaceId: String) {
+        val creds = credentials ?: return
+        _uiState.value = _uiState.value.copy(planLoading = true, planError = null)
+        scope.launch(Dispatchers.IO) {
+            runCatching { client.fetchPlan(creds, workspaceId) }
+                .onSuccess { plan ->
+                    _uiState.value = _uiState.value.copy(
+                        plan = plan,
+                        planError = null,
+                        planLoading = false,
+                    )
+                }
+                .onFailure { error ->
+                    _uiState.value = _uiState.value.copy(
+                        plan = null,
+                        planError = error.message ?: "プランを取得できませんでした。",
+                        planLoading = false,
+                    )
+                }
+        }
+    }
+
     fun createTab(workspaceId: String) = mutateWorkspace(workspaceId) {
         client.createTab(requireCredentials(), workspaceId)
     }
@@ -969,26 +1183,25 @@ internal class HarborMirrorController(
      */
     fun submitCommand(args: HarborCommandArgs): String {
         val creds = credentials ?: error("Terminal Harborをペアリングしてください")
-        val workspaces = client.listWorkspaces(creds)
-        if (args.action == HarborCommandAction.SWITCH_WORKSPACE) {
-            val target = args.workspace?.trim().orEmpty()
-            if (target.isEmpty()) error("切り替え先のワークスペースが空です")
-            val match = resolveHarborWorkspace(target, workspaces)
-                ?: error("「$target」というワークスペースが見つかりません")
-            client.postActivate(creds, match.id)
-            return "${match.name} に切り替えました"
+        val plan = planHarborSubmit(args, client.listWorkspaces(creds))
+        plan.operations.forEachIndexed { index, operation ->
+            when (operation) {
+                is HarborOperation.Activate -> client.postActivate(creds, operation.workspaceId)
+                is HarborOperation.Instruction -> client.postInstruction(
+                    creds,
+                    operation.workspaceId,
+                    operation.text,
+                    operation.submit,
+                )
+
+                is HarborOperation.Key ->
+                    client.postKey(creds, operation.workspaceId, operation.key)
+            }
+            // The agent redraws between keys; sending the next one into a stale screen is how
+            // a menu selection lands on the wrong row.
+            if (index < plan.operations.lastIndex) Thread.sleep(operation.waitMs.toLong())
         }
-        val selected = workspaces.firstOrNull { it.selected }
-            ?: error("選択中のワークスペースがありません")
-        if (args.action == HarborCommandAction.KEY) {
-            val key = args.key?.trim()?.lowercase().orEmpty().ifBlank { "enter" }
-            client.postKey(creds, selected.id, key)
-            return if (key == "enter") "Enterキーを送りました" else "${key}キーを送りました"
-        }
-        val text = args.command.trim()
-        if (text.isEmpty()) error("送信する指示が空です")
-        client.postInstruction(creds, selected.id, text)
-        return "指示を送りました"
+        return plan.message
     }
 
     private fun reconcile() {

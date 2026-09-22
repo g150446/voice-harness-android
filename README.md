@@ -190,8 +190,15 @@ Voice HarnessのTerminal Harbor欄からQRを読み取る。QRを使えない場
 ブリッジはTailscaleまたは信頼できるLAN上のHTTPを使用し、HMACで相互認証と改ざん検出を行う。
 ホームの **Terminal Harborを開く** から、ペア済みMacとworkspaceの選択、workspace/tabの作成・終了、
 terminal出力の閲覧、文字・Android音声認識による指示、矢印・Esc・Ctrl-C・Tabキーの送信ができる。
+キーのボタン群は既定では畳まれていて、入力欄の上の **キー ▾** で開く。
 音声認識は入力欄へ追記するだけで自動送信しない。履歴表示中はライブ更新を停止し、Liveへ戻すと再開する。
 terminal出力の文字サイズはヘッダのA−/A+で変更でき（8〜24sp）、端末に保存される。
+端末幅いっぱいの横罫線は表示幅に合わせて縮めるので、区切り線が何行にも折り返らない。
+ヘッダの **プラン** で、いま動いているエージェントが書いたプランファイル全体を表示できる
+（`GET /v1/workspaces/{id}/plan`、Terminal Harbor API 1.11.0 以上）。端末画面から拾うのではなく
+ファイルそのものを読むので、スクロールで流れた部分も残らず読める。Claude Code 側に
+`wezterm agent-session install-hooks --agent claude --apply` で hook を入れておく必要があり、
+プランが無い場合は理由を表示する（端末出力で代用はしない）。
 旧Terminal Harbor Mobile Android版の認証情報はアプリ間で移送せず、Voice Harnessから再ペアリングする。
 
 HarborモードはG2未接続でも有効にできる。HarnessNodeのダブルタップで指示録音を開始・終了し、
