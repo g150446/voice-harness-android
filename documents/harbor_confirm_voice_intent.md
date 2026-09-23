@@ -20,6 +20,10 @@ STT → Android の LLM（harbor_command tool）→ G2 に確認表示 → タ�
 | `KEY` | `POST /v1/workspaces/{id}/key` |
 | `SWITCH_WORKSPACE` | `POST /v1/workspaces/{id}/activate` |
 
+> 2026-09-23 追記: 「音声でワークスペースが切り替わらない」という報告があったが、
+> `activate` は成功していて、追従していなかったのはアプリの画面だった。経緯は
+> [`harbor_workspace_switch.md`](harbor_workspace_switch.md) に分けてある。
+
 > 2026-09-22 追記: 「Android の LLM」は **OpenClaw（ワークスペース単位のセッション）→
 > Groq / OpenRouter → 決定論的 fallback** の順に変わった。どのエンジンを使っても
 > 「解釈は確認画面の前に 1 回だけ」「実行はアプリが直接」は変わらない。OpenClaw は 15 秒で

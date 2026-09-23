@@ -63,7 +63,10 @@ Voice HarnessはTerminal Harborの `harbor://pair` URIからHMAC鍵を導出し�
      [`harbor_mode_switch.md`](harbor_mode_switch.md)）
    - `steps[]` → 上記を順に実行。手順間は既定 300ms（`mode` は 500ms）空け、
      確認画面には手順のプレビューを出す
-   - `action=switch_workspace` → `POST /v1/workspaces/{id}/activate`
+   - `action=switch_workspace` → `POST /v1/workspaces/{id}/activate`。成功すると
+     アプリのワークスペース画面も移動先へ追従する。追従するのは**選択だけ**で、
+     ホーム画面にいるユーザーを詳細画面へ移したりはしない（経緯は
+     [`harbor_workspace_switch.md`](harbor_workspace_switch.md)）
    送信先は解釈時のワークスペース id に固定する（確認とタップの間に選択が変わっても、
    承認済みの指示が別の端末へ飛ばないようにするため）
 4. ダブルタップで取り消し（pending 破棄・ミラー再開・「指示を取り消しました」）。

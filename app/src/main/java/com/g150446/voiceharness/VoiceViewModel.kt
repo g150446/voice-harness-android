@@ -143,6 +143,20 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
                 _batteryLevel.value = level
             }
         }
+
+        // Follow Harbor wherever it was activated, including from voice. Only the workspace
+        // list's tap used to move this, so a spoken switch left the workspace screen polling
+        // the one it was opened on — alive, up to date, and about the wrong terminal.
+        // The screen the user is on is not changed: following is not navigating.
+        viewModelScope.launch {
+            BleConnectionService.harborUiState.collect { state ->
+                val activated = state.activatedWorkspaceId ?: return@collect
+                if (activated != _selectedHarborWorkspaceId.value) {
+                    _selectedHarborWorkspaceId.value = activated
+                    BleConnectionService.loadHarborWorkspace(activated)
+                }
+            }
+        }
     }
 
     fun stopSpeaking() {

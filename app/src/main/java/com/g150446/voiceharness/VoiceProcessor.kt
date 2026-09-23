@@ -977,10 +977,14 @@ internal class VoiceProcessor(
         if (harborConfirmOutcome(pending) == HarborConfirmOutcome.NEEDS_CLARIFICATION) {
             Log.w(TAG, "Harbor confirm ignored: awaiting clarification")
             // Re-show the question (and give a fresh window) so the tap is acknowledged.
+            // Republishing the same words was as unreadable as publishing nothing: a tap that
+            // left the glass byte-identical is how a command that could never run looked like
+            // a tap that never arrived. The prefix is what makes the difference visible.
+            val question = pending.args.question?.takeIf { it.isNotBlank() }
+                ?: pending.args.intentSummary
             publishHarborConfirmUi(
                 stt = pending.stt,
-                aiComment = pending.args.question?.takeIf { it.isNotBlank() }
-                    ?: pending.args.intentSummary,
+                aiComment = "答えが必要です: $question",
                 awaitingClarification = true,
             )
             return

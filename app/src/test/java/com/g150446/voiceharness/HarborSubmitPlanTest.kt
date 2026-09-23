@@ -145,6 +145,37 @@ class HarborSubmitPlanTest {
         assertEquals("terminal-harbor に切り替えました", plan.message)
     }
 
+    /** A name that fits two workspaces is there twice over, not missing. */
+    @Test
+    fun `an ambiguous switch target names the candidates`() {
+        val crowded = listOf(
+            HarborWorkspace(id = "ws-a", name = "voice-harness-android", selected = true),
+            HarborWorkspace(id = "ws-b", name = "voice-harness-even-g2", selected = false),
+        )
+
+        val error = assertThrows(IllegalStateException::class.java) {
+            planHarborSubmit(
+                args(action = HarborCommandAction.SWITCH_WORKSPACE, workspace = "voice-harness"),
+                crowded,
+            )
+        }
+
+        assertTrue(error.message!!.contains("voice-harness-android"))
+        assertTrue(error.message!!.contains("voice-harness-even-g2"))
+    }
+
+    @Test
+    fun `an unknown switch target says so`() {
+        val error = assertThrows(IllegalStateException::class.java) {
+            planHarborSubmit(
+                args(action = HarborCommandAction.SWITCH_WORKSPACE, workspace = "nothing-like-this"),
+                workspaces,
+            )
+        }
+
+        assertTrue(error.message!!.contains("見つかりません"))
+    }
+
     @Test
     fun `a per-step wait is carried through`() {
         val plan = planHarborSubmit(

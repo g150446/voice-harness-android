@@ -43,4 +43,26 @@ class HarborInterpretContextTest {
         assertTrue(appendix.contains("…"))
         assertFalse(appendix.contains("a".repeat(15_000)))
     }
+
+    /**
+     * The scrollback is what overflows, so it is what gets cut. Clipping the whole body from
+     * the end instead took the header with it — and the header is where the switch targets are,
+     * which is how 「〜に切り替えて」 stopped resolving to a workspace.
+     */
+    @Test
+    fun `truncation keeps the header a switch needs`() {
+        val appendix = HarborContextPrompt.systemAppendix(
+            HarborInterpretContext(
+                workspaceId = "ws",
+                workspaceName = "demo",
+                agent = "claude",
+                conversation = "a".repeat(20_000),
+                availableWorkspaces = listOf("demo", "terminal-harbor"),
+            )
+        )
+        assertTrue(appendix.contains("workspace: demo"))
+        assertTrue(appendix.contains("switchable_workspaces: demo, terminal-harbor"))
+        assertTrue(appendix.contains("agent: claude"))
+        assertTrue(appendix.contains("recent_terminal_conversation:"))
+    }
 }

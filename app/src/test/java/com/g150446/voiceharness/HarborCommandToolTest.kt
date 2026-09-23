@@ -90,6 +90,38 @@ class HarborCommandToolTest {
         assertFalse(args.needsClarification)
     }
 
+    /**
+     * The confirm screen is the question, so a model that names the workspace and asks anyway
+     * is asking for something the tap already provides. Honouring that flag dropped the
+     * `workspace` field, leaving a prompt whose single tap could only re-ask forever.
+     */
+    @Test
+    fun `a named switch_workspace runs even when the model also asked to confirm`() {
+        val args = HarborCommandTool.parse(
+            """{"action":"switch_workspace","workspace":"terminal-harbor",
+               "needs_clarification":true,
+               "intent_summary":"「terminal-harbor」に切り替えますか？"}""",
+            fallbackCommand = "ターミナルハーバーに切り替えて",
+        )
+
+        assertEquals(HarborCommandAction.SWITCH_WORKSPACE, args.action)
+        assertEquals("terminal-harbor", args.workspace)
+        assertFalse(args.needsClarification)
+    }
+
+    @Test
+    fun `a switch_workspace with no target still asks which one`() {
+        val args = HarborCommandTool.parse(
+            """{"action":"switch_workspace","needs_clarification":true,
+               "question":"どのワークスペースにしますか？","intent_summary":"確認"}""",
+            fallbackCommand = "",
+        )
+
+        assertTrue(args.needsClarification)
+        assertEquals("どのワークスペースにしますか？", args.question)
+        assertNull(args.workspace)
+    }
+
     @Test
     fun `switch_workspace survives an STT that looks like an enter request`() {
         // normalizeWithStt rewrites INSTRUCTION into KEY for enter-ish speech; a

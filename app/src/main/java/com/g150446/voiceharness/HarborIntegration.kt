@@ -160,15 +160,26 @@ data class HarborWorkspace(
 internal fun resolveHarborWorkspace(
     target: String,
     workspaces: List<HarborWorkspace>,
-): HarborWorkspace? {
+): HarborWorkspace? = harborWorkspaceCandidates(target, workspaces).singleOrNull()
+
+/**
+ * Every workspace [target] could mean: one when it resolves, none when it is unknown, several
+ * when it is ambiguous. The caller needs the difference — 「voice-harness」 hits both
+ * `voice-harness-android` and `voice-harness-even-g2`, and telling the user it was *not found*
+ * sends them looking for a workspace that is right there.
+ */
+internal fun harborWorkspaceCandidates(
+    target: String,
+    workspaces: List<HarborWorkspace>,
+): List<HarborWorkspace> {
     val needle = harborWorkspaceKey(target)
-    if (needle.isEmpty()) return null
-    workspaces.firstOrNull { harborWorkspaceKey(it.name) == needle }?.let { return it }
-    workspaces.firstOrNull { harborWorkspaceKey(it.id) == needle }?.let { return it }
+    if (needle.isEmpty()) return emptyList()
+    workspaces.firstOrNull { harborWorkspaceKey(it.name) == needle }?.let { return listOf(it) }
+    workspaces.firstOrNull { harborWorkspaceKey(it.id) == needle }?.let { return listOf(it) }
     return workspaces.filter {
         val key = harborWorkspaceKey(it.name)
         key.isNotEmpty() && (key.contains(needle) || needle.contains(key))
-    }.singleOrNull()
+    }
 }
 
 private fun harborWorkspaceKey(value: String): String =
@@ -241,6 +252,15 @@ data class HarborUiState(
     val workspaces: List<HarborWorkspace> = emptyList(),
     val tabs: List<HarborTab> = emptyList(),
     val selectedWorkspaceId: String? = null,
+    /**
+     * The workspace Harbor was last told to activate, by tap or by voice.
+     *
+     * Distinct from [selectedWorkspaceId], which the workspace screen overwrites with whatever
+     * it is polling — so it can only ever confirm where the screen already was. A voice switch
+     * moved Harbor and the glass while the screen kept polling the workspace the user had
+     * opened by hand, which is what 「切り替わらない」 looked like from the phone.
+     */
+    val activatedWorkspaceId: String? = null,
     val screenText: String = "",
     val speechHints: List<String> = emptyList(),
     val plan: HarborPlan? = null,
@@ -333,7 +353,11 @@ internal fun planHarborSubmit(
     if (args.action == HarborCommandAction.SWITCH_WORKSPACE) {
         val target = args.workspace?.trim().orEmpty()
         if (target.isEmpty()) error("切り替え先のワークスペースが空です")
-        val match = resolveHarborWorkspace(target, workspaces)
+        val candidates = harborWorkspaceCandidates(target, workspaces)
+        if (candidates.size > 1) {
+            error("「$target」は複数あります（${candidates.joinToString(" / ") { it.name }}）")
+        }
+        val match = candidates.singleOrNull()
             ?: error("「$target」というワークスペースが見つかりません")
         return HarborSubmitPlan(
             operations = listOf(HarborOperation.Activate(match.id)),
@@ -1178,6 +1202,12 @@ internal class HarborMirrorController(
 
     fun activateWorkspace(workspaceId: String) = mutateAndRefresh {
         client.postActivate(requireCredentials(), workspaceId)
+        noteActivated(workspaceId)
+    }
+
+    /** Records an activation that succeeded, so every screen can move to where Harbor went. */
+    private fun noteActivated(workspaceId: String) {
+        _uiState.value = _uiState.value.copy(activatedWorkspaceId = workspaceId)
     }
 
     fun createWorkspace(root: String?) = mutateAndRefresh {
@@ -1418,7 +1448,14 @@ internal class HarborMirrorController(
         val notes = mutableListOf<String>()
         plan.operations.forEachIndexed { index, operation ->
             when (operation) {
-                is HarborOperation.Activate -> client.postActivate(creds, operation.workspaceId)
+                is HarborOperation.Activate -> {
+                    client.postActivate(creds, operation.workspaceId)
+                    // The glass follows Harbor's own selection on its next poll; the phone
+                    // screens follow their navigation state, so the switch has to be told to
+                    // them or they keep polling the workspace they were left on.
+                    noteActivated(operation.workspaceId)
+                    refreshWorkspaces()
+                }
                 is HarborOperation.Instruction -> client.postInstruction(
                     creds,
                     operation.workspaceId,

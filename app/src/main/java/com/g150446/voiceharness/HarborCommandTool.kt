@@ -220,7 +220,10 @@ internal object HarborCommandTool {
             "presses: set needs_clarification instead. " +
             "Use action=switch_workspace only when moving to another workspace is the whole " +
             "request, with nothing to do once you arrive (「harbor に切り替えて」 / 「〜に移動して」); " +
-            "set workspace to one of the listed workspaces. " +
+            "set workspace to one of the listed workspaces. Do not set needs_clarification once " +
+            "you can name that workspace: the user confirms the switch with a tap, so asking " +
+            "again only stops it from happening. Set it only when you cannot tell which " +
+            "workspace is meant. " +
             "A trailing 「〜と送って」/「〜と送信して」 is a spoken cue meaning send what precedes " +
             "it — exclude that trailing phrase from command itself (「問題なさそうと送って」 → " +
             "command 「問題なさそう」). " +
@@ -398,7 +401,13 @@ internal object HarborCommandTool {
 
             // A switch wins over the Enter heuristics below; a workspace name can
             // otherwise look like ordinary text to them.
-            if (actionRaw == "switch_workspace" && !needsClarification) {
+            //
+            // A named destination is a switch even when the model also asked for
+            // confirmation. Asking is what the confirm screen already does, and the
+            // clarification branch below keeps no `workspace` field — so a switch that
+            // arrived with needs_clarification used to lose its target and leave the user
+            // tapping a prompt that could never run. A blank target still falls through.
+            if (actionRaw == "switch_workspace") {
                 val target = workspace ?: command
                 if (target.isNotBlank()) {
                     return HarborCommandArgs(
