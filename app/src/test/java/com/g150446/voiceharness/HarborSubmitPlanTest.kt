@@ -16,12 +16,14 @@ class HarborSubmitPlanTest {
         action: HarborCommandAction = HarborCommandAction.INSTRUCTION,
         command: String = "",
         key: String? = null,
+        mode: ClaudeCodeMode? = null,
         workspaceId: String? = null,
         workspace: String? = null,
     ) = HarborCommandArgs(
         action = action,
         command = command,
         key = key,
+        mode = mode,
         workspace = workspace,
         workspaceId = workspaceId,
         intentSummary = "test",
@@ -81,6 +83,31 @@ class HarborSubmitPlanTest {
 
         assertEquals(listOf(HarborOperation.Key("ws-a", "shift-tab")), plan.operations)
         assertEquals("⇧Tabキーを送りました", plan.message)
+    }
+
+    @Test
+    fun `a mode change plans one operation that decides its own key presses`() {
+        val plan = planHarborSubmit(
+            args(action = HarborCommandAction.MODE, mode = ClaudeCodeMode.PLAN),
+            workspaces,
+        )
+
+        assertEquals(
+            listOf(HarborOperation.SetMode("ws-a", ClaudeCodeMode.PLAN, HARBOR_MODE_SETTLE_MS)),
+            plan.operations,
+        )
+        // The line the glass shows comes from the sender, once it has read the screen back.
+        assertEquals("", plan.message)
+    }
+
+    @Test
+    fun `a mode step without a target is refused before anything is sent`() {
+        assertThrows(IllegalStateException::class.java) {
+            planHarborSubmit(
+                args(steps = listOf(HarborCommandStep(HarborStepAction.MODE))),
+                workspaces,
+            )
+        }
     }
 
     @Test

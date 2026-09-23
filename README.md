@@ -289,6 +289,12 @@ mDNS はリンクローカルなので tailnet は越えない。**同じ Wi-Fi 
 `adb tcpip 5555` は**端末を再起動するまで有効**なので、一度 `setup` すれば以降は USB 不要。
 再起動後に繋がらなくなったら USB を挿して `setup` をやり直す。
 
+**APK インストールを USB 推奨としているのは tailnet 経由の話**で、リンクローカルの無線
+（テザリング / 同じ Wi-Fi）はそうでもない。2026-09-23 に 144MB の debug APK を
+テザリング経由（候補2番のゲートウェイ IP）で入れて **29 秒**だった。tailnet の IP に繋がったまま
+入れるとタイムアウトするので、無線で入れるなら `adb devices` でどちらのトランスポートに
+向いているかを確認してから。
+
 ### VAD / ASR 幻覚対策メモ
 
 - BLE 経路は `Silero VAD` を優先し、`maxProb` が異常に低い場合は FFT ベース解析に自動フォールバックする
@@ -339,6 +345,7 @@ mDNS はリンクローカルなので tailnet は越えない。**同じ Wi-Fi 
 - [`documents/ble_audio_reliability.md`](documents/ble_audio_reliability.md) — Bluetoothヘッドセット併用時の音声経路、PCM送達保証、障害調査
 - [`documents/smart_glasses_output.md`](documents/smart_glasses_output.md) — Even G2 出力（現行）と Vuzix Z100 アーカイブ仕様
 - [`documents/harbor_confirm_voice_intent.md`](documents/harbor_confirm_voice_intent.md) — Harbor 確認画面のタップ割り当てと意図解析を1回にした経緯
+- [`documents/harbor_mode_switch.md`](documents/harbor_mode_switch.md) — Claude Code のモード切替で ⇧Tab の回数を数えるのをやめ、画面を読みながら送るようにした経緯
 - [`documents/reader_harbor_mode_conflict.md`](documents/reader_harbor_mode_conflict.md) — リーダーモードがHarborモードに引き戻される回帰の原因と修正
 - [`even-g2/app/README.md`](even-g2/app/README.md) — Even Hub プラグイン（Voice Harness G2）
 - [`documents/even_g2_macless_deployment.md`](documents/even_g2_macless_deployment.md) — Macなし運用、非公開Beta配布、期限切れ表示の復旧

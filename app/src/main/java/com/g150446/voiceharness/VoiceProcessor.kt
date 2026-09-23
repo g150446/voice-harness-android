@@ -812,7 +812,10 @@ internal class VoiceProcessor(
         BleConnectionService.pauseHarborMirror(true)
         // A planned sequence is left as the model decided it; only a bare single action may
         // be rewritten into Enter from the transcript.
-        val enterRewrite = args.steps.size <= 1 && args.key == null &&
+        // A mode change names a destination rather than text, so the Enter rewrite has nothing
+        // to say about it.
+        val enterRewrite = args.action != HarborCommandAction.MODE &&
+            args.steps.size <= 1 && args.key == null &&
             HarborCommandTool.isEnterRequest(stt)
         val normalized = if (args.action == HarborCommandAction.KEY || enterRewrite) {
             args.copy(
@@ -1002,6 +1005,8 @@ internal class VoiceProcessor(
                         "Harbor手順: ${HarborCommandTool.stepsPreview(pending.args)}\n$message"
                     pending.args.action == HarborCommandAction.KEY ->
                         "Harbor key: ${pending.args.key ?: "enter"}\n$message"
+                    pending.args.action == HarborCommandAction.MODE ->
+                        "Harborモード: ${pending.args.mode?.label.orEmpty()}\n$message"
                     else -> "Harborへ送信: ${pending.args.command}\n$message"
                 }
                 saveHistoryEntry(

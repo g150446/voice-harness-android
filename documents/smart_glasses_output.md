@@ -53,8 +53,16 @@ Voice HarnessはTerminal Harborの `harbor://pair` URIからHMAC鍵を導出し�
 3. シングルタップで実行。確定した内容をそのまま実行し、Harbor 側で解釈し直さない:
    - `action=instruction` → `POST /v1/workspaces/{id}/instruction`（`submit=false` なら貼付のみ）
    - `action=key` → `POST /v1/workspaces/{id}/key`。`enter / escape / shift-tab / tab /
-     up / down / left / right / space / ctrl-c` を送れる（Claude Code のプランモードは `shift-tab`）
-   - `steps[]` → 上記を順に実行。手順間は既定 300ms 空け、確認画面には手順のプレビューを出す
+     up / down / left / right / space / ctrl-c` を送れる
+   - `action=mode` → Claude Code の権限モード（`normal / accept_edits / plan / auto /
+     dont_ask / bypass_permissions`）。**⇧Tab の回数は誰も数えない**。1回送るたびに
+     `GET /v1/workspaces/{id}/screen` でフッター（`plan mode on` / `accept edits on` /
+     `auto mode on` など）を読み、目的のモードになるまで繰り返す。押す前にモードが
+     読めなければ1回も送らずに中止する（`ClaudeCodeMode.kt`。Claude Code が文言を
+     変えたときに直すのはこのファイルのマーカー表だけ。経緯は
+     [`harbor_mode_switch.md`](harbor_mode_switch.md)）
+   - `steps[]` → 上記を順に実行。手順間は既定 300ms（`mode` は 500ms）空け、
+     確認画面には手順のプレビューを出す
    - `action=switch_workspace` → `POST /v1/workspaces/{id}/activate`
    送信先は解釈時のワークスペース id に固定する（確認とタップの間に選択が変わっても、
    承認済みの指示が別の端末へ飛ばないようにするため）

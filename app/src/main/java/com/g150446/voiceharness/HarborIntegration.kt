@@ -299,6 +299,17 @@ internal sealed interface HarborOperation {
         val key: String,
         override val waitMs: Int = HARBOR_STEP_DELAY_MS,
     ) : HarborOperation
+
+    /**
+     * Leave Claude Code in [mode]. How many ⇧Tab presses that takes is not decided here, and
+     * deliberately not decided by whoever interpreted the request either: the sender presses
+     * one key at a time and reads the mode back off the screen between presses.
+     */
+    data class SetMode(
+        override val workspaceId: String,
+        val mode: ClaudeCodeMode,
+        override val waitMs: Int = HARBOR_MODE_SETTLE_MS,
+    ) : HarborOperation
 }
 
 internal data class HarborSubmitPlan(
@@ -344,6 +355,11 @@ internal fun planHarborSubmit(
                 HarborOperation.Key(targetId, key, step.waitMs)
             }
 
+            HarborStepAction.MODE -> {
+                val mode = step.mode ?: error("切り替えるモードが指定されていません")
+                HarborOperation.SetMode(targetId, mode, step.waitMs)
+            }
+
             HarborStepAction.INSTRUCTION -> {
                 val text = step.command.trim()
                 if (text.isEmpty()) error("送信する指示が空です")
@@ -354,12 +370,18 @@ internal fun planHarborSubmit(
     return HarborSubmitPlan(operations, describeHarborSteps(steps))
 }
 
-/** What was just sent, in one line the glass can hold next to the terminal mirror. */
+/**
+ * What was just sent, in one line the glass can hold next to the terminal mirror.
+ *
+ * A mode step has no line here: what it did is only known once the screen has been read back,
+ * so [HarborMirrorController.submitCommand] supplies that line itself.
+ */
 internal fun describeHarborSteps(steps: List<HarborCommandStep>): String {
     if (steps.size == 1) {
         val step = steps.first()
         return when (step.action) {
             HarborStepAction.KEY -> "${HarborCommandTool.keyLabel(step.key ?: "enter")}キーを送りました"
+            HarborStepAction.MODE -> ""
             HarborStepAction.INSTRUCTION ->
                 if (step.submit) "指示を送りました" else "指示を貼り付けました"
         }
@@ -367,6 +389,7 @@ internal fun describeHarborSteps(steps: List<HarborCommandStep>): String {
     val sequence = steps.joinToString(" → ") { step ->
         when (step.action) {
             HarborStepAction.KEY -> HarborCommandTool.keyLabel(step.key ?: "enter")
+            HarborStepAction.MODE -> HarborCommandTool.modeLabel(step.mode)
             HarborStepAction.INSTRUCTION -> step.command.take(20)
         }
     }
@@ -698,6 +721,9 @@ internal fun hasStoredHarborCredentials(context: Context): Boolean =
     HarborCredentialsStore(context).loadAll().isNotEmpty()
 
 private const val TAG = "HarborApiClient"
+
+/** Enough of the terminal tail to hold Claude Code's footer, and no more. */
+private const val MODE_SCREEN_LINES = 40
 
 internal class HarborApiClient(
     private val http: OkHttpClient = OkHttpClient.Builder()
@@ -1388,6 +1414,8 @@ internal class HarborMirrorController(
     fun submitCommand(args: HarborCommandArgs): String {
         val creds = credentials ?: error("Terminal Harborをペアリングしてください")
         val plan = planHarborSubmit(args, client.listWorkspaces(creds))
+        // A mode change only knows what it did after the fact, so it reports its own line.
+        val notes = mutableListOf<String>()
         plan.operations.forEachIndexed { index, operation ->
             when (operation) {
                 is HarborOperation.Activate -> client.postActivate(creds, operation.workspaceId)
@@ -1400,12 +1428,53 @@ internal class HarborMirrorController(
 
                 is HarborOperation.Key ->
                     client.postKey(creds, operation.workspaceId, operation.key)
+
+                is HarborOperation.SetMode -> notes += applyClaudeMode(creds, operation)
             }
             // The agent redraws between keys; sending the next one into a stale screen is how
             // a menu selection lands on the wrong row.
             if (index < plan.operations.lastIndex) Thread.sleep(operation.waitMs.toLong())
         }
-        return plan.message
+        return when {
+            notes.isEmpty() -> plan.message
+            plan.message.isBlank() -> notes.joinToString("\n")
+            else -> (listOf(plan.message) + notes).joinToString("\n")
+        }
+    }
+
+    /**
+     * Cycles ⇧Tab to [operation]'s mode, checking the screen after each press.
+     *
+     * The count is never assumed: Claude Code's cycle skips modes the session was not started
+     * with, and the mode can have moved since whoever interpreted the request last saw it.
+     * [cycleToClaudeMode] throws rather than press on when the screen stops saying where it is,
+     * and the message names the mode actually reached — the user is left standing in it.
+     */
+    private fun applyClaudeMode(
+        creds: HarborCredentials,
+        operation: HarborOperation.SetMode,
+    ): String {
+        val cycler = object : ClaudeModeCycler {
+            override fun readMode(): ClaudeCodeMode? = readClaudeCodeMode(
+                client.fetchScreen(creds, operation.workspaceId, lines = MODE_SCREEN_LINES).text,
+            )
+
+            override fun pressCycleKey() =
+                client.postKey(creds, operation.workspaceId, "shift-tab")
+
+            override fun settle() = Thread.sleep(operation.waitMs.toLong())
+        }
+        val result = cycleToClaudeMode(operation.mode, cycler)
+        Log.i(
+            TAG,
+            "mode target=${operation.mode.wire} reached=${result.mode.wire} " +
+                "presses=${result.presses}",
+        )
+        return if (result.presses == 0) {
+            "すでに${result.mode.label}モードです"
+        } else {
+            "${result.mode.label}モードにしました（⇧Tab ×${result.presses}）"
+        }
     }
 
     private fun reconcile() {

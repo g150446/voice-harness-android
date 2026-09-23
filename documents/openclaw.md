@@ -103,6 +103,12 @@ Harbor モードの音声は、ワークスペース単位の OpenClaw セッシ
 - **語彙**: `key` はブリッジが受け付ける `enter / escape / shift-tab / tab / up / down /
   left / right / space / ctrl-c` 全種。`steps[]` で複数手順を 1 回の確認にまとめられる
   （例:「モデルを変えて」→ `/model` 貼付 → ↓ → Enter）。確認画面には手順のプレビュー行を出す。
+- **モード切替は回数を数えない**: Claude Code の権限モードは `action=mode` で行き先
+  （`normal / accept_edits / plan / auto / dont_ask / bypass_permissions`）だけを指定する。⇧Tab を何回押すかは
+  解釈側が決めず、アプリが 1 回送るたびに `/screen` のフッターを読み直し、目的のモードに
+  なるまで繰り返す。循環にそのモードが無いセッション（`bypass permissions` 無効など）は
+  一周した時点で止め、いまのモードを添えて失敗を返す。押す前に画面からモードが読めなければ
+  ⇧Tab を 1 回も送らない。「Shift Tab を押して」という明示的な 1 回押しは従来どおり `key`。
 - **解釈専用エージェント（推奨）**: Gateway 側で
   `agents.entries.harbor-voice.tools.deny = ["harbor_send_instruction", "harbor_send_key",
   "harbor_activate_workspace", "exec"]` を設定し、アプリの「Terminal Harbor 解釈エージェント」に

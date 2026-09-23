@@ -9,15 +9,23 @@ internal const val HARBOR_COMMAND_TOOL_NAME = "harbor_command"
 /** Pause inserted between steps so a TUI has finished with one key before the next arrives. */
 internal const val HARBOR_STEP_DELAY_MS = 300
 
+/**
+ * Pause after a ⇧Tab before reading the mode back. Longer than [HARBOR_STEP_DELAY_MS] because a
+ * signed `/screen` round trip follows it, and a screen fetched mid-repaint reads as unknown.
+ */
+internal const val HARBOR_MODE_SETTLE_MS = 500
+
 internal enum class HarborCommandAction {
     INSTRUCTION,
     KEY,
+    MODE,
     SWITCH_WORKSPACE,
 }
 
 internal enum class HarborStepAction {
     INSTRUCTION,
     KEY,
+    MODE,
 }
 
 /**
@@ -29,6 +37,11 @@ internal data class HarborCommandStep(
     val action: HarborStepAction,
     val command: String = "",
     val key: String? = null,
+    /**
+     * Where to leave Claude Code's permission mode when [action] is MODE. How many ⇧Tab presses
+     * that takes is not decided here: the app reads the screen between presses.
+     */
+    val mode: ClaudeCodeMode? = null,
     /** Press Enter after the text. False leaves it typed but unsent (Harbor's 貼付). */
     val submit: Boolean = true,
     val waitMs: Int = HARBOR_STEP_DELAY_MS,
@@ -38,6 +51,8 @@ internal data class HarborCommandArgs(
     val action: HarborCommandAction = HarborCommandAction.INSTRUCTION,
     val command: String = "",
     val key: String? = null,
+    /** Target permission mode when [action] is MODE. */
+    val mode: ClaudeCodeMode? = null,
     /** Workspace name or directory to activate when [action] is SWITCH_WORKSPACE. */
     val workspace: String? = null,
     /**
@@ -57,6 +72,13 @@ internal data class HarborCommandArgs(
             steps.isNotEmpty() -> steps
             action == HarborCommandAction.KEY ->
                 listOf(HarborCommandStep(HarborStepAction.KEY, key = key ?: "enter"))
+            action == HarborCommandAction.MODE && mode != null -> listOf(
+                HarborCommandStep(
+                    HarborStepAction.MODE,
+                    mode = mode,
+                    waitMs = HARBOR_MODE_SETTLE_MS,
+                ),
+            )
             action == HarborCommandAction.INSTRUCTION ->
                 listOf(HarborCommandStep(HarborStepAction.INSTRUCTION, command = command))
             else -> emptyList()
@@ -146,14 +168,23 @@ internal object HarborCommandTool {
 
     fun keyLabel(key: String): String = KEY_LABELS[key] ?: key
 
+    /** How a mode step reads on the confirmation screen; the press count is not ours to promise. */
+    fun modeLabel(mode: ClaudeCodeMode?): String = "モード→${(mode ?: ClaudeCodeMode.NORMAL).label}"
+
     /** One line naming every step, so a single tap never runs something the user cannot see. */
     fun stepsPreview(args: HarborCommandArgs): String {
         if (args.action == HarborCommandAction.SWITCH_WORKSPACE) return ""
         val steps = args.effectiveSteps
-        if (steps.size <= 1 && args.action != HarborCommandAction.KEY) return ""
+        if (steps.size <= 1 &&
+            args.action != HarborCommandAction.KEY &&
+            args.action != HarborCommandAction.MODE
+        ) {
+            return ""
+        }
         return steps.joinToString(" → ") { step ->
             when (step.action) {
                 HarborStepAction.KEY -> keyLabel(step.key ?: "enter")
+                HarborStepAction.MODE -> modeLabel(step.mode)
                 HarborStepAction.INSTRUCTION -> {
                     val text = step.command.take(24) + if (step.command.length > 24) "…" else ""
                     if (step.submit) text else "$text(貼付)"
@@ -177,13 +208,16 @@ internal object HarborCommandTool {
             "(エンターを送って / この内容で送信 → enter; 止めて → escape; 中断して → ctrl-c). " +
             "Use steps for anything that takes more than one key or line, so the whole sequence " +
             "runs under one confirmation. " +
-            "Claude Code specifics: plan mode is toggled with the shift-tab key, and the current " +
-            "mode is written in the terminal context — read it there instead of guessing, and " +
-            "send shift-tab only as many times as it takes to reach the mode they asked for. " +
+            "Claude Code permission modes (通常 / 自動編集 / プラン / オート / 自動拒否 / 権限スキップ) " +
+            "are action=mode with mode set to normal, accept_edits, plan, auto, dont_ask or " +
+            "bypass_permissions. Never count " +
+            "shift-tab presses yourself and never ask what the current mode is: the app presses " +
+            "shift-tab one at a time and reads the screen after each press until that mode is " +
+            "showing. Use key=shift-tab only when the user asks for that one key press literally. " +
             "Switching model is the /model command: send instruction \"/model\" with submit=false, " +
             "then move with up/down according to the choices the context shows, then enter. " +
-            "If the context does not show the current mode or the model list, do not guess the " +
-            "number of key presses: set needs_clarification instead. " +
+            "If the context does not show the model list, do not guess the number of key " +
+            "presses: set needs_clarification instead. " +
             "Use action=switch_workspace only when moving to another workspace is the whole " +
             "request, with nothing to do once you arrive (「harbor に切り替えて」 / 「〜に移動して」); " +
             "set workspace to one of the listed workspaces. " +
@@ -217,12 +251,14 @@ internal object HarborCommandTool {
                         put("enum", JSONArray().apply {
                             put("instruction")
                             put("key")
+                            put("mode")
                             put("switch_workspace")
                         })
                         put(
                             "description",
                             "instruction = type/send text to the terminal or agent. " +
                                 "key = send one key event. " +
+                                "mode = leave Claude Code in a permission mode. " +
                                 "switch_workspace = activate a different workspace. " +
                                 "Ignored when steps is set.",
                         )
@@ -235,6 +271,7 @@ internal object HarborCommandTool {
                         )
                     })
                     put("key", keySchema("Key name when action=key."))
+                    put("mode", modeSchema("Target permission mode when action=mode."))
                     put("submit", JSONObject().apply {
                         put("type", "boolean")
                         put(
@@ -259,6 +296,7 @@ internal object HarborCommandTool {
                                     put("enum", JSONArray().apply {
                                         put("instruction")
                                         put("key")
+                                        put("mode")
                                     })
                                 })
                                 put("command", JSONObject().apply {
@@ -266,6 +304,10 @@ internal object HarborCommandTool {
                                     put("description", "Text to send when action=instruction.")
                                 })
                                 put("key", keySchema("Key name when action=key."))
+                                put(
+                                    "mode",
+                                    modeSchema("Target permission mode when action=mode."),
+                                )
                                 put("submit", JSONObject().apply {
                                     put("type", "boolean")
                                     put("description", "Press Enter after the text (default true).")
@@ -329,12 +371,23 @@ internal object HarborCommandTool {
         put("description", description)
     }
 
+    private fun modeSchema(description: String): JSONObject = JSONObject().apply {
+        put("type", "string")
+        put("enum", JSONArray().apply { ClaudeCodeMode.entries.forEach { put(it.wire) } })
+        put(
+            "description",
+            "$description The app presses shift-tab one at a time and checks the screen after " +
+                "each press, so do not plan a number of presses.",
+        )
+    }
+
     fun parse(argumentsJson: String, fallbackCommand: String = ""): HarborCommandArgs {
         val sttFallback = fallbackCommand.trim()
         return try {
             val obj = JSONObject(argumentsJson.ifBlank { "{}" })
             val actionRaw = obj.optString("action", "instruction").trim().lowercase(Locale.ROOT)
             val explicitKey = normalizeKeyName(obj.optString("key", ""))
+            val explicitMode = ClaudeCodeMode.fromWire(obj.optString("mode", ""))
             val rawCommand = obj.optString("command", "").trim()
                 .ifBlank { sttFallback }
             val command = stripTrailingSendTrigger(rawCommand)
@@ -360,19 +413,46 @@ internal object HarborCommandTool {
                 }
             }
 
+            // A mode change also wins outright: it names a destination rather than text, so
+            // letting the heuristics below read the utterance would only re-decide it.
+            if (actionRaw == "mode" && !needsClarification) {
+                return if (explicitMode == null) {
+                    HarborCommandArgs(
+                        action = HarborCommandAction.INSTRUCTION,
+                        intentSummary = "どのモードにしますか？（通常 / 自動編集 / プラン）",
+                        needsClarification = true,
+                        question = "どのモードにしますか？（通常 / 自動編集 / プラン）",
+                    )
+                } else {
+                    HarborCommandArgs(
+                        action = HarborCommandAction.MODE,
+                        command = "",
+                        key = null,
+                        mode = explicitMode,
+                        workspace = null,
+                        intentSummary = intentSummary.ifBlank {
+                            "${explicitMode.label}モードに切り替えますか？"
+                        },
+                        needsClarification = false,
+                        question = null,
+                    )
+                }
+            }
+
             val steps = parseSteps(obj.optJSONArray("steps"))
             if (steps.isNotEmpty() && !needsClarification) {
                 // A multi-step plan is the model's considered sequence; the Enter heuristics
                 // below exist for one-shot utterances and would flatten it into a single key.
                 val first = steps.first()
                 return HarborCommandArgs(
-                    action = if (first.action == HarborStepAction.KEY) {
-                        HarborCommandAction.KEY
-                    } else {
-                        HarborCommandAction.INSTRUCTION
+                    action = when (first.action) {
+                        HarborStepAction.KEY -> HarborCommandAction.KEY
+                        HarborStepAction.MODE -> HarborCommandAction.MODE
+                        HarborStepAction.INSTRUCTION -> HarborCommandAction.INSTRUCTION
                     },
                     command = first.command,
                     key = first.key,
+                    mode = first.mode,
                     workspace = null,
                     intentSummary = intentSummary.ifBlank { defaultStepsSummary(steps) },
                     needsClarification = false,
@@ -467,12 +547,19 @@ internal object HarborCommandTool {
             if (steps.size >= MAX_STEPS) break
             val item = array.optJSONObject(index) ?: continue
             val action = item.optString("action").trim().lowercase(Locale.ROOT)
-            val waitMs = item.optInt("wait_ms", HARBOR_STEP_DELAY_MS).coerceIn(0, MAX_WAIT_MS)
+            val defaultWait =
+                if (action == "mode") HARBOR_MODE_SETTLE_MS else HARBOR_STEP_DELAY_MS
+            val waitMs = item.optInt("wait_ms", defaultWait).coerceIn(0, MAX_WAIT_MS)
             if (action == "key") {
                 // A key Harbor cannot send is dropped rather than guessed at: sending the
                 // wrong key into someone's terminal is worse than sending one fewer.
                 val key = normalizeKeyName(item.optString("key")) ?: continue
                 steps += HarborCommandStep(HarborStepAction.KEY, key = key, waitMs = waitMs)
+            } else if (action == "mode") {
+                // Same reasoning as an unsendable key: a mode we cannot name is a mode we
+                // cannot verify on screen, so the step is dropped instead of guessed at.
+                val mode = ClaudeCodeMode.fromWire(item.optString("mode")) ?: continue
+                steps += HarborCommandStep(HarborStepAction.MODE, mode = mode, waitMs = waitMs)
             } else {
                 val command = item.optString("command").trim()
                 if (command.isEmpty()) continue
@@ -491,6 +578,7 @@ internal object HarborCommandTool {
         val preview = steps.joinToString(" → ") { step ->
             when (step.action) {
                 HarborStepAction.KEY -> keyLabel(step.key ?: "enter")
+                HarborStepAction.MODE -> modeLabel(step.mode)
                 HarborStepAction.INSTRUCTION -> step.command.take(20)
             }
         }
@@ -530,6 +618,7 @@ internal object HarborCommandTool {
     private fun normalizeWithStt(args: HarborCommandArgs, stt: String): HarborCommandArgs {
         if (args.needsClarification) return args
         if (args.action == HarborCommandAction.SWITCH_WORKSPACE) return args
+        if (args.action == HarborCommandAction.MODE) return args
         // Only a single-step command may be rewritten from the transcript. A planned
         // sequence, or a key the model named outright, is left as it decided.
         if (args.steps.size > 1) return args

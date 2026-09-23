@@ -180,6 +180,61 @@ class HarborCommandToolTest {
     }
 
     @Test
+    fun `a mode change names where to end up, not how many keys that takes`() {
+        val args = HarborCommandTool.parse(
+            """{"action":"mode","mode":"plan","intent_summary":""}""",
+            fallbackCommand = "プランモードにして",
+        )
+
+        assertEquals(HarborCommandAction.MODE, args.action)
+        assertEquals(ClaudeCodeMode.PLAN, args.mode)
+        assertNull(args.key)
+        assertEquals("プランモードに切り替えますか？", args.intentSummary)
+        assertEquals("モード→プラン", HarborCommandTool.stepsPreview(args))
+    }
+
+    @Test
+    fun `a mode the app cannot verify on screen is asked about instead of sent`() {
+        val args = HarborCommandTool.parse(
+            """{"action":"mode","mode":"opus","intent_summary":""}""",
+            fallbackCommand = "オーパスモードにして",
+        )
+
+        assertTrue(args.needsClarification)
+        assertNull(args.mode)
+    }
+
+    @Test
+    fun `a mode step inside a sequence keeps its target`() {
+        val args = HarborCommandTool.parse(
+            """
+            {"action":"instruction","intent_summary":"","steps":[
+              {"action":"mode","mode":"accept_edits"},
+              {"action":"instruction","command":"続けて"}
+            ]}
+            """.trimIndent(),
+        )
+
+        assertEquals(HarborStepAction.MODE, args.steps.first().action)
+        assertEquals(ClaudeCodeMode.ACCEPT_EDITS, args.steps.first().mode)
+        assertEquals("モード→自動編集 → 続けて", HarborCommandTool.stepsPreview(args))
+    }
+
+    @Test
+    fun `a step naming a mode that cannot be read back is dropped`() {
+        val args = HarborCommandTool.parse(
+            """
+            {"action":"instruction","intent_summary":"","steps":[
+              {"action":"mode","mode":"turbo"},
+              {"action":"key","key":"escape"}
+            ]}
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("escape"), args.steps.map { it.key })
+    }
+
+    @Test
     fun `parse reads a multi-step plan in order`() {
         val args = HarborCommandTool.parse(
             """
