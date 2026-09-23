@@ -226,6 +226,18 @@ class HarborCommandToolTest {
     }
 
     @Test
+    fun `Codex return to normal keeps normal as the mode destination`() {
+        val args = HarborCommandTool.parse(
+            """{"action":"mode","mode":"normal","intent_summary":"Codexを通常モードに戻しますか？"}""",
+            fallbackCommand = "Codexを通常モードに戻して",
+        )
+
+        assertEquals(HarborCommandAction.MODE, args.action)
+        assertEquals(ClaudeCodeMode.NORMAL, args.mode)
+        assertFalse(args.needsClarification)
+    }
+
+    @Test
     fun `a mode the app cannot verify on screen is asked about instead of sent`() {
         val args = HarborCommandTool.parse(
             """{"action":"mode","mode":"opus","intent_summary":""}""",

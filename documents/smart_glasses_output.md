@@ -54,13 +54,15 @@ Voice HarnessはTerminal Harborの `harbor://pair` URIからHMAC鍵を導出し�
    - `action=instruction` → `POST /v1/workspaces/{id}/instruction`（`submit=false` なら貼付のみ）
    - `action=key` → `POST /v1/workspaces/{id}/key`。`enter / escape / shift-tab / tab /
      up / down / left / right / space / ctrl-c` を送れる
-   - `action=mode` → Claude Code の権限モード（`normal / accept_edits / plan / auto /
-     dont_ask / bypass_permissions`）。**⇧Tab の回数は誰も数えない**。1回送るたびに
+   - `action=mode` → 対象が Claude Code なら権限モード（`normal / accept_edits / plan /
+     auto / dont_ask / bypass_permissions`）。**⇧Tab の回数は誰も数えない**。1回送るたびに
      `GET /v1/workspaces/{id}/screen` でフッター（`plan mode on` / `accept edits on` /
-     `auto mode on` など）を読み、目的のモードになるまで繰り返す。押す前にモードが
-     読めなければ1回も送らずに中止する（`ClaudeCodeMode.kt`。Claude Code が文言を
-     変えたときに直すのはこのファイルのマーカー表だけ。経緯は
+     `auto mode on` など）を読み、目的のモードになるまで繰り返す。対象が Codex なら
+     Default / Plan を画面で確認し、変更が必要なときだけ Shift+Tab を送る。どちらも
+     送信前にモードが読めなければ1回も送らずに中止する（`ClaudeCodeMode.kt`。表示文言を
+     追従するときに直すのはこのファイルのマーカー表だけ。経緯は
      [`harbor_mode_switch.md`](harbor_mode_switch.md)）
+     Plan→Defaultも同じトグルで、`Plan mode` 表示が消えたことまで確認して成功とする
    - `steps[]` → 上記を順に実行。手順間は既定 300ms（`mode` は 500ms）空け、
      確認画面には手順のプレビューを出す
    - `action=switch_workspace` → `POST /v1/workspaces/{id}/activate`。成功すると

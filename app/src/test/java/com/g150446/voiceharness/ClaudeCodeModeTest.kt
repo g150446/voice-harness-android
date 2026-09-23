@@ -82,6 +82,52 @@ class ClaudeCodeModeTest {
     }
 
     @Test
+    fun `Codex default screen is not mistaken for unreadable Claude Code`() {
+        val codex = """
+            • Ready for the next task.
+
+            › Ask Codex to do anything
+
+              GPT-5.6-Sol medium · ~/projects/voice-harness-even-g2
+        """.trimIndent()
+
+        assertEquals(ClaudeCodeMode.NORMAL, readCodexMode(codex))
+        assertTrue(isCodexAgent("Codex"))
+    }
+
+    @Test
+    fun `Codex plan footer names plan mode`() {
+        val codex = """
+            › Ask Codex to do anything
+
+              GPT-5.6-Sol medium · ~/projects/voice-harness-… Plan mode    ⚠ 1 warning · f2 to view
+        """.trimIndent()
+
+        assertEquals(ClaudeCodeMode.PLAN, readCodexMode(codex))
+    }
+
+    @Test
+    fun `Codex talking about plan mode is not mistaken for its footer`() {
+        val codex = """
+            • Plan mode is useful before implementation.
+
+            › Ask Codex to do anything
+        """.trimIndent()
+
+        assertEquals(ClaudeCodeMode.NORMAL, readCodexMode(codex))
+    }
+
+    @Test
+    fun `Claude plan footer is not mistaken for Codex`() {
+        assertNull(readCodexMode(screen("  ⏸ plan mode on (shift+tab to cycle)")))
+    }
+
+    @Test
+    fun `Codex screen without its composer says nothing`() {
+        assertNull(readCodexMode("• Running tests…\n  Working (12s)"))
+    }
+
+    @Test
     fun `wire names and spoken aliases both resolve`() {
         assertEquals(ClaudeCodeMode.PLAN, ClaudeCodeMode.fromWire("plan"))
         assertEquals(ClaudeCodeMode.ACCEPT_EDITS, ClaudeCodeMode.fromWire("accept_edits"))
@@ -172,6 +218,56 @@ class ClaudeCodeModeTest {
         assertTrue(error.message!!.contains("通常"))
     }
 
+    @Test
+    fun `Codex presses shift tab once to reach plan and verifies the result`() {
+        val toggler = FakeCodexToggler(ClaudeCodeMode.NORMAL)
+
+        val result = cycleToCodexMode(ClaudeCodeMode.PLAN, toggler)
+
+        assertEquals(CodexModeCycleResult(ClaudeCodeMode.PLAN, 1), result)
+        assertEquals(1, toggler.presses)
+    }
+
+    @Test
+    fun `Codex already in plan does not toggle back to default`() {
+        val toggler = FakeCodexToggler(ClaudeCodeMode.PLAN)
+
+        val result = cycleToCodexMode(ClaudeCodeMode.PLAN, toggler)
+
+        assertEquals(CodexModeCycleResult(ClaudeCodeMode.PLAN, 0), result)
+        assertEquals(0, toggler.presses)
+    }
+
+    @Test
+    fun `Codex presses shift tab once from plan back to normal and verifies the result`() {
+        val toggler = FakeCodexToggler(ClaudeCodeMode.PLAN)
+
+        val result = cycleToCodexMode(ClaudeCodeMode.NORMAL, toggler)
+
+        assertEquals(CodexModeCycleResult(ClaudeCodeMode.NORMAL, 1), result)
+        assertEquals(1, toggler.presses)
+    }
+
+    @Test
+    fun `Codex already in normal does not toggle into plan`() {
+        val toggler = FakeCodexToggler(ClaudeCodeMode.NORMAL)
+
+        val result = cycleToCodexMode(ClaudeCodeMode.NORMAL, toggler)
+
+        assertEquals(CodexModeCycleResult(ClaudeCodeMode.NORMAL, 0), result)
+        assertEquals(0, toggler.presses)
+    }
+
+    @Test
+    fun `Codex rejects Claude-only permission modes before sending anything`() {
+        val toggler = FakeCodexToggler(ClaudeCodeMode.NORMAL)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            cycleToCodexMode(ClaudeCodeMode.ACCEPT_EDITS, toggler)
+        }
+        assertEquals(0, toggler.presses)
+    }
+
     private class FakeCycler(
         private val cycle: List<ClaudeCodeMode>,
         start: ClaudeCodeMode,
@@ -204,5 +300,20 @@ class ClaudeCodeModeTest {
         override fun settle() {
             settles++
         }
+    }
+
+    private class FakeCodexToggler(start: ClaudeCodeMode) : CodexModeToggler {
+        private var mode = start
+        var presses = 0
+            private set
+
+        override fun readMode(): ClaudeCodeMode = mode
+
+        override fun pressCycleKey() {
+            presses++
+            mode = if (mode == ClaudeCodeMode.PLAN) ClaudeCodeMode.NORMAL else ClaudeCodeMode.PLAN
+        }
+
+        override fun settle() = Unit
     }
 }

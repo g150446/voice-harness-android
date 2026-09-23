@@ -52,6 +52,44 @@ internal enum class ClaudeCodeMode(val wire: String, val label: String) {
     }
 }
 
+/** True when Terminal Harbor identified the foreground agent as Codex. */
+internal fun isCodexAgent(agent: String?): Boolean =
+    agent?.lowercase(Locale.ROOT)?.contains("codex") == true
+
+/**
+ * Codex only exposes Default and Plan through its collaboration-mode toggle.
+ *
+ * Plan mode is printed in the footer as `Plan mode`; Default deliberately has no mode label,
+ * so the composer placeholder is the evidence that the Codex UI is present and ready. Looking
+ * only for Claude Code's `plan mode on` footer made an idle Codex screen unreadable and stopped
+ * the confirmed command before Shift+Tab could be sent.
+ */
+internal fun readCodexMode(screenText: String): ClaudeCodeMode? {
+    val tail = filterHarborDisplayText(screenText)
+        .lineSequence()
+        .toList()
+        .takeLast(CODEX_FOOTER_LINES)
+        .map { it.trim().lowercase(Locale.ROOT) }
+    val composerIndex = tail.indexOfLast { line -> CODEX_COMPOSER_MARKERS.any(line::contains) }
+    if (composerIndex < 0) return null
+
+    // Codex renders the collaboration-mode indicator below the composer. Restricting the search
+    // to that footer separates the actual mode from an answer that merely says "Plan mode".
+    val footer = tail.drop(composerIndex + 1)
+    return if (footer.any { it.contains("plan mode") }) {
+        ClaudeCodeMode.PLAN
+    } else {
+        ClaudeCodeMode.NORMAL
+    }
+}
+
+private val CODEX_COMPOSER_MARKERS = listOf(
+    "ask codex to do anything",
+    "ask a follow-up question",
+)
+
+private const val CODEX_FOOTER_LINES = 16
+
 /**
  * The mode Claude Code's footer is currently showing, or null when the screen does not say.
  *
@@ -173,3 +211,42 @@ internal fun cycleToClaudeMode(
  * of every mode there is, plus one, so a session that gains a mode later still gets its lap.
  */
 internal val MAX_MODE_PRESSES = ClaudeCodeMode.entries.size + 1
+
+/** The terminal side of Codex's Shift+Tab collaboration-mode cycle. */
+internal interface CodexModeToggler {
+    fun readMode(): ClaudeCodeMode?
+    fun pressCycleKey()
+    fun settle()
+}
+
+internal data class CodexModeCycleResult(val mode: ClaudeCodeMode, val presses: Int)
+
+/**
+ * Leaves Codex in [target] without blindly pressing Shift+Tab.
+ *
+ * Codex supports only Default and Plan here. Shift+Tab cycles between them, so the current footer
+ * must be read first; otherwise asking for the same mode twice would switch away from it.
+ */
+internal fun cycleToCodexMode(
+    target: ClaudeCodeMode,
+    toggler: CodexModeToggler,
+): CodexModeCycleResult {
+    require(target == ClaudeCodeMode.NORMAL || target == ClaudeCodeMode.PLAN) {
+        "Codexで切り替えられるのは通常モードとプランモードだけです"
+    }
+    val start = toggler.readMode() ?: error(
+        "Codexの画面から現在のモードを判定できません。入力欄が見える状態でもう一度お願いします",
+    )
+    if (start == target) return CodexModeCycleResult(start, 0)
+
+    toggler.pressCycleKey()
+    toggler.settle()
+    val reached = toggler.readMode() ?: run {
+        toggler.settle()
+        toggler.readMode()
+    } ?: error("Shift+Tabを送った後、Codexのモードを画面から確認できませんでした")
+    check(reached == target) {
+        "Shift+Tabを送信しましたが、Codexは${reached.label}モードのままです"
+    }
+    return CodexModeCycleResult(reached, 1)
+}

@@ -7,7 +7,7 @@ import org.junit.Test
 
 class HarborSubmitPlanTest {
     private val workspaces = listOf(
-        HarborWorkspace(id = "ws-a", name = "voice-harness", selected = true),
+        HarborWorkspace(id = "ws-a", name = "voice-harness", selected = true, agent = "codex"),
         HarborWorkspace(id = "ws-b", name = "terminal-harbor", selected = false),
     )
 
@@ -93,7 +93,14 @@ class HarborSubmitPlanTest {
         )
 
         assertEquals(
-            listOf(HarborOperation.SetMode("ws-a", ClaudeCodeMode.PLAN, HARBOR_MODE_SETTLE_MS)),
+            listOf(
+                HarborOperation.SetMode(
+                    "ws-a",
+                    ClaudeCodeMode.PLAN,
+                    agent = "codex",
+                    waitMs = HARBOR_MODE_SETTLE_MS,
+                )
+            ),
             plan.operations,
         )
         // The line the glass shows comes from the sender, once it has read the screen back.

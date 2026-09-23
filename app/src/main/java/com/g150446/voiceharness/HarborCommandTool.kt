@@ -208,7 +208,10 @@ internal object HarborCommandTool {
             "(エンターを送って / この内容で送信 → enter; 止めて → escape; 中断して → ctrl-c). " +
             "Use steps for anything that takes more than one key or line, so the whole sequence " +
             "runs under one confirmation. " +
-            "Claude Code permission modes (通常 / 自動編集 / プラン / オート / 自動拒否 / 権限スキップ) " +
+            "Agent modes are action=mode. For Codex, normal and plan switch its Default/Plan " +
+            "collaboration mode with Shift+Tab (「Codexを通常モードに戻して」 means mode=normal; " +
+            "「Codexをプランモードにして」 means mode=plan). Claude Code permission modes " +
+            "(通常 / 自動編集 / プラン / オート / 自動拒否 / 権限スキップ) " +
             "are action=mode with mode set to normal, accept_edits, plan, auto, dont_ask or " +
             "bypass_permissions. Never count " +
             "shift-tab presses yourself and never ask what the current mode is: the app presses " +
@@ -261,7 +264,7 @@ internal object HarborCommandTool {
                             "description",
                             "instruction = type/send text to the terminal or agent. " +
                                 "key = send one key event. " +
-                                "mode = leave Claude Code in a permission mode. " +
+                                "mode = leave Codex or Claude Code in the requested mode. " +
                                 "switch_workspace = activate a different workspace. " +
                                 "Ignored when steps is set.",
                         )
@@ -379,8 +382,9 @@ internal object HarborCommandTool {
         put("enum", JSONArray().apply { ClaudeCodeMode.entries.forEach { put(it.wire) } })
         put(
             "description",
-            "$description The app presses shift-tab one at a time and checks the screen after " +
-                "each press, so do not plan a number of presses.",
+            "$description For Codex normal/plan, the app checks the footer and presses " +
+                "shift-tab only when needed. For Claude Code, it presses shift-tab one at a time and " +
+                "checks the screen after each press. Do not plan a number of presses.",
         )
     }
 

@@ -328,6 +328,8 @@ internal sealed interface HarborOperation {
     data class SetMode(
         override val workspaceId: String,
         val mode: ClaudeCodeMode,
+        /** Agent reported by Harbor; both agents use ⇧Tab but expose different mode sets. */
+        val agent: String? = null,
         override val waitMs: Int = HARBOR_MODE_SETTLE_MS,
     ) : HarborOperation
 }
@@ -365,9 +367,10 @@ internal fun planHarborSubmit(
         )
     }
 
-    val targetId = args.workspaceId?.takeIf { id -> workspaces.any { it.id == id } }
-        ?: workspaces.firstOrNull { it.selected }?.id
+    val targetWorkspace = args.workspaceId?.let { id -> workspaces.firstOrNull { it.id == id } }
+        ?: workspaces.firstOrNull { it.selected }
         ?: error("選択中のワークスペースがありません")
+    val targetId = targetWorkspace.id
 
     val steps = args.effectiveSteps
     if (steps.isEmpty()) error("送信する指示が空です")
@@ -381,7 +384,12 @@ internal fun planHarborSubmit(
 
             HarborStepAction.MODE -> {
                 val mode = step.mode ?: error("切り替えるモードが指定されていません")
-                HarborOperation.SetMode(targetId, mode, step.waitMs)
+                HarborOperation.SetMode(
+                    workspaceId = targetId,
+                    mode = mode,
+                    agent = targetWorkspace.agent ?: targetWorkspace.process,
+                    waitMs = step.waitMs,
+                )
             }
 
             HarborStepAction.INSTRUCTION -> {
@@ -1466,7 +1474,7 @@ internal class HarborMirrorController(
                 is HarborOperation.Key ->
                     client.postKey(creds, operation.workspaceId, operation.key)
 
-                is HarborOperation.SetMode -> notes += applyClaudeMode(creds, operation)
+                is HarborOperation.SetMode -> notes += applyAgentMode(creds, operation)
             }
             // The agent redraws between keys; sending the next one into a stale screen is how
             // a menu selection lands on the wrong row.
@@ -1487,6 +1495,53 @@ internal class HarborMirrorController(
      * [cycleToClaudeMode] throws rather than press on when the screen stops saying where it is,
      * and the message names the mode actually reached — the user is left standing in it.
      */
+    private fun applyAgentMode(
+        creds: HarborCredentials,
+        operation: HarborOperation.SetMode,
+    ): String {
+        if (isCodexAgent(operation.agent)) return applyCodexMode(creds, operation)
+        if (operation.agent?.contains("claude", ignoreCase = true) == true) {
+            return applyClaudeMode(creds, operation)
+        }
+        val screen = client.fetchScreen(
+            creds,
+            operation.workspaceId,
+            lines = MODE_SCREEN_LINES,
+        ).text
+        return when {
+            readClaudeCodeMode(screen) != null -> applyClaudeMode(creds, operation)
+            readCodexMode(screen) != null -> applyCodexMode(creds, operation)
+            else -> applyClaudeMode(creds, operation)
+        }
+    }
+
+    private fun applyCodexMode(
+        creds: HarborCredentials,
+        operation: HarborOperation.SetMode,
+    ): String {
+        val toggler = object : CodexModeToggler {
+            override fun readMode(): ClaudeCodeMode? = readCodexMode(
+                client.fetchScreen(creds, operation.workspaceId, lines = MODE_SCREEN_LINES).text,
+            )
+
+            override fun pressCycleKey() =
+                client.postKey(creds, operation.workspaceId, "shift-tab")
+
+            override fun settle() = Thread.sleep(operation.waitMs.toLong())
+        }
+        val result = cycleToCodexMode(operation.mode, toggler)
+        Log.i(
+            TAG,
+            "mode agent=codex target=${operation.mode.wire} reached=${result.mode.wire} " +
+                "presses=${result.presses}",
+        )
+        return if (result.presses == 0) {
+            "Codexはすでに${result.mode.label}モードです"
+        } else {
+            "Codexを${result.mode.label}モードにしました（Shift+Tab）"
+        }
+    }
+
     private fun applyClaudeMode(
         creds: HarborCredentials,
         operation: HarborOperation.SetMode,

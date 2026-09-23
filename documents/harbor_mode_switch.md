@@ -1,4 +1,4 @@
-# Claude Code のモード切替（⇧Tab の回数を数えない, 2026-09-23）
+# Claude Code / Codex のモード切替（2026-09-23）
 
 > 「プランモードにして」が当たったり外れたりしていた理由と、回数を数えるのをやめた話。
 > 現在の仕様は [`smart_glasses_output.md`](smart_glasses_output.md) と
@@ -22,7 +22,7 @@
 
 読めなければ聞き返すので、成功しないだけでなく**断られる**ことも多かった。
 
-## 2. いまの構成
+## 2. Claude Code の構成
 
 解釈が渡すのは**行き先だけ**。回数は誰も決めない。
 
@@ -50,6 +50,30 @@ action=mode (normal / accept_edits / plan / auto / dont_ask / bypass_permissions
 - **画面からモードが読めない** → 後述。
 
 `MAX_MODE_PRESSES` は保険であって終了条件ではない（終わらせるのは「一周した」の判定）。
+
+### Codex は同じ操作ではない
+
+Codex の Default / Plan は Claude Code の権限モードではない。Codex CLI は
+Shift+Tab で Default と Plan を切り替え、Plan 中はフッターに `Plan mode` が出る。
+
+そのため対象ワークスペースの agent が Codex の場合は、画面末尾を先に読んでから次のようにする。
+
+- 既に目的のモードなら何も送らない
+- Default ↔ Plan の変更が必要なときだけ Shift+Tab を送る
+- Shift+Tab 後に画面を再取得し、目的のモードになったことを確認する
+- Codex に自動編集・オート・自動拒否・権限スキップを要求された場合は、送信前に拒否する
+
+実機のPlan表示は独立した行とは限らず、ステータス行末の
+`GPT-5.6-Sol medium · … Plan mode` に出る。Codexの入力欄より**後ろだけ**をフッターとして
+読み、そこに `Plan mode` があればPlan、無ければDefaultとする。これにより会話本文中の
+「Plan mode」を現在モードと誤認しない。
+
+Planから通常へ戻す場合も同じ処理で、現在がPlanであることを読んでから Shift+Tab を1回だけ
+送り、次の画面で `Plan mode` が消えたことを確認する。
+
+2026-09-23 の実機ログでは、Codex の通常画面を Claude Code 専用パーサーで読んでいたため
+「画面から現在のモードを判定できません」で最初のキー送信前に止まっていた。タップ自体と
+`action=mode` の解釈は成功していた。
 
 ## 3. 読めないときは1回も押さない
 
