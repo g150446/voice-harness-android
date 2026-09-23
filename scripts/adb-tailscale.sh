@@ -78,31 +78,67 @@ cmd_enable_usb() {
   fi
   echo "USB device: $serial → tcpip $TS_PORT"
   adb -s "$serial" tcpip "$TS_PORT"
+  # Android's own Wireless debugging is a persistent setting, unlike `tcpip`,
+  # which a reboot clears. Leaving it on means a phone on the same Wi-Fi can be
+  # picked up over mDNS with no cable at all.
+  if adb -s "$serial" shell settings put global adb_wifi_enabled 1 >/dev/null 2>&1; then
+    echo "Wireless debugging left enabled on the phone (survives reboot)."
+  fi
   sleep 1
   cmd_connect
 }
 
+# Android 11+ advertises wireless debugging over mDNS. The port is random per
+# boot, so discovery is the only way to find it without the phone's screen —
+# and mDNS is link-local, so this works on a shared Wi-Fi, not across the
+# tailnet.
+mdns_target() {
+  adb mdns services 2>/dev/null | awk '
+    /_adb-tls-connect\._tcp/ { print $NF; exit }
+  '
+}
+
 cmd_connect() {
-  local ip
-  ip="$(resolve_ip)"
-  if [[ -z "${ip:-}" ]]; then
-    echo "ERROR: could not resolve Tailscale IP for host '$TS_HOST'." >&2
-    echo "Check: tailscale status  (device online? same tailnet?)" >&2
-    exit 1
-  fi
-  local target="${ip}:${TS_PORT}"
-  echo "Connecting adb → $target  (host=$TS_HOST)"
-  adb connect "$target"
-  adb devices -l
-  if adb -s "$target" shell true 2>/dev/null; then
-    echo "OK: wireless adb ready ($target)"
-    echo "Install (USB preferred for ~180MB APK): ./scripts/install-usb.sh"
-    echo "Logcat:  adb -s $target logcat -s VoiceProcessor BleManager"
+  local ip target
+  ip="$(resolve_ip || true)"
+  if [[ -n "${ip:-}" ]]; then
+    target="${ip}:${TS_PORT}"
+    echo "Connecting adb → $target  (host=$TS_HOST)"
+    adb connect "$target" || true
+    if adb -s "$target" shell true 2>/dev/null; then
+      adb devices -l
+      echo "OK: wireless adb ready ($target)"
+      echo "Install (USB preferred for ~180MB APK): ./scripts/install-usb.sh"
+      echo "Logcat:  adb -s $target logcat -s VoiceProcessor BleManager"
+      return
+    fi
+    adb disconnect "$target" >/dev/null 2>&1 || true
+    echo "Tailnet port $TS_PORT is not listening (a reboot clears \`adb tcpip\`)."
   else
-    echo "ERROR: connected but shell failed. Re-run with USB:" >&2
-    echo "  ./scripts/adb-tailscale.sh enable-usb" >&2
-    exit 1
+    echo "Could not resolve a Tailscale IP for host '$TS_HOST'." >&2
   fi
+
+  echo "Trying mDNS (same Wi-Fi only)..."
+  local discovered
+  discovered="$(mdns_target || true)"
+  if [[ -n "${discovered:-}" ]]; then
+    echo "Connecting adb → $discovered  (mDNS)"
+    adb connect "$discovered" || true
+    if adb -s "$discovered" shell true 2>/dev/null; then
+      adb devices -l
+      echo "OK: wireless adb ready ($discovered)"
+      return
+    fi
+    echo "Found $discovered but could not use it; the phone may need pairing:" >&2
+    echo "  adb pair <host:port>   # 開発者向けオプション → ワイヤレスデバッグ → ペア設定" >&2
+  fi
+
+  echo "" >&2
+  echo "No wireless route. Plug in USB once and run:" >&2
+  echo "  ./scripts/adb-tailscale.sh enable-usb" >&2
+  echo "(A phone reboot always needs this when it is not on the same Wi-Fi:" >&2
+  echo " \`adb tcpip\` does not persist, and mDNS does not cross the tailnet.)" >&2
+  exit 1
 }
 
 cmd_disconnect() {

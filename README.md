@@ -263,6 +263,14 @@ adb logcat -s VoiceProcessor SileroVad BleManager BleConnectionService \
 - Tailscale 上で端末が online であること（`tailscale status`）
 - **APK を Tailscale 経由で入れない**（タイムアウトで古いプロセスが残ることがある）
 
+`connect` は Tailscale の 5555 → mDNS 探索 → USB 手順の案内、の順に試す。
+**端末を再起動すると `adb tcpip` は解除される**（`persist.adb.tcp.port` は root 無しでは
+設定できない）。`enable-usb` は tcpip の有効化に加えて Android 標準の
+**ワイヤレスデバッグ**（`settings global adb_wifi_enabled`）も ON にする。これは再起動後も
+残るので、Mac と端末が同じ Wi-Fi にいれば `connect` が mDNS で自動的に見つける。
+mDNS はリンクローカルなので tailnet は越えない。**同じ Wi-Fi にいない状態で端末を再起動した
+場合だけ、USB を一度挿して `enable-usb` が必要**。
+
 ローカル Wi-Fi / テザリングだけで繋ぐなら `./scripts/adb-wireless.sh`：
 
 ```bash
