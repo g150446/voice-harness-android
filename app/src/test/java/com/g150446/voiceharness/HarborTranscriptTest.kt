@@ -145,10 +145,31 @@ class HarborTranscriptTest {
         HarborTranscriptMessage(role = "user", text = text, cursor = cursor)
 
     @Test
-    fun `the newest page replaces what was on screen`() {
+    fun `a refresh appends what is new and keeps the history already pulled in`() {
+        // The reader walked back to "1"; the agent has since answered with "7".
+        val current = listOf(message("1"), message("2"), message("5"))
+
+        val merged = mergeHarborTranscript(
+            current,
+            listOf(message("2"), message("5"), message("7")),
+            before = null,
+        )
+
+        assertEquals(listOf("1", "2", "5", "7"), merged.map { it.cursor })
+    }
+
+    @Test
+    fun `a refresh with nothing in common replaces rather than faking continuity`() {
         val current = listOf(message("1"), message("2"))
 
-        val merged = mergeHarborTranscript(current, listOf(message("9")), before = null)
+        val merged = mergeHarborTranscript(current, listOf(message("80"), message("90")), before = null)
+
+        assertEquals(listOf("80", "90"), merged.map { it.cursor })
+    }
+
+    @Test
+    fun `the first page is taken as it comes`() {
+        val merged = mergeHarborTranscript(emptyList(), listOf(message("9")), before = null)
 
         assertEquals(listOf("9"), merged.map { it.cursor })
     }

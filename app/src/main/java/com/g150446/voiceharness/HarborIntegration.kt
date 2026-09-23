@@ -465,18 +465,24 @@ internal fun parseHarborTranscript(code: Int, json: JSONObject): HarborTranscrip
 /**
  * Folds a freshly fetched page into what is already on screen.
  *
- * A null [before] is the newest page and replaces everything, so a reopened conversation does
- * not show a stale tail. An older page goes in front, minus anything already shown: the log
- * can grow between requests, and repeating a message reads as the agent saying it twice.
+ * An older page goes in front, minus anything already shown: the log can grow between
+ * requests, and repeating a message reads as the agent saying it twice.
+ *
+ * The newest page is a refresh. What it has in common with the screen says the two overlap,
+ * so only its genuinely newer messages are appended and the history the reader has already
+ * pulled in stays put. With nothing in common the conversation has moved on further than one
+ * page, and there is no honest way to bridge that gap, so the newest page replaces what is
+ * shown rather than leaving a seam that looks continuous.
  */
 internal fun mergeHarborTranscript(
     current: List<HarborTranscriptMessage>,
     page: List<HarborTranscriptMessage>,
     before: String?,
 ): List<HarborTranscriptMessage> {
-    if (before == null) return page
     val seen = current.mapTo(mutableSetOf()) { it.cursor }
-    return page.filterNot { it.cursor in seen } + current
+    if (before != null) return page.filterNot { it.cursor in seen } + current
+    if (current.isEmpty() || page.none { it.cursor in seen }) return page
+    return current + page.filterNot { it.cursor in seen }
 }
 
 /** Why there is no conversation to show. Never implies the terminal view has it. */
@@ -1230,15 +1236,23 @@ internal class HarborMirrorController(
                         )
                         return@onSuccess
                     }
+                    val merged = mergeHarborTranscript(current.transcript, page.messages, before)
                     _uiState.value = current.copy(
-                        transcript = mergeHarborTranscript(
-                            current.transcript,
-                            page.messages,
-                            before,
-                        ),
+                        transcript = merged,
                         transcriptAgent = page.agent ?: current.transcriptAgent,
-                        transcriptHasMore = page.hasMore,
-                        transcriptCursor = page.nextBefore,
+                        // A refresh only speaks for the newest end. Keeping the older
+                        // cursor lets the reader carry on walking back from where they
+                        // were instead of starting the history again.
+                        transcriptHasMore = if (before == null && merged.size > page.messages.size) {
+                            current.transcriptHasMore
+                        } else {
+                            page.hasMore
+                        },
+                        transcriptCursor = if (before == null && merged.size > page.messages.size) {
+                            current.transcriptCursor
+                        } else {
+                            page.nextBefore
+                        },
                         transcriptUnavailable = null,
                         transcriptError = null,
                         transcriptLoading = false,

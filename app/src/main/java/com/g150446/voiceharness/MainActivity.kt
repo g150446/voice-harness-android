@@ -76,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -1950,7 +1951,14 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
     LaunchedEffect(workspaceId, pane) {
         when (pane) {
             HarborPaneView.PLAN -> viewModel.refreshHarborPlan()
-            HarborPaneView.CHAT -> viewModel.refreshHarborTranscript()
+            // An agent answers while the pane is open, so the newest end has to keep
+            // arriving; without this the end of the conversation is wherever it stood when
+            // the tab was opened. Slower than the terminal: prose, not a spinner.
+            HarborPaneView.CHAT -> while (true) {
+                viewModel.refreshHarborTranscript()
+                delay(5_000)
+            }
+
             HarborPaneView.TERMINAL -> Unit
         }
     }
@@ -2220,13 +2228,34 @@ private fun HarborTranscriptPane(
 ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val messages = state.transcript
-    // Land on the newest message the first time a conversation appears; later pages are
-    // prepended, and the item keys keep the reading position where the user left it.
+    // A conversation opens on its newest message. The page arrives after the pane does, and
+    // scrolling before the list has laid anything out does nothing at all — which left the
+    // reader at the oldest message of the page, a long way from where the conversation is.
     var anchored by remember(state.selectedWorkspaceId) { mutableStateOf(false) }
-    LaunchedEffect(messages.lastOrNull()?.cursor) {
+    LaunchedEffect(state.selectedWorkspaceId, messages.size) {
         if (!anchored && messages.isNotEmpty()) {
-            listState.scrollToItem(messages.lastIndex)
+            val count = snapshotFlow { listState.layoutInfo.totalItemsCount }
+                .first { it > 0 }
+            listState.scrollToItem(count - 1)
             anchored = true
+        }
+    }
+    // Once anchored, follow new messages only from the bottom, on the same terms as the
+    // terminal view: decided when a scroll gesture ends, not when the content changes.
+    var followBottom by remember(state.selectedWorkspaceId) { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) {
+                val info = listState.layoutInfo
+                followBottom = info.visibleItemsInfo.lastOrNull()?.index?.let {
+                    it >= info.totalItemsCount - 1
+                } ?: true
+            }
+        }
+    }
+    LaunchedEffect(messages.lastOrNull()?.cursor) {
+        if (anchored && followBottom && messages.isNotEmpty()) {
+            listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
         }
     }
 
