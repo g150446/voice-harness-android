@@ -1099,7 +1099,7 @@ internal class VoiceProcessor(
         harborCompletionReviewJob?.cancel()
         harborInterpreter.cancel()
         harborCompletionReviewJob = scope.launch(Dispatchers.IO) {
-            val review = if (harborInterpreter.isConfigured()) {
+            val openClawReview = if (harborInterpreter.isConfigured()) {
                 harborInterpreter.reviewCompletion(candidate)
                     .onFailure { Log.w(TAG, "Harbor completion review failed", it) }
             } else {
@@ -1108,7 +1108,20 @@ internal class VoiceProcessor(
             if (!isActive || BleConnectionService.interactionMode.value != InteractionMode.HARBOR) {
                 return@launch
             }
+            // Like interpretation, a stopped OpenClaw must not silence the report: with Harbor
+            // returning a plain screen instead of a g2-view summary there is nothing else to say.
+            var source = "openclaw"
+            val review = openClawReview.recoverCatching {
+                source = "cloud"
+                reviewCompletionWithCloudLlm(candidate).getOrThrow()
+            }.onFailure {
+                Log.w(TAG, "Harbor completion review via cloud LLM failed: ${it.message}")
+            }
+            if (!isActive || BleConnectionService.interactionMode.value != InteractionMode.HARBOR) {
+                return@launch
+            }
             val reviewed = review.getOrNull()
+            reviewed?.let { Log.i(TAG, "Harbor completion review state=${it.state} source=$source") }
             if (reviewed != null && !reviewed.shouldSpeak) {
                 Log.i(
                     TAG,
@@ -1140,7 +1153,7 @@ internal class VoiceProcessor(
             Log.i(
                 TAG,
                 "Harbor completion report ready: workspace=${candidate.workspaceId} " +
-                    "source=${if (reviewed != null) "openclaw" else "harbor"}",
+                    "source=${if (reviewed != null) source else "harbor"}",
             )
             BleConnectionService.reportHarborCompletionReview(
                 candidate.workspaceId,
@@ -1149,6 +1162,27 @@ internal class VoiceProcessor(
                 HarborCompletionReviewOutcome.REPORTED,
             )
             queueHarborCompletionReport(spokenText)
+        }
+    }
+
+    /** Same prompt and JSON contract as the OpenClaw review, sent to Groq/OpenRouter. */
+    private suspend fun reviewCompletionWithCloudLlm(
+        candidate: HarborCompletionCandidate,
+    ): Result<HarborCompletionReview> {
+        aiBackend.ensureReady().onFailure { return Result.failure(it) }
+        val llm = ModelManager.currentLlmBackend(appContext)
+        if (llm != LlmBackendId.GROQ && llm != LlmBackendId.OPENROUTER) {
+            return Result.failure(IllegalStateException("completion review requires cloud LLM"))
+        }
+        val request = ChatRequest(
+            conversationHistory = listOf(
+                ConversationTurn(role = "user", content = HarborCompletionPrompt.build(candidate)),
+            ),
+            languageCode = "ja",
+        )
+        return aiBackend.chat(request).mapCatching { chat ->
+            Log.d(TAG, "Harbor completion cloud review raw: ${chat.text.take(300)}")
+            HarborCompletionPrompt.parse(chat.text)
         }
     }
 

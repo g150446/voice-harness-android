@@ -127,7 +127,9 @@ OpenClawは `not_waiting / completed / question / permission / choice` を判定
 追跡を終了せず、間隔を空けて同一画面を再確認する。報告済みの音声指示は一度だけ
 読み上げ、新しい音声指示は最終表示が同文でも改めて追跡する。TTSが使用中なら生成済み報告を
 保持して空き次第読み、LLMを再呼び出ししない。OpenClawが未設定・到達不能・タイムアウト・不正応答の
-場合だけTerminal Harborの既存`g2-view`要約を読み上げる。G2上の表示は従来の`g2-view`のままで、
+場合は同じプロンプトとJSON形式をGroq/OpenRouterへ送り（toolなし）、それも使えない場合だけ
+Terminal Harborの既存`g2-view`要約を読み上げる。`g2-view`が要約でなく画面テキストを返す構成では
+この最後の段は何も読めないため、クラウドLLM段が実質的なフォールバックになる。G2上の表示は従来の`g2-view`のままで、
 OpenClaw報告は音声専用。
 
 ## OpenClawモード（G2）

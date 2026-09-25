@@ -158,7 +158,9 @@ internal object HarborCompletionPrompt {
         appendLine("Terminal HarborのAIコーディングエージェントの最新状態を確認してください。")
         appendLine("同じworkspaceについて以前交わした会話も文脈として使えますが、下の資料を事実の根拠にしてください。")
         appendLine("ユーザーの新しい指示、確認、権限、回答、選択肢を待っている場合だけ報告対象です。")
-        appendLine("処理中、思考中、単なるシェルプロンプトならnot_waitingです。成功・テスト結果・未確認事項を推測しないでください。")
+        appendLine("処理中・思考中（例: 画面下部に「esc to interrupt」、スピナー、Working/Thinking表示がある）ならnot_waitingです。")
+        appendLine("エージェントが応答を書き終え、入力欄（❯ や > のプロンプト）で次の指示を待っていて「esc to interrupt」が無いならcompletedです。")
+        appendLine("エージェントが起動していない素のシェルプロンプトだけならnot_waitingです。成功・テスト結果・未確認事項を推測しないでください。")
         appendLine("question、permission、choiceでは、ユーザーが答える内容と選択肢をreportに短く含めてください。")
         appendLine("JSONだけを返してください: {\"state\":\"not_waiting|completed|question|permission|choice\",\"report\":\"日本語で最大2文・160字\"}")
         appendLine("workspace: ${candidate.workspaceName}")
@@ -175,17 +177,17 @@ internal object HarborCompletionPrompt {
         val trimmed = text.trim()
         val start = trimmed.indexOf('{')
         val end = trimmed.lastIndexOf('}')
-        require(start >= 0 && end > start) { "OpenClawの完了確認を解析できません" }
+        require(start >= 0 && end > start) { "完了確認の応答を解析できません" }
         val json = JSONObject(trimmed.substring(start, end + 1))
         val state = HarborCompletionState.fromWire(json.optString("state"))
-            ?: error("OpenClawの完了状態が不正です")
+            ?: error("完了確認の状態が不正です")
         val report = if (state == HarborCompletionState.NOT_WAITING) {
             ""
         } else {
             limitReport(json.optString("report"))
         }
         require(state == HarborCompletionState.NOT_WAITING || report.isNotBlank()) {
-            "OpenClawの完了報告が空です"
+            "完了報告が空です"
         }
         return HarborCompletionReview(state, report)
     }

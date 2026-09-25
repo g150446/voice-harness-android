@@ -46,6 +46,13 @@ STT → Android の LLM（harbor_command tool）→ G2 に確認表示 → タ�
 > 一度も立っていなかった。加えてホームのカードが `response.isNotEmpty()` の内側にあり、
 > 解釈中は response を空にするので描画されなかった。両方を直した。
 
+> 2026-09-25 追記: エージェント完了後の読み上げが一度も鳴らなかった。完了検出（armed →
+> candidate）は動いていたが、完了確認を送るOpenClaw Gateway（macbookm5:443）が
+> ECONNREFUSEDで、唯一のフォールバックである `g2-view` 要約もHarborが画面テキストを返す
+> 構成では常に空だったため、毎回 `report skipped` → RETRY になっていた。音声解釈と同じく、
+> OpenClaw失敗時は同じ完了確認プロンプトをGroq/OpenRouterへ送る段を追加した
+> （ログ `report ready … source=cloud`）。
+
 タップの割り当ては G2 の表示文言に一致させる。
 
 | 画面 | single | double |

@@ -150,6 +150,16 @@ class HarborCompletionReportTest {
     }
 
     @Test
+    fun `review parser accepts cloud llm prose around json`() {
+        val review = HarborCompletionPrompt.parse(
+            "確認しました。\n{\"state\":\"question\",\"report\":\"続行してよいか確認を求めています。\"}\n以上です。",
+        )
+        assertEquals(HarborCompletionState.QUESTION, review.state)
+        assertEquals("続行してよいか確認を求めています。", review.report)
+        assertTrue(review.shouldSpeak)
+    }
+
+    @Test
     fun `review report is capped at 160 characters`() {
         val report = HarborCompletionPrompt.limitReport("完了しました。" + "あ".repeat(200))
         assertEquals(HARBOR_COMPLETION_REPORT_MAX_CHARS, report.length)

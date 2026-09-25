@@ -329,7 +329,8 @@ Gemma 4 LiteRT-LMで両方を処理する。モデル探索と状態管理は`Mo
 - `OpenClawHarborInterpreter.kt`
   - 音声解釈と完了確認を同じagent-scoped workspaceセッションへ直列化する
   - 完了確認にはtoolを公開せず、`not_waiting / completed / question / permission / choice`を返させる
-  - OpenClaw障害時だけTerminal Harborの既存要約へフォールバックする
+  - OpenClaw障害時は同じプロンプトをGroq/OpenRouterで確認し、それも使えない場合だけ
+    Terminal Harborの既存要約へフォールバックする
 
 ## AI返答の出力先
 
