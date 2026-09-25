@@ -331,8 +331,33 @@ internal fun harborAutoRunSpeech(args: HarborCommandArgs): String {
             val key = step.key ?: "enter"
             "${HARBOR_SPOKEN_KEYS[key] ?: key}キーを送ります"
         }
-        HarborStepAction.INSTRUCTION -> harborExecutionAcknowledgementSpeech()
+        HarborStepAction.INSTRUCTION -> harborAutoRunSlashCommand(step.command)
+            ?.let { "${it}コマンドを送ります" }
+            ?: harborExecutionAcknowledgementSpeech()
     }
+}
+
+/**
+ * Built-in Claude Code and Codex slash commands that may run without a confirm tap. Commands
+ * that end the session or change the login (exit, quit, logout, login, upgrade) are left out on
+ * purpose, as are unknown names: a misheard or custom command keeps the confirm step.
+ */
+private val HARBOR_AUTO_RUN_SLASH_COMMANDS = setOf(
+    // Claude Code
+    "add-dir", "agents", "clear", "compact", "config", "context", "cost", "doctor", "export",
+    "help", "hooks", "ide", "init", "mcp", "memory", "model", "output-style", "permissions",
+    "plugin", "pr-comments", "release-notes", "resume", "review", "rewind", "security-review",
+    "status", "statusline", "todos", "usage", "vim",
+    // Codex
+    "approvals", "new", "diff", "mention", "undo", "fork", "skills", "personality",
+)
+
+private val HARBOR_SLASH_COMMAND = Regex("""^/([a-z][a-z0-9-]*)(?:[ \t]+[^\n]*)?$""")
+
+/** The command name when [command] is one known slash command safe to auto-run, else null. */
+internal fun harborAutoRunSlashCommand(command: String): String? {
+    val name = HARBOR_SLASH_COMMAND.matchEntire(command.trim())?.groupValues?.get(1) ?: return null
+    return name.takeIf { it in HARBOR_AUTO_RUN_SLASH_COMMANDS }
 }
 
 internal fun harborWorkSummarySpeech(value: HarborSpokenSummary): String {

@@ -526,6 +526,36 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
+    fun `known slash commands run without confirmation`() {
+        fun instruction(command: String, submit: Boolean = true, clarify: Boolean = false) =
+            HarborCommandArgs(
+                action = HarborCommandAction.INSTRUCTION,
+                intentSummary = "確認",
+                needsClarification = clarify,
+                steps = listOf(
+                    HarborCommandStep(HarborStepAction.INSTRUCTION, command = command, submit = submit),
+                ),
+            )
+        assertTrue(
+            harborAutoRunEligible(
+                HarborCommandArgs(command = "/compact", intentSummary = "確認"),
+            ),
+        )
+        assertTrue(harborAutoRunEligible(instruction("/model opus")))
+        assertTrue(harborAutoRunEligible(instruction(" /clear ")))
+        assertFalse(harborAutoRunEligible(instruction("/exit")))
+        assertFalse(harborAutoRunEligible(instruction("/foo")))
+        assertFalse(harborAutoRunEligible(instruction("READMEの行数を数えて")))
+        assertFalse(harborAutoRunEligible(instruction("/compact", submit = false)))
+        assertFalse(harborAutoRunEligible(instruction("/compact\n続き")))
+        assertFalse(harborAutoRunEligible(instruction("/compact", clarify = true)))
+        assertEquals(
+            "compactコマンドを送ります",
+            harborAutoRunSpeech(HarborCommandArgs(command = "/compact", intentSummary = "確認")),
+        )
+    }
+
+    @Test
     fun `auto-run speech states the action instead of asking`() {
         assertEquals(
             "プランモードに切り替えます",

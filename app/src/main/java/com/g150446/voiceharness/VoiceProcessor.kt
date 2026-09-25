@@ -125,15 +125,19 @@ internal fun harborConfirmOutcome(pending: PendingHarborCommand?): HarborConfirm
 }
 
 /**
- * Commands simple enough to run without a confirm tap: one mode change, one key, or a
- * workspace switch. Text sent to the agent and multi-step plans still wait for the tap.
+ * Commands simple enough to run without a confirm tap: one mode change, one key, a workspace
+ * switch, or one known slash command. Free text sent to the agent and multi-step plans still
+ * wait for the tap.
  */
 internal fun harborAutoRunEligible(args: HarborCommandArgs): Boolean {
     if (args.needsClarification) return false
     return when (args.action) {
         HarborCommandAction.SWITCH_WORKSPACE -> !args.workspace.isNullOrBlank()
         HarborCommandAction.MODE, HarborCommandAction.KEY -> args.effectiveSteps.size == 1
-        HarborCommandAction.INSTRUCTION -> false
+        HarborCommandAction.INSTRUCTION -> args.effectiveSteps.singleOrNull()?.let { step ->
+            step.action == HarborStepAction.INSTRUCTION && step.submit &&
+                harborAutoRunSlashCommand(step.command) != null
+        } == true
     }
 }
 

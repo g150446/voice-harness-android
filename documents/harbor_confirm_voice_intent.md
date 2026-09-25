@@ -59,6 +59,12 @@ STT → Android の LLM（harbor_command tool）→ G2 に確認表示 → タ�
 > 送ります」のような短いサマリーを読み上げる（`harborAutoRunSpeech`。確認用の疑問文の
 > intent_summary は使わない）。テキスト指示・複数手順・聞き返しは従来どおり確認を挟む。
 
+> 2026-09-25 追記: Claude Code / Codex の既知のスラッシュコマンドを1つ送るだけの指示
+> （`/compact`、`/model opus` など。submit=true・改行なし）も即実行の対象にした
+> （`harborAutoRunSlashCommand` の許可リスト）。`/exit`・`/quit`・`/logout`・`/login`・`/upgrade`
+> は既知でもセッション終了・認証変更になるため、未知のカスタムコマンドは誤認識の可能性があるため、
+> 確認を残す。読み上げは「compactコマンドを送ります」。実機で確認カードなしの即実行を確認済み。
+
 タップの割り当ては G2 の表示文言に一致させる。
 
 | 画面 | single | double |
