@@ -249,6 +249,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun confirmHarborCommand() = BleConnectionService.confirmHarborCommand()
     fun cancelHarborCommand() = BleConnectionService.cancelHarborCommand()
+    fun cancelHarborInterpreting() = BleConnectionService.cancelHarborInterpreting()
 
     fun setHarborFontSize(size: Int) {
         val clamped = size.coerceIn(

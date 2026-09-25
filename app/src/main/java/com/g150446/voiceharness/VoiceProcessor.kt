@@ -1405,27 +1405,37 @@ internal class VoiceProcessor(
             // OpenClaw answers as itself; it is not told about the Harbor tool.
             val harborPaired = BleConnectionService.harborConnectionState.value.paired &&
                 !isOpenClawRoute()
-            val harborContext = if (harborPaired) {
-                BleConnectionService.harborInterpretContext()
-            } else {
-                null
-            }
-            val chat = assistantGateway.submit(
-                AssistantRequest(
-                    text = if (readerModeRequested) {
-                        ReadingPassthrough.extractionPrompt(query)
-                    } else {
-                        query
-                    },
-                    origin = QueryOrigin.HARNESS_NODE_VOICE,
-                    conversationId = HARNESS_CONVERSATION_ID,
-                    speakResponse = true,
-                    languageCode = responseLanguageCode,
-                    screenContext = screenContext,
-                    harborToolEnabled = harborPaired,
-                    harborContext = harborContext,
+            // Without G2, Harbor-mode voice is interpreted here (harbor_command tool), not in
+            // presentHarborConfirmSuspend; the phone still needs "AI is confirming" meanwhile.
+            // Only the UI flow is set: harborConfirmInterpreting would change tap ownership.
+            val showHarborInterpreting = harborPaired &&
+                BleConnectionService.interactionMode.value == InteractionMode.HARBOR
+            if (showHarborInterpreting) BleConnectionService.setHarborInterpreting(true)
+            val chat = try {
+                val harborContext = if (harborPaired) {
+                    BleConnectionService.harborInterpretContext()
+                } else {
+                    null
+                }
+                assistantGateway.submit(
+                    AssistantRequest(
+                        text = if (readerModeRequested) {
+                            ReadingPassthrough.extractionPrompt(query)
+                        } else {
+                            query
+                        },
+                        origin = QueryOrigin.HARNESS_NODE_VOICE,
+                        conversationId = HARNESS_CONVERSATION_ID,
+                        speakResponse = true,
+                        languageCode = responseLanguageCode,
+                        screenContext = screenContext,
+                        harborToolEnabled = harborPaired,
+                        harborContext = harborContext,
+                    )
                 )
-            )
+            } finally {
+                if (showHarborInterpreting) BleConnectionService.setHarborInterpreting(false)
+            }
             if (chat.isFailure) {
                 val errMsg = "Chat error: ${chat.exceptionOrNull()?.message}"
                 BleConnectionService.setErrorMessage(errMsg)
@@ -2287,6 +2297,15 @@ internal class VoiceProcessor(
                 return@launch
             }
             BleConnectionService.sendCommand(BLE_RX_START_RECORDING)
+        }
+    }
+
+    /** The phone's 取り消す while the AI interprets: stop it whatever the tap mode would do. */
+    internal fun cancelHarborInterpreting() {
+        if (BleConnectionService.harborInterpreting.value && pendingHarborCommand == null) {
+            interruptHarnessPipeline(BleConnectionService.voiceState.value)
+        } else {
+            handleDoubleTap()
         }
     }
 

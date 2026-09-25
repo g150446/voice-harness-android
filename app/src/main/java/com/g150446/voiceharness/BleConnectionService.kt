@@ -633,6 +633,7 @@ class BleConnectionService : Service() {
             instance?.harborMirrorController?.sendKey(workspaceId, key)
         fun confirmHarborCommand() = instance?.voiceProcessor?.handleSingleTap()
         fun cancelHarborCommand() = instance?.voiceProcessor?.handleDoubleTap()
+        fun cancelHarborInterpreting() = instance?.voiceProcessor?.cancelHarborInterpreting()
 
         /** Shows the just-sent message with "考え中…"; no-op unless OpenClaw mode is mirroring to G2. */
         internal fun showOpenClawPending(user: String) {

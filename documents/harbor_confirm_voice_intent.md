@@ -40,6 +40,11 @@ STT → Android の LLM（harbor_command tool）→ G2 に確認表示 → タ�
 > 形をした「解析中…」（有効な実行ボタン付き）が出ていて、AIが指示を確認していることが
 > 分からなかった。`harborInterpreting` フラグで「AIが指示を確認中…」カードを出すようにした。
 > G2の「解析中…」と、待機中のタップをキューして後で実行する挙動は変えていない。
+> 初版は実機で表示されなかった。G2未接続だとダブルタップは指示録音（COMMAND）ではなく
+> AI対話録音になり、解釈は `presentHarborConfirmSuspend` ではなくAI対話の `harbor_command`
+> tool 経由（ログは `Chat latency … tools=1`、`Harbor intent:` は出ない）だったため、フラグが
+> 一度も立っていなかった。加えてホームのカードが `response.isNotEmpty()` の内側にあり、
+> 解釈中は response を空にするので描画されなかった。両方を直した。
 
 タップの割り当ては G2 の表示文言に一致させる。
 

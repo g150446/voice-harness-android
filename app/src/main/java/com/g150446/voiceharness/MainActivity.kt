@@ -546,7 +546,15 @@ fun HomeScreen(
             )
         }
 
-        if (response.isNotEmpty()) {
+        // The phone response is blank while the AI interprets, so this sits outside the
+        // response block below.
+        if (harborInterpreting) {
+            HarborInterpretingCard(
+                transcription = transcription,
+                viewModel = viewModel,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            )
+        } else if (response.isNotEmpty()) {
             Text(
                 text = "AI",
                 fontSize = 12.sp,
@@ -557,13 +565,7 @@ fun HomeScreen(
             )
             val isHarborConfirm = response.contains("シングルタップで実行") ||
                 response.contains("ダブルタップで言い直す")
-            if (harborInterpreting) {
-                HarborInterpretingCard(
-                    transcription = transcription,
-                    viewModel = viewModel,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
-                )
-            } else if (isHarborConfirm) {
+            if (isHarborConfirm) {
                 // Card sets this apart from a normal AI response, since it's a pending
                 // action awaiting confirmation rather than plain conversational text.
                 Card(
@@ -2385,7 +2387,7 @@ private fun HarborInterpretingCard(
                 Text("AIが指示を確認中…", fontWeight = FontWeight.SemiBold)
             }
             if (transcription.isNotBlank()) Text("音声指示: $transcription")
-            OutlinedButton(onClick = viewModel::cancelHarborCommand) { Text("取り消す") }
+            OutlinedButton(onClick = viewModel::cancelHarborInterpreting) { Text("取り消す") }
         }
     }
 }

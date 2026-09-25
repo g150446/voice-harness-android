@@ -183,7 +183,10 @@ workspace 詳細画面は **端末 / プラン / 会話** を切り替える。�
 キーのボタン群は既定で畳んでおく。端末表示の自動追従は、ユーザーが最下部にいるときだけ働く。
 確認プロンプト表示中は、ホームと workspace 詳細画面に実行／取り消す／言い直すボタンも出る。
 その手前の**解釈待ち**（STT確定〜確認コメント到着）は `BleConnectionService.harborInterpreting`
-（`VoiceProcessor.harborConfirmInterpreting` のsetterが写す）で画面に伝え、
+で画面に伝える。経路は2つあり、G2接続中の指示録音は `presentHarborConfirmSuspend`
+（`VoiceProcessor.harborConfirmInterpreting` のsetterが写す）、G2未接続時は通常のAI対話
+パイプラインが `harbor_command` tool で解釈するので `assistantGateway.submit` の前後
+（try/finally）で立てて下ろす。どちらも
 `HarborInterpretingCard`（「AIが指示を確認中…」＋取り消す）を出す。`VoiceState` は
 `TRANSCRIBING` のままなので、状態列挙を増やさず別フラグにしている。待機中に電話の
 `response` へ「解析中…」を流すことはしない（実行ボタン付きの確認カードに見えてしまうため）。
