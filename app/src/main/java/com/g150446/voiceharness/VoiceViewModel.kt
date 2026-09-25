@@ -47,6 +47,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     // Voice processing state — sourced from BleConnectionService companion (lives in service scope).
     val state: StateFlow<VoiceState> = BleConnectionService.voiceState
     val transcription: StateFlow<String> = BleConnectionService.transcription
+    val harborInterpreting: StateFlow<Boolean> = BleConnectionService.harborInterpreting
     val response: StateFlow<String> = BleConnectionService.response
     val errorMessage: StateFlow<String> = BleConnectionService.errorMessage
     val bleMode: StateFlow<Boolean> = BleConnectionService.bleMode

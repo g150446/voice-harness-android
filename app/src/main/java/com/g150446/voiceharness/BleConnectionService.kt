@@ -128,6 +128,10 @@ class BleConnectionService : Service() {
         private val _voiceState = MutableStateFlow(VoiceState.READY)
         val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
 
+        // True while the AI is interpreting a Harbor voice instruction, before the confirm message.
+        private val _harborInterpreting = MutableStateFlow(false)
+        val harborInterpreting: StateFlow<Boolean> = _harborInterpreting.asStateFlow()
+
         private val _transcription = MutableStateFlow("")
         val transcription: StateFlow<String> = _transcription.asStateFlow()
 
@@ -187,6 +191,7 @@ class BleConnectionService : Service() {
 
         // Internal setters used by VoiceProcessor (same module/package).
         internal fun setVoiceState(state: VoiceState) { _voiceState.value = state }
+        internal fun setHarborInterpreting(value: Boolean) { _harborInterpreting.value = value }
         internal fun setTranscription(text: String) { _transcription.value = text }
         internal fun setResponse(text: String) { _response.value = text }
         internal fun setErrorMessage(text: String) { _errorMessage.value = text }

@@ -42,6 +42,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -202,6 +203,7 @@ fun HomeScreen(
     val state by viewModel.state.collectAsState()
     val transcription by viewModel.transcription.collectAsState()
     val response by viewModel.response.collectAsState()
+    val harborInterpreting by viewModel.harborInterpreting.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val bleConnectionState by viewModel.bleConnectionState.collectAsState()
     val bleMode by viewModel.bleMode.collectAsState()
@@ -471,7 +473,7 @@ fun HomeScreen(
         val profileLabel = modelStatus.profile.displayName
         val coldStart = modelStatus.readiness == ModelReadiness.LOADING ||
             modelStatus.readiness == ModelReadiness.FOUND
-        val statusText = when (state) {
+        val statusText = if (harborInterpreting) "AIが指示を確認中…" else when (state) {
             VoiceState.READY -> when (modelStatus.readiness) {
                 ModelReadiness.READY -> "準備完了（$profileLabel）"
                 ModelReadiness.LOADING -> "モデル読み込み中（$profileLabel）…\n初回のため返事が遅くなります"
@@ -555,7 +557,13 @@ fun HomeScreen(
             )
             val isHarborConfirm = response.contains("シングルタップで実行") ||
                 response.contains("ダブルタップで言い直す")
-            if (isHarborConfirm) {
+            if (harborInterpreting) {
+                HarborInterpretingCard(
+                    transcription = transcription,
+                    viewModel = viewModel,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+                )
+            } else if (isHarborConfirm) {
                 // Card sets this apart from a normal AI response, since it's a pending
                 // action awaiting confirmation rather than plain conversational text.
                 Card(
@@ -1901,6 +1909,7 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
     val workspaceId by viewModel.selectedHarborWorkspaceId.collectAsState()
     val transcription by viewModel.transcription.collectAsState()
     val response by viewModel.response.collectAsState()
+    val harborInterpreting by viewModel.harborInterpreting.collectAsState()
     val terminalFontSize by viewModel.harborFontSize.collectAsState()
     var instruction by remember { mutableStateOf("") }
     var deepHistory by remember { mutableStateOf(false) }
@@ -2048,7 +2057,9 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
             }
         }
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        if (response.contains("シングルタップで実行") || response.contains("ダブルタップで言い直す")) {
+        if (harborInterpreting) {
+            HarborInterpretingCard(transcription = transcription, viewModel = viewModel)
+        } else if (response.contains("シングルタップで実行") || response.contains("ダブルタップで言い直す")) {
             HarborConfirmPrompt(transcription = transcription, response = response, viewModel = viewModel)
         }
         when (pane) {
@@ -2344,6 +2355,37 @@ private fun HarborConfirmPrompt(transcription: String, response: String, viewMod
             Text("音声指示: $transcription", fontWeight = FontWeight.SemiBold)
             Text(response)
             HarborConfirmButtons(response = response, viewModel = viewModel)
+        }
+    }
+}
+
+/**
+ * Shown between the finalized voice instruction and the AI's confirmation message, so the
+ * screen does not look idle (or still "transcribing") while the AI interprets the instruction.
+ */
+@Composable
+private fun HarborInterpretingCard(
+    transcription: String,
+    viewModel: VoiceViewModel,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        ),
+        modifier = modifier,
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("AIが指示を確認中…", fontWeight = FontWeight.SemiBold)
+            }
+            if (transcription.isNotBlank()) Text("音声指示: $transcription")
+            OutlinedButton(onClick = viewModel::cancelHarborCommand) { Text("取り消す") }
         }
     }
 }

@@ -31,6 +31,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "VoiceProcessor"
 private const val PCM_SAMPLE_RATE = 16000
+/** Glass-facing text shown while the AI interprets a Harbor instruction. */
+private const val HARBOR_INTERPRETING_PLACEHOLDER = "解析中…"
 
 enum class VoiceState {
     READY,
@@ -255,6 +257,11 @@ internal class VoiceProcessor(
     @Volatile private var pendingOpenClawText: String? = null
     /** True while the Harbor intent is still being interpreted; taps are queued. */
     @Volatile private var harborConfirmInterpreting = false
+        set(value) {
+            field = value
+            // Mirrored so the phone UI can show "AI is confirming" during the wait.
+            BleConnectionService.setHarborInterpreting(value)
+        }
     /** Atomic so a tap arriving as interpretation ends cannot be lost between read and clear. */
     private val harborConfirmRequested = AtomicBoolean(false)
     /**
@@ -781,7 +788,7 @@ internal class VoiceProcessor(
         )
         publishHarborConfirmUi(
             stt = stt,
-            aiComment = "解析中…",
+            aiComment = HARBOR_INTERPRETING_PLACEHOLDER,
             awaitingClarification = false,
         )
 
@@ -872,9 +879,15 @@ internal class VoiceProcessor(
                 },
             )
         }
-        BleConnectionService.setResponse(phoneResponse)
+        // The phone shows a dedicated "AI is confirming" card while interpreting, so the
+        // placeholder must not appear as a confirm card (with a live 実行 button).
+        if (aiComment == HARBOR_INTERPRETING_PLACEHOLDER) {
+            BleConnectionService.setResponse("")
+        } else {
+            BleConnectionService.setResponse(phoneResponse)
+        }
         EvenG2ReadingSession.publishResponse(prompt)
-        if (aiComment != "解析中…") {
+        if (aiComment != HARBOR_INTERPRETING_PLACEHOLDER) {
             val spoken = speakHarborAnnouncement(
                 harborConfirmationSpeech(aiComment),
             )
