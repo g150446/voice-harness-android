@@ -302,6 +302,39 @@ internal fun harborExecutionAcknowledgementSpeech(): String = "実行します"
 
 internal fun harborCancellationAcknowledgementSpeech(): String = "キャンセルします"
 
+/** Glyph labels like ⇧Tab or ^C read badly aloud, so speech names keys in words. */
+private val HARBOR_SPOKEN_KEYS = mapOf(
+    "enter" to "エンター",
+    "escape" to "エスケープ",
+    "shift-tab" to "シフトタブ",
+    "tab" to "タブ",
+    "up" to "上矢印",
+    "down" to "下矢印",
+    "left" to "左矢印",
+    "right" to "右矢印",
+    "space" to "スペース",
+    "ctrl-c" to "コントロールC",
+)
+
+/**
+ * What an auto-run command says as it starts. The intent summary is phrased as a confirm
+ * question, which would be wrong for something already running.
+ */
+internal fun harborAutoRunSpeech(args: HarborCommandArgs): String {
+    if (args.action == HarborCommandAction.SWITCH_WORKSPACE) {
+        return "${args.workspace.orEmpty()}に切り替えます"
+    }
+    val step = args.effectiveSteps.firstOrNull() ?: return harborExecutionAcknowledgementSpeech()
+    return when (step.action) {
+        HarborStepAction.MODE -> "${(step.mode ?: ClaudeCodeMode.NORMAL).label}モードに切り替えます"
+        HarborStepAction.KEY -> {
+            val key = step.key ?: "enter"
+            "${HARBOR_SPOKEN_KEYS[key] ?: key}キーを送ります"
+        }
+        HarborStepAction.INSTRUCTION -> harborExecutionAcknowledgementSpeech()
+    }
+}
+
 internal fun harborWorkSummarySpeech(value: HarborSpokenSummary): String {
     val agentLabel = when {
         value.agent.orEmpty().contains("claude", ignoreCase = true) -> "Claude Code"

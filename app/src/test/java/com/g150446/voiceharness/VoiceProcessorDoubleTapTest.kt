@@ -469,6 +469,97 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
+    fun `simple harbor commands run without confirmation`() {
+        fun args(
+            action: HarborCommandAction,
+            steps: List<HarborCommandStep> = emptyList(),
+            key: String? = null,
+            mode: ClaudeCodeMode? = null,
+            workspace: String? = null,
+            needsClarification: Boolean = false,
+        ) = HarborCommandArgs(
+            action = action,
+            command = if (action == HarborCommandAction.INSTRUCTION) "コミットして" else "",
+            key = key,
+            mode = mode,
+            workspace = workspace,
+            intentSummary = "確認",
+            needsClarification = needsClarification,
+            steps = steps,
+        )
+        assertTrue(harborAutoRunEligible(args(HarborCommandAction.MODE, mode = ClaudeCodeMode.PLAN)))
+        assertTrue(
+            harborAutoRunEligible(args(HarborCommandAction.SWITCH_WORKSPACE, workspace = "harbor")),
+        )
+        assertTrue(harborAutoRunEligible(args(HarborCommandAction.KEY, key = "ctrl-c")))
+        assertTrue(harborAutoRunEligible(args(HarborCommandAction.KEY, key = "enter")))
+        assertFalse(harborAutoRunEligible(args(HarborCommandAction.INSTRUCTION)))
+        assertFalse(
+            harborAutoRunEligible(
+                args(
+                    HarborCommandAction.INSTRUCTION,
+                    steps = listOf(
+                        HarborCommandStep(HarborStepAction.INSTRUCTION, command = "/model", submit = false),
+                        HarborCommandStep(HarborStepAction.KEY, key = "down"),
+                        HarborCommandStep(HarborStepAction.KEY, key = "enter"),
+                    ),
+                ),
+            ),
+        )
+        assertFalse(
+            harborAutoRunEligible(
+                args(
+                    HarborCommandAction.MODE,
+                    mode = ClaudeCodeMode.PLAN,
+                    steps = listOf(
+                        HarborCommandStep(HarborStepAction.MODE, mode = ClaudeCodeMode.PLAN),
+                        HarborCommandStep(HarborStepAction.INSTRUCTION, command = "計画して"),
+                    ),
+                ),
+            ),
+        )
+        assertFalse(
+            harborAutoRunEligible(
+                args(HarborCommandAction.KEY, key = "enter", needsClarification = true),
+            ),
+        )
+    }
+
+    @Test
+    fun `auto-run speech states the action instead of asking`() {
+        assertEquals(
+            "プランモードに切り替えます",
+            harborAutoRunSpeech(
+                HarborCommandArgs(
+                    action = HarborCommandAction.MODE,
+                    mode = ClaudeCodeMode.PLAN,
+                    intentSummary = "プランモードにしますか？",
+                ),
+            ),
+        )
+        assertEquals(
+            "エンターキーを送ります",
+            harborAutoRunSpeech(
+                HarborCommandArgs(
+                    action = HarborCommandAction.KEY,
+                    key = "enter",
+                    intentSummary = "Enterキーを送りますか？",
+                ),
+            ),
+        )
+        assertEquals(
+            "harborに切り替えます",
+            harborAutoRunSpeech(
+                HarborCommandArgs(
+                    action = HarborCommandAction.SWITCH_WORKSPACE,
+                    workspace = "harbor",
+                    intentSummary = "「harbor」に切り替えますか？",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `harbor confirm outcome separates expired, clarification and submit`() {
         assertEquals(HarborConfirmOutcome.EXPIRED, harborConfirmOutcome(null))
         assertEquals(

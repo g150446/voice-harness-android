@@ -171,6 +171,9 @@ Harbor 確認画面では single = 実行、double = 取り消し（表示して
 意図解釈が終わると `VoiceProcessor` はAIの確認コメントだけをAndroid TTSで読み上げる。
 画面上のタップ操作案内は読み上げず、TTS中の `SPEAKING` 状態でもpending確認をsingle/doubleへ
 優先ルーティングする。確定または取消時はTTSを停止してから処理を続ける。
+単一のモード切替・単発キー・workspace切替（`harborAutoRunEligible`）は確認画面を出さずに
+`autoRunHarborCommand` から `executeHarborConfirm` へ直行し、「実行します」の代わりに
+`harborAutoRunSpeech` の短いサマリーを実行と並行して読み上げる。
 HarborモードはG2の接続状態から独立しており、Android画面とHarnessNodeだけでも動作する。
 Androidのworkspace詳細画面とG2は同じアクティブMac/workspaceを参照し、G2切断時はミラーだけを停止する。
 workspace 詳細画面は **端末 / プラン / 会話** を切り替える。プランは

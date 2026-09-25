@@ -124,6 +124,19 @@ internal fun harborConfirmOutcome(pending: PendingHarborCommand?): HarborConfirm
     else -> HarborConfirmOutcome.SUBMIT
 }
 
+/**
+ * Commands simple enough to run without a confirm tap: one mode change, one key, or a
+ * workspace switch. Text sent to the agent and multi-step plans still wait for the tap.
+ */
+internal fun harborAutoRunEligible(args: HarborCommandArgs): Boolean {
+    if (args.needsClarification) return false
+    return when (args.action) {
+        HarborCommandAction.SWITCH_WORKSPACE -> !args.workspace.isNullOrBlank()
+        HarborCommandAction.MODE, HarborCommandAction.KEY -> args.effectiveSteps.size == 1
+        HarborCommandAction.INSTRUCTION -> false
+    }
+}
+
 /** Resolves tap ownership before any BLE command or pipeline side effect is performed. */
 internal fun recordingTapAction(
     mode: RecordingTapMode,
@@ -805,6 +818,13 @@ internal class VoiceProcessor(
                 "commandChars=${interpreted.command.length} " +
                 "clarify=${interpreted.needsClarification}",
         )
+        if (harborAutoRunEligible(interpreted)) {
+            // A tap queued during interpretation meant "run it", which is happening anyway.
+            harborConfirmInterpreting = false
+            harborConfirmRequested.set(false)
+            autoRunHarborCommand(stt, interpreted)
+            return
+        }
         publishHarborConfirmUi(
             stt = stt,
             aiComment = interpreted.intentSummary,
@@ -843,6 +863,10 @@ internal class VoiceProcessor(
         pendingHarborCommand = PendingHarborCommand(stt = stt, args = normalized)
         harborConfirmInterpreting = false
         harborConfirmRequested.set(false)
+        if (harborAutoRunEligible(normalized)) {
+            autoRunHarborCommand(stt, normalized)
+            return
+        }
         publishHarborConfirmUi(
             stt = stt,
             aiComment = normalized.intentSummary,
@@ -893,6 +917,23 @@ internal class VoiceProcessor(
             )
             if (!spoken) BleConnectionService.setVoiceState(VoiceState.READY)
         }
+    }
+
+    /**
+     * Runs a simple command without the confirm step, saying what it does as it starts so
+     * the user hears the action alongside the work rather than being asked about it.
+     */
+    private fun autoRunHarborCommand(stt: String, args: HarborCommandArgs) {
+        Log.i(
+            TAG,
+            "Harbor auto-run: action=${args.action} key=${args.key} mode=${args.mode}",
+        )
+        pendingHarborCommand = PendingHarborCommand(stt = stt, args = args)
+        val target = HarborCommandTool.stepsPreview(args).ifBlank { args.workspace.orEmpty() }
+        val message = "実行中: $target"
+        BleConnectionService.setResponse(message)
+        EvenG2ReadingSession.publishResponse(message)
+        executeHarborConfirm(announcement = harborAutoRunSpeech(args))
     }
 
     /** Drops the pending command and returns the glass to the live workspace. */
@@ -998,7 +1039,9 @@ internal class VoiceProcessor(
      * from a tap that never arrived over BLE, which is what made the last failure
      * un-diagnosable.
      */
-    private fun executeHarborConfirm() {
+    private fun executeHarborConfirm(
+        announcement: String = harborExecutionAcknowledgementSpeech(),
+    ) {
         val pending = pendingHarborCommand
         if (pending == null) {
             Log.w(TAG, "Harbor confirm ignored: no pending command (expired or discarded)")
@@ -1032,10 +1075,7 @@ internal class VoiceProcessor(
         harborSubmitInFlight = true
         clearHarborConfirm(resumeMirror = false)
         if (BleConnectionService.interactionMode.value == InteractionMode.HARBOR) {
-            speakHarborAnnouncement(
-                harborExecutionAcknowledgementSpeech(),
-                manageVoiceState = false,
-            )
+            speakHarborAnnouncement(announcement, manageVoiceState = false)
         }
         harnessPipelineJob = scope.launch(Dispatchers.IO) {
             try {

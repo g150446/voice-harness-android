@@ -53,6 +53,12 @@ STT → Android の LLM（harbor_command tool）→ G2 に確認表示 → タ�
 > OpenClaw失敗時は同じ完了確認プロンプトをGroq/OpenRouterへ送る段を追加した
 > （ログ `report ready … source=cloud`）。
 
+> 2026-09-25 追記: プランモード切替のような単純な指示まで確認タップを求めるのは手間だったため、
+> 単一のモード切替・単発キー（Esc・Ctrl-Cを含む）・workspace切替は確認なしで即実行する
+> （`harborAutoRunEligible`）。実行開始と同時に「プランモードに切り替えます」「エンターキーを
+> 送ります」のような短いサマリーを読み上げる（`harborAutoRunSpeech`。確認用の疑問文の
+> intent_summary は使わない）。テキスト指示・複数手順・聞き返しは従来どおり確認を挟む。
+
 タップの割り当ては G2 の表示文言に一致させる。
 
 | 画面 | single | double |
