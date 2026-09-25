@@ -60,6 +60,46 @@ class HarborG2ViewTest {
     }
 
     @Test
+    fun `confirmation speech reads only the AI response`() {
+        assertEquals(
+            "変更をコミットしてpushしますか？",
+            harborConfirmationSpeech("変更をコミットしてpushしますか？"),
+        )
+        assertEquals(
+            "どのブランチですか？",
+            harborConfirmationSpeech("どのブランチですか？"),
+        )
+        assertEquals("", harborConfirmationSpeech(null))
+    }
+
+    @Test
+    fun `work summary speech names Claude Code or Codex and includes its question`() {
+        assertEquals(
+            "Claude Codeの作業内容です。テストまで完了しました。" +
+                "確認を求めています。続行しますか？選択肢は、1. はい、2. いいえです。",
+            harborWorkSummarySpeech(
+                HarborSpokenSummary(
+                    workspaceId = "w-1",
+                    agent = "claude",
+                    summary = "テストまで完了しました。",
+                    question = "続行しますか？",
+                    options = listOf("1. はい", "2. いいえ"),
+                ),
+            ),
+        )
+        assertEquals(
+            "Codexの作業内容です。実装とテストが完了しました。",
+            harborWorkSummarySpeech(
+                HarborSpokenSummary(
+                    workspaceId = "w-2",
+                    agent = "codex",
+                    summary = "実装とテストが完了しました。",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `paused or cancelled Harbor poll does not publish`() {
         assertTrue(shouldPublishHarborPoll(paused = false, coroutineActive = true))
         assertFalse(shouldPublishHarborPoll(paused = true, coroutineActive = true))

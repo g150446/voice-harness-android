@@ -50,6 +50,11 @@ Voice HarnessはTerminal Harborの `harbor://pair` URIからHMAC鍵を導出し�
    **OpenClaw（ワークスペース単位のセッション）→ 失敗時は Groq / OpenRouter → 決定論的 fallback**
    の順（`documents/openclaw.md` の「Terminal Harbor の音声解釈」）。
    意図確認コメントは「いま Terminal Harbor 上で動いている AI エージェントの会話」を踏まえる
+   - 解釈完了後は意図確認コメントだけをAndroid TTSでも読み上げる。G2/Android画面に残す
+     「シングルタップで実行 / ダブルタップで取り消す」などの操作案内や、TTS専用の前置きは
+     読み上げない。「解析中…」も読み上げない
+   - 読み上げ中も確認pendingがタップを所有するため、singleで実行、doubleで取り消せる。
+     実行または取り消し時は確認TTSを停止する
 3. シングルタップで実行。確定した内容をそのまま実行し、Harbor 側で解釈し直さない:
    - `action=instruction` → `POST /v1/workspaces/{id}/instruction`（`submit=false` なら貼付のみ）
    - `action=key` → `POST /v1/workspaces/{id}/key`。`enter / escape / shift-tab / tab /
@@ -92,6 +97,11 @@ Harborがペアリング済みならAI対話モードでも同じ `harbor_comman
 表示し、シングルタップでページ送りする。質問と選択肢はモデルが指定した元行をコピーして最後に
 原文表示する。画面が再び動けば直ちにライブ表示へ戻る。OpenRouter未設定、タイムアウト、解析失敗時は
 整形済みライブ表示へフォールバックする。API 1.8以前のHarborへも`/screen`でフォールバックする。
+
+要約ビューへ遷移したときは、agentメタデータから `Claude Code` / `Codex` を判別し、作業要約を
+Android TTSでも読み上げる。質問と選択肢があれば続けて読む。同一workspaceの同一要約は1秒周期の
+ポーリングごとには繰り返さず一度だけ読み、ライブ表示へ戻った後の新しい作業では同じ文面でも再び読む。
+録音・応答・確認処理と競合している場合は読み上げを保留し、次のポーリングで再試行する。
 
 要約・質問の表示中のシングルタップはページ送りだけに使用する。確認待ち中は実行用、
 Harbor待機中（ライブ表示）のシングルタップは何も行わない（指示録音の開始/終了はダブルタップのみ）。

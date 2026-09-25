@@ -139,12 +139,13 @@ internal fun recordingTapAction(
         if (event == RecordingTapEvent.SINGLE &&
             (state == VoiceState.READY ||
                 state == VoiceState.ERROR ||
-                state == VoiceState.TRANSCRIBING)
+                state == VoiceState.TRANSCRIBING ||
+                state == VoiceState.SPEAKING)
         ) {
             return RecordingTapAction.CONFIRM_HARBOR
         }
         if (event == RecordingTapEvent.DOUBLE &&
-            (state == VoiceState.READY || state == VoiceState.ERROR)
+            (state == VoiceState.READY || state == VoiceState.ERROR || state == VoiceState.SPEAKING)
         ) {
             // Follow the label the glass is showing: the confirm prompt offers
             // 「ダブルタップで取り消す」, and cancelling means stopping, not starting over.
@@ -644,7 +645,6 @@ internal class VoiceProcessor(
                 when (interactionMode) {
                     InteractionMode.HARBOR -> {
                         presentHarborConfirmSuspend(raw)
-                        BleConnectionService.setVoiceState(VoiceState.READY)
                     }
                     InteractionMode.READER -> {
                         val command = parseReaderPageCommand(raw)
@@ -868,6 +868,12 @@ internal class VoiceProcessor(
         }
         BleConnectionService.setResponse(phoneResponse)
         EvenG2ReadingSession.publishResponse(prompt)
+        if (aiComment != "解析中…") {
+            val spoken = speakHarborAnnouncement(
+                harborConfirmationSpeech(aiComment),
+            )
+            if (!spoken) BleConnectionService.setVoiceState(VoiceState.READY)
+        }
     }
 
     /** Drops the pending command and returns the glass to the live workspace. */
@@ -876,6 +882,7 @@ internal class VoiceProcessor(
         // A double tap during 「解析中…」 has to stop the Gateway call too; OkHttp will not
         // notice the coroutine going away on its own.
         harborInterpreter.cancel()
+        stopHarborAnnouncement()
         clearHarborConfirm(resumeMirror = true)
         val message = "指示を取り消しました"
         BleConnectionService.setResponse(message)
@@ -994,6 +1001,8 @@ internal class VoiceProcessor(
             "Harbor confirm executing: action=${pending.args.action} " +
                 "key=${pending.args.key} commandChars=${pending.args.command.length}",
         )
+        stopHarborAnnouncement()
+        BleConnectionService.setVoiceState(VoiceState.RESPONDING)
         harborSubmitInFlight = true
         clearHarborConfirm(resumeMirror = false)
         harnessPipelineJob = scope.launch(Dispatchers.IO) {
@@ -1045,6 +1054,59 @@ internal class VoiceProcessor(
         harborConfirmInterpreting = false
         harborConfirmRequested.set(false)
         if (resumeMirror) BleConnectionService.pauseHarborMirror(false)
+    }
+
+    /** Reads Harbor-only status without routing it back through the assistant response path. */
+    internal fun speakHarborWorkSummary(summary: HarborSpokenSummary): Boolean {
+        if (BleConnectionService.interactionMode.value != InteractionMode.HARBOR) return false
+        if (pendingHarborCommand != null || harborConfirmInterpreting || harborSubmitInFlight) return false
+        val state = BleConnectionService.voiceState.value
+        if (state != VoiceState.READY && state != VoiceState.ERROR) return false
+        return speakHarborAnnouncement(harborWorkSummarySpeech(summary))
+    }
+
+    private fun speakHarborAnnouncement(text: String): Boolean {
+        if (!ttsReady || text.isBlank()) return false
+        val chunks = TtsTextFormatter.toSpeakableChunks(
+            text = text,
+            maxLength = TextToSpeech.getMaxSpeechInputLength(),
+        )
+        if (chunks.isEmpty()) return false
+        val utterancePrefix = "harbor_${System.currentTimeMillis()}"
+        val finalUtteranceId = "${utterancePrefix}_${chunks.lastIndex}"
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = Unit
+
+            override fun onDone(utteranceId: String?) {
+                if (utteranceId == finalUtteranceId &&
+                    BleConnectionService.voiceState.value == VoiceState.SPEAKING
+                ) {
+                    BleConnectionService.setPhonePlaybackActive(false)
+                    BleConnectionService.setVoiceState(VoiceState.READY)
+                }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                if (utteranceId == finalUtteranceId) {
+                    BleConnectionService.setPhonePlaybackActive(false)
+                    if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) {
+                        BleConnectionService.setVoiceState(VoiceState.READY)
+                    }
+                }
+            }
+        })
+        BleConnectionService.setPhonePlaybackActive(true)
+        BleConnectionService.setVoiceState(VoiceState.SPEAKING)
+        if (speakWithFallbacks(chunks, utterancePrefix, "ja")) return true
+        BleConnectionService.setPhonePlaybackActive(false)
+        BleConnectionService.setVoiceState(VoiceState.READY)
+        return false
+    }
+
+    private fun stopHarborAnnouncement() {
+        tts?.stop()
+        BleConnectionService.setPhonePlaybackActive(false)
     }
 
     // --- Shared transcription + chat logic ---
@@ -1261,7 +1323,6 @@ internal class VoiceProcessor(
                         stt = BleConnectionService.transcription.value,
                         args = args,
                     )
-                    BleConnectionService.setVoiceState(VoiceState.READY)
                 }
                 else -> {
                     val responseText = chatResult.text
@@ -1418,7 +1479,6 @@ internal class VoiceProcessor(
                         fallbackCommand = query,
                     )
                     presentHarborConfirmFromTool(stt = query, args = args)
-                    BleConnectionService.setVoiceState(VoiceState.READY)
                     BleConnectionService.releaseAssistantProcessing()
                     notifyAssistantUi(
                         requestId = requestId,

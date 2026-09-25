@@ -168,6 +168,9 @@ G2 ページ送り、Harbor 確認待ちの single は実行。それ以外（Ha
 Harbor 確認画面では single = 実行、double = 取り消し（表示している
 「シングルタップで実行 / ダブルタップで取り消す」に合わせる）。確認待ち
 （`needs_clarification`）の画面だけは「ダブルタップで言い直す」で録音し直しになる。
+意図解釈が終わると `VoiceProcessor` はAIの確認コメントだけをAndroid TTSで読み上げる。
+画面上のタップ操作案内は読み上げず、TTS中の `SPEAKING` 状態でもpending確認をsingle/doubleへ
+優先ルーティングする。確定または取消時はTTSを停止してから処理を続ける。
 HarborモードはG2の接続状態から独立しており、Android画面とHarnessNodeだけでも動作する。
 Androidのworkspace詳細画面とG2は同じアクティブMac/workspaceを参照し、G2切断時はミラーだけを停止する。
 workspace 詳細画面は **端末 / プラン / 会話** を切り替える。プランは
@@ -304,6 +307,13 @@ Gemma 4 LiteRT-LMで両方を処理する。モデル探索と状態管理は`Mo
 - `VoiceProcessor.kt`
   - 候補ロケールを順番に試しながら TTS を実行する
   - 長文応答は複数 utterance に分けてキューイングし、最後のチャンク完了で `READY` に戻す
+  - Harbor確認ではAIの確認コメントだけを読み、画面上の操作案内は音声へ混ぜない
+  - Harborミラーの入力待ち要約は `Claude Code` / `Codex` の名前、作業要約、質問、選択肢を読み上げる
+
+- `HarborMirrorController`
+  - workspace、agent、要約、質問、選択肢を `HarborSpokenSummary` として `VoiceProcessor` へ渡す
+  - 同じ要約の再読を抑止し、ライブ表示を挟んだ次の作業では抑止状態を解除する
+  - TTSが録音・応答・確認処理で使用中なら既読扱いにせず、後続ポーリングで再試行する
 
 ## AI返答の出力先
 

@@ -285,6 +285,36 @@ internal data class HarborG2View(
     val options: List<String> = emptyList(),
 )
 
+/** A completed coding-agent update that is useful without looking at the terminal. */
+internal data class HarborSpokenSummary(
+    val workspaceId: String,
+    val agent: String?,
+    val summary: String,
+    val question: String = "",
+    val options: List<String> = emptyList(),
+)
+
+internal fun harborConfirmationSpeech(aiComment: String?): String =
+    aiComment.orEmpty().trim()
+
+internal fun harborWorkSummarySpeech(value: HarborSpokenSummary): String {
+    val agentLabel = when {
+        value.agent.orEmpty().contains("claude", ignoreCase = true) -> "Claude Code"
+        value.agent.orEmpty().contains("codex", ignoreCase = true) -> "Codex"
+        else -> "AIエージェント"
+    }
+    return buildString {
+        append(agentLabel).append("の作業内容です。")
+        value.summary.trim().takeIf(String::isNotEmpty)?.let(::append)
+        value.question.trim().takeIf(String::isNotEmpty)?.let {
+            append("確認を求めています。").append(it)
+        }
+        if (value.options.isNotEmpty()) {
+            append("選択肢は、").append(value.options.joinToString("、")).append("です。")
+        }
+    }
+}
+
 internal fun filterHarborDisplayText(text: String): String {
     val separators = "-_.=~‐‑‒–—―·•⋅⋯…─━│┃┄┅┆┇┈┉┊┋╌╍╎╏┌┐└┘├┤┬┴┼╭╮╰╯"
     return text.lineSequence()
@@ -1116,6 +1146,7 @@ internal class HarborMirrorController(
     context: Context,
     private val scope: CoroutineScope,
     private val client: HarborApiClient = HarborApiClient(),
+    private val onSpokenSummary: (HarborSpokenSummary) -> Boolean = { false },
 ) {
     private val store = HarborCredentialsStore(context)
     private var allCredentials = store.loadAll().toMutableList()
@@ -1125,6 +1156,7 @@ internal class HarborMirrorController(
     private var job: Job? = null
     @Volatile private var paused = false
     private var mode = InteractionMode.AI
+    private var lastSpokenSummary: HarborSpokenSummary? = null
     private val _state = MutableStateFlow(
         HarborConnectionState(paired = credentials != null, deviceName = credentials?.deviceName)
     )
@@ -1617,7 +1649,20 @@ internal class HarborMirrorController(
                                 summaryText = view.summaryText,
                                 actionText = action,
                             )
+                            val spokenSummary = HarborSpokenSummary(
+                                workspaceId = workspace.id,
+                                agent = workspace.agent,
+                                summary = view.summaryText,
+                                question = view.question,
+                                options = view.options,
+                            )
+                            if (spokenSummary != lastSpokenSummary && onSpokenSummary(spokenSummary)) {
+                                lastSpokenSummary = spokenSummary
+                            }
                         } else {
+                            // The next waiting view belongs to a new unit of work, even if its
+                            // generated wording happens to match the previous one exactly.
+                            lastSpokenSummary = null
                             EvenG2ReadingSession.publishHarbor(workspace.name, view.text, null)
                         }
                     }

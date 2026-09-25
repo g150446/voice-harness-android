@@ -393,6 +393,32 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
+    fun `Harbor confirmation owns taps while its prompt is spoken`() {
+        assertEquals(
+            RecordingTapAction.CONFIRM_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.SINGLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.SPEAKING,
+                harborConfirmPending = true,
+            ),
+        )
+        assertEquals(
+            RecordingTapAction.CANCEL_HARBOR,
+            recordingTapAction(
+                mode = RecordingTapMode.SINGLE,
+                event = RecordingTapEvent.DOUBLE,
+                interactionMode = InteractionMode.HARBOR,
+                g2ClientActive = true,
+                state = VoiceState.SPEAKING,
+                harborConfirmPending = true,
+            ),
+        )
+    }
+
+    @Test
     fun `Harbor confirm accepts a single tap while the intent is still interpreted`() {
         // The prompt is published before the LLM returns; the tap is queued.
         assertEquals(

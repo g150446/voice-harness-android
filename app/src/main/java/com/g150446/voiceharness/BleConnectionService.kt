@@ -783,7 +783,13 @@ class BleConnectionService : Service() {
                 }
             },
         ).also { it.start() }
-        harborMirrorController = HarborMirrorController(applicationContext, serviceScope).also { controller ->
+        harborMirrorController = HarborMirrorController(
+            context = applicationContext,
+            scope = serviceScope,
+            onSpokenSummary = { summary ->
+                voiceProcessor?.speakHarborWorkSummary(summary) == true
+            },
+        ).also { controller ->
             _harborConnectionState.value = controller.state.value
             _harborUiState.value = controller.uiState.value
             serviceScope.launch {
