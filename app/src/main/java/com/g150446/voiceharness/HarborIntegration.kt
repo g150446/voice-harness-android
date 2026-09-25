@@ -2,6 +2,7 @@ package com.g150446.voiceharness
 
 import android.content.Context
 import android.net.Uri
+import android.os.SystemClock
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -296,6 +297,10 @@ internal data class HarborSpokenSummary(
 
 internal fun harborConfirmationSpeech(aiComment: String?): String =
     aiComment.orEmpty().trim()
+
+internal fun harborExecutionAcknowledgementSpeech(): String = "実行します"
+
+internal fun harborCancellationAcknowledgementSpeech(): String = "キャンセルします"
 
 internal fun harborWorkSummarySpeech(value: HarborSpokenSummary): String {
     val agentLabel = when {
@@ -1135,10 +1140,10 @@ internal class HarborApiClient(
         if (response.code !in 200..299) error("Terminal Harbor HTTP ${response.code}")
     }
 
-    private companion object {
-        val JSON = "application/json; charset=utf-8".toMediaType()
-        const val INTERPRET_CONTEXT_LINES = 2_000
-        const val INTERPRET_CONTEXT_MAX_CHARS = 64 * 1_024
+    companion object {
+        private val JSON = "application/json; charset=utf-8".toMediaType()
+        internal const val INTERPRET_CONTEXT_LINES = 2_000
+        internal const val INTERPRET_CONTEXT_MAX_CHARS = 64 * 1_024
     }
 }
 
@@ -1146,7 +1151,7 @@ internal class HarborMirrorController(
     context: Context,
     private val scope: CoroutineScope,
     private val client: HarborApiClient = HarborApiClient(),
-    private val onSpokenSummary: (HarborSpokenSummary) -> Boolean = { false },
+    private val onCompletionCandidate: (HarborCompletionCandidate) -> Unit = {},
 ) {
     private val store = HarborCredentialsStore(context)
     private var allCredentials = store.loadAll().toMutableList()
@@ -1156,7 +1161,7 @@ internal class HarborMirrorController(
     private var job: Job? = null
     @Volatile private var paused = false
     private var mode = InteractionMode.AI
-    private var lastSpokenSummary: HarborSpokenSummary? = null
+    private val completionTracker = HarborCompletionTracker()
     private val _state = MutableStateFlow(
         HarborConnectionState(paired = credentials != null, deviceName = credentials?.deviceName)
     )
@@ -1212,6 +1217,7 @@ internal class HarborMirrorController(
     fun selectDevice(serverId: String) {
         val selected = allCredentials.firstOrNull { it.serverId == serverId } ?: return
         stopPolling()
+        completionTracker.clear()
         credentials = selected
         store.setActiveServerId(serverId)
         _uiState.value = HarborUiState(devices = deviceSummaries())
@@ -1226,6 +1232,7 @@ internal class HarborMirrorController(
         allCredentials.removeAll { it.serverId == serverId }
         if (credentials?.serverId == serverId) {
             stopPolling()
+            completionTracker.clear()
             credentials = allCredentials.firstOrNull()
             store.setActiveServerId(credentials?.serverId)
         }
@@ -1411,11 +1418,14 @@ internal class HarborMirrorController(
 
     fun setMode(value: InteractionMode) {
         mode = value
+        if (value != InteractionMode.HARBOR) completionTracker.clear()
         reconcile()
     }
 
     fun setG2Active(active: Boolean) {
-        if (active) reconcile() else stopPolling()
+        // Completion audio is independent of the glasses. G2 activity only decides whether
+        // poll results are published to the plugin; Harbor mode owns the polling lifetime.
+        if (active || mode == InteractionMode.HARBOR) reconcile()
     }
 
     fun setPaused(value: Boolean) {
@@ -1428,6 +1438,7 @@ internal class HarborMirrorController(
             _state.value = _state.value.copy(error = null)
             runCatching { client.pair(HarborPairPayload.parse(rawUri)) }
                 .onSuccess {
+                    completionTracker.clear()
                     credentials = it
                     allCredentials.removeAll { saved -> saved.serverId == it.serverId }
                     allCredentials.add(it)
@@ -1450,6 +1461,7 @@ internal class HarborMirrorController(
 
     fun clear() {
         stopPolling()
+        completionTracker.clear()
         credentials = null
         allCredentials.clear()
         store.clear()
@@ -1473,6 +1485,24 @@ internal class HarborMirrorController(
         return runCatching { client.fetchInterpretContext(creds) }.getOrNull()
     }
 
+    fun fallbackSpokenSummary(workspaceId: String): HarborSpokenSummary? {
+        val creds = credentials ?: return null
+        return runCatching {
+            val workspace = client.listWorkspaces(creds).firstOrNull { it.id == workspaceId }
+                ?: return null
+            val view = client.fetchG2View(creds, workspaceId)
+            if (!view.summary) return null
+            HarborSpokenSummary(
+                workspaceId = workspaceId,
+                agent = workspace.completionAgent(),
+                summary = view.summaryText,
+                question = view.question,
+                options = view.options,
+            )
+        }.onFailure { Log.w(TAG, "Harbor completion fallback unavailable", it) }
+            .getOrNull()
+    }
+
     /**
      * Carries out the action the user already confirmed on the glass.
      *
@@ -1483,7 +1513,26 @@ internal class HarborMirrorController(
      */
     fun submitCommand(args: HarborCommandArgs): String {
         val creds = credentials ?: error("Terminal Harborをペアリングしてください")
-        val plan = planHarborSubmit(args, client.listWorkspaces(creds))
+        val workspaces = client.listWorkspaces(creds)
+        val plan = planHarborSubmit(args, workspaces)
+        val completionWorkspaceIds = if (mode == InteractionMode.HARBOR) {
+            harborCompletionWorkspaceIds(plan)
+        } else {
+            emptyList()
+        }
+        val completionBaselines = completionWorkspaceIds.associateWith { workspaceId ->
+            runCatching {
+                client.fetchScreen(
+                    creds,
+                    workspaceId,
+                    lines = HARBOR_COMPLETION_FINGERPRINT_LINES,
+                ).text
+            }.map(::filterHarborDisplayText)
+                .map { it.takeLast(HarborApiClient.INTERPRET_CONTEXT_MAX_CHARS) }
+                .map { sha256Hex(it.toByteArray()) }
+                .onFailure { Log.w(TAG, "Harbor completion baseline unavailable", it) }
+                .getOrNull()
+        }
         // A mode change only knows what it did after the fact, so it reports its own line.
         val notes = mutableListOf<String>()
         plan.operations.forEachIndexed { index, operation ->
@@ -1512,11 +1561,37 @@ internal class HarborMirrorController(
             // a menu selection lands on the wrong row.
             if (index < plan.operations.lastIndex) Thread.sleep(operation.waitMs.toLong())
         }
+        val nowMs = SystemClock.elapsedRealtime()
+        completionBaselines.forEach { (workspaceId, baseline) ->
+            completionTracker.arm(workspaceId, baseline, nowMs)
+            Log.i(TAG, "Harbor completion armed: workspace=$workspaceId baseline=${baseline != null}")
+        }
         return when {
             notes.isEmpty() -> plan.message
             plan.message.isBlank() -> notes.joinToString("\n")
             else -> (listOf(plan.message) + notes).joinToString("\n")
         }
+    }
+
+    fun onCompletionReviewResult(
+        workspaceId: String,
+        trackingId: Long,
+        fingerprint: String,
+        outcome: HarborCompletionReviewOutcome,
+    ) {
+        completionTracker.onReviewResult(
+            workspaceId,
+            trackingId,
+            fingerprint,
+            outcome,
+            SystemClock.elapsedRealtime(),
+        )
+        Log.i(TAG, "Harbor completion review: workspace=$workspaceId outcome=$outcome")
+    }
+
+    fun cancelCompletionTracking() {
+        completionTracker.clear()
+        Log.i(TAG, "Harbor completion tracking cancelled")
     }
 
     /**
@@ -1602,13 +1677,15 @@ internal class HarborMirrorController(
     }
 
     private fun reconcile() {
-        if (paused || mode != InteractionMode.HARBOR || !EvenG2ReadingSession.isClientActive()) {
+        if (paused || mode != InteractionMode.HARBOR) {
             stopPolling()
             return
         }
         val creds = credentials
         if (creds == null) {
-            EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborをペアリングしてください")
+            if (EvenG2ReadingSession.isClientActive()) {
+                EvenG2ReadingSession.publishHarbor(null, null, "Terminal Harborをペアリングしてください")
+            }
             return
         }
         if (job?.isActive == true) return
@@ -1620,24 +1697,40 @@ internal class HarborMirrorController(
         try {
             while (
                 !paused &&
-                mode == InteractionMode.HARBOR &&
-                EvenG2ReadingSession.isClientActive()
+                mode == InteractionMode.HARBOR
             ) {
                 try {
                     val workspace = client.listWorkspaces(creds).firstOrNull { it.selected }
                     if (!shouldPublishHarborPoll(paused, coroutineContext.isActive)) return
                     if (workspace == null) {
                         _state.value = _state.value.copy(connected = true, workspaceName = null, error = null)
-                        EvenG2ReadingSession.publishHarbor(null, null, "選択中のワークスペースがありません")
+                        if (EvenG2ReadingSession.isClientActive()) {
+                            EvenG2ReadingSession.publishHarbor(
+                                null,
+                                null,
+                                "選択中のワークスペースがありません",
+                            )
+                        }
                     } else {
-                        val view = client.fetchG2View(creds, workspace.id)
+                        val screen = client.fetchScreen(
+                            creds,
+                            workspace.id,
+                            lines = HARBOR_COMPLETION_FINGERPRINT_LINES,
+                        )
+                        val completionScreen = filterHarborDisplayText(screen.text)
+                            .takeLast(HarborApiClient.INTERPRET_CONTEXT_MAX_CHARS)
+                        val view = if (EvenG2ReadingSession.isClientActive()) {
+                            client.fetchG2View(creds, workspace.id)
+                        } else {
+                            null
+                        }
                         if (!shouldPublishHarborPoll(paused, coroutineContext.isActive)) return
                         _state.value = _state.value.copy(
                             connected = true,
                             workspaceName = workspace.name,
                             error = null,
                         )
-                        if (view.summary) {
+                        if (view?.summary == true) {
                             val action = buildList {
                                 view.question.takeIf(String::isNotBlank)?.let(::add)
                                 addAll(view.options)
@@ -1649,21 +1742,50 @@ internal class HarborMirrorController(
                                 summaryText = view.summaryText,
                                 actionText = action,
                             )
-                            val spokenSummary = HarborSpokenSummary(
-                                workspaceId = workspace.id,
-                                agent = workspace.agent,
-                                summary = view.summaryText,
-                                question = view.question,
-                                options = view.options,
-                            )
-                            if (spokenSummary != lastSpokenSummary && onSpokenSummary(spokenSummary)) {
-                                lastSpokenSummary = spokenSummary
-                            }
-                        } else {
-                            // The next waiting view belongs to a new unit of work, even if its
-                            // generated wording happens to match the previous one exactly.
-                            lastSpokenSummary = null
+                        } else if (view != null) {
                             EvenG2ReadingSession.publishHarbor(workspace.name, view.text, null)
+                        }
+                        if (completionScreen.isNotBlank() && completionTracker.isArmed(workspace.id)) {
+                            val fingerprint = sha256Hex(completionScreen.toByteArray())
+                            val trackingId = completionTracker.observe(
+                                workspace.id,
+                                fingerprint,
+                                SystemClock.elapsedRealtime(),
+                            )
+                            if (trackingId != null) {
+                                val evidenceScreen = runCatching {
+                                    client.fetchScreen(
+                                        creds,
+                                        workspace.id,
+                                        lines = HarborApiClient.INTERPRET_CONTEXT_LINES,
+                                    )
+                                }.getOrDefault(screen)
+                                val transcript = runCatching {
+                                    client.fetchTranscript(creds, workspace.id, limit = 20)
+                                }.getOrNull()
+                                Log.i(
+                                    TAG,
+                                    "Harbor completion candidate: workspace=${workspace.id} " +
+                                        "transcript=${transcript?.available == true}",
+                                )
+                                onCompletionCandidate(
+                                    HarborCompletionCandidate(
+                                        workspaceId = workspace.id,
+                                        workspaceName = workspace.name,
+                                        agent = workspace.completionAgent(),
+                                        fingerprint = fingerprint,
+                                        screen = filterHarborDisplayText(evidenceScreen.text)
+                                            .takeLast(HarborApiClient.INTERPRET_CONTEXT_MAX_CHARS),
+                                        transcript = transcript?.takeIf { it.available }
+                                            ?.messages
+                                            ?.joinToString("\n\n") { message ->
+                                                "${message.role}: ${message.text}"
+                                            }
+                                            .orEmpty(),
+                                        trackingId = trackingId,
+                                    ),
+                                )
+                            }
                         }
                     }
                     failures = 0
@@ -1677,11 +1799,13 @@ internal class HarborMirrorController(
                         error = error.message ?: "Terminal Harborに接続できません",
                     )
                     if (failures >= 3 && shouldPublishHarborPoll(paused, coroutineContext.isActive)) {
-                        EvenG2ReadingSession.publishHarbor(
-                            _state.value.workspaceName,
-                            null,
-                            "Terminal Harborに接続できません",
-                        )
+                        if (EvenG2ReadingSession.isClientActive()) {
+                            EvenG2ReadingSession.publishHarbor(
+                                _state.value.workspaceName,
+                                null,
+                                "Terminal Harborに接続できません",
+                            )
+                        }
                     }
                     delay((1_000L shl (failures - 1).coerceAtMost(3)).coerceAtMost(10_000L))
                 }
@@ -1696,6 +1820,21 @@ internal class HarborMirrorController(
         job = null
     }
 }
+
+internal fun harborCompletionWorkspaceIds(plan: HarborSubmitPlan): List<String> = plan.operations
+    .filter(::startsAgentWork)
+    .map(HarborOperation::workspaceId)
+    .distinct()
+
+internal fun HarborWorkspace.completionAgent(): String? = agent ?: process
+
+private fun startsAgentWork(operation: HarborOperation): Boolean = when (operation) {
+    is HarborOperation.Instruction -> operation.submit
+    is HarborOperation.Key -> operation.key == "enter"
+    is HarborOperation.Activate, is HarborOperation.SetMode -> false
+}
+
+private const val HARBOR_COMPLETION_FINGERPRINT_LINES = 60
 
 internal fun hkdfDeviceKey(
     pairToken: String,

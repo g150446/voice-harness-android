@@ -145,7 +145,10 @@ internal fun recordingTapAction(
             return RecordingTapAction.CONFIRM_HARBOR
         }
         if (event == RecordingTapEvent.DOUBLE &&
-            (state == VoiceState.READY || state == VoiceState.ERROR || state == VoiceState.SPEAKING)
+            (state == VoiceState.READY ||
+                state == VoiceState.ERROR ||
+                state == VoiceState.TRANSCRIBING ||
+                state == VoiceState.SPEAKING)
         ) {
             // Follow the label the glass is showing: the confirm prompt offers
             // 「ダブルタップで取り消す」, and cancelling means stopping, not starting over.
@@ -260,6 +263,9 @@ internal class VoiceProcessor(
      * result within a frame, which reads as "nothing happened".
      */
     @Volatile private var harborSubmitInFlight = false
+    private var harborCompletionReviewJob: Job? = null
+    private var harborCompletionSpeechJob: Job? = null
+    @Volatile private var pendingHarborCompletionReport: String? = null
     private val reminderMutationLock = Any()
     private val activeReminderId = AtomicReference<String?>(null)
     private val pipelineTiming = PipelineTimingTracker()
@@ -879,6 +885,8 @@ internal class VoiceProcessor(
     /** Drops the pending command and returns the glass to the live workspace. */
     private fun cancelHarborConfirm(reason: String) {
         Log.i(TAG, "Harbor confirm cancelled ($reason)")
+        val announceCancellation = pendingHarborCommand != null &&
+            BleConnectionService.interactionMode.value == InteractionMode.HARBOR
         // A double tap during 「解析中…」 has to stop the Gateway call too; OkHttp will not
         // notice the coroutine going away on its own.
         harborInterpreter.cancel()
@@ -888,6 +896,9 @@ internal class VoiceProcessor(
         BleConnectionService.setResponse(message)
         EvenG2ReadingSession.publishResponse(message)
         BleConnectionService.setVoiceState(VoiceState.READY)
+        if (announceCancellation) {
+            speakHarborAnnouncement(harborCancellationAcknowledgementSpeech())
+        }
     }
 
     /**
@@ -902,6 +913,8 @@ internal class VoiceProcessor(
         rawStt: String,
         harborContext: HarborInterpretContext? = null,
     ): HarborCommandArgs {
+        cancelHarborCompletionWork(clearPendingSpeech = true)
+        BleConnectionService.cancelHarborCompletionTracking()
         val request = ChatRequest(
             conversationHistory = listOf(ConversationTurn(role = "user", content = rawStt)),
             languageCode = responseLanguageCode ?: "ja",
@@ -1005,6 +1018,12 @@ internal class VoiceProcessor(
         BleConnectionService.setVoiceState(VoiceState.RESPONDING)
         harborSubmitInFlight = true
         clearHarborConfirm(resumeMirror = false)
+        if (BleConnectionService.interactionMode.value == InteractionMode.HARBOR) {
+            speakHarborAnnouncement(
+                harborExecutionAcknowledgementSpeech(),
+                manageVoiceState = false,
+            )
+        }
         harnessPipelineJob = scope.launch(Dispatchers.IO) {
             try {
                 val message = BleConnectionService.submitHarborCommand(pending.args)
@@ -1056,16 +1075,113 @@ internal class VoiceProcessor(
         if (resumeMirror) BleConnectionService.pauseHarborMirror(false)
     }
 
-    /** Reads Harbor-only status without routing it back through the assistant response path. */
-    internal fun speakHarborWorkSummary(summary: HarborSpokenSummary): Boolean {
-        if (BleConnectionService.interactionMode.value != InteractionMode.HARBOR) return false
-        if (pendingHarborCommand != null || harborConfirmInterpreting || harborSubmitInFlight) return false
-        val state = BleConnectionService.voiceState.value
-        if (state != VoiceState.READY && state != VoiceState.ERROR) return false
-        return speakHarborAnnouncement(harborWorkSummarySpeech(summary))
+    /** Asks the same workspace-scoped OpenClaw session to verify a stable agent result. */
+    internal fun reviewHarborCompletion(candidate: HarborCompletionCandidate) {
+        if (BleConnectionService.interactionMode.value != InteractionMode.HARBOR) return
+        Log.i(
+            TAG,
+            "Harbor completion review started: workspace=${candidate.workspaceId} " +
+                "agent=${candidate.agent.orEmpty()}",
+        )
+        harborCompletionReviewJob?.cancel()
+        harborInterpreter.cancel()
+        harborCompletionReviewJob = scope.launch(Dispatchers.IO) {
+            val review = if (harborInterpreter.isConfigured()) {
+                harborInterpreter.reviewCompletion(candidate)
+                    .onFailure { Log.w(TAG, "Harbor completion review failed", it) }
+            } else {
+                Result.failure(IllegalStateException("OpenClaw is not configured"))
+            }
+            if (!isActive || BleConnectionService.interactionMode.value != InteractionMode.HARBOR) {
+                return@launch
+            }
+            val reviewed = review.getOrNull()
+            if (reviewed != null && !reviewed.shouldSpeak) {
+                Log.i(
+                    TAG,
+                    "Harbor completion still running: workspace=${candidate.workspaceId}",
+                )
+                BleConnectionService.reportHarborCompletionReview(
+                    candidate.workspaceId,
+                    candidate.trackingId,
+                    candidate.fingerprint,
+                    HarborCompletionReviewOutcome.NOT_WAITING,
+                )
+                return@launch
+            }
+            val fallback = BleConnectionService
+                .harborFallbackSpokenSummary(candidate.workspaceId)
+                ?.let(::harborWorkSummarySpeech)
+                ?.let(HarborCompletionPrompt::limitReport)
+            val spokenText = reviewed?.report ?: fallback
+            if (spokenText.isNullOrBlank()) {
+                Log.w(TAG, "Harbor completion report skipped: no OpenClaw or Harbor summary")
+                BleConnectionService.reportHarborCompletionReview(
+                    candidate.workspaceId,
+                    candidate.trackingId,
+                    candidate.fingerprint,
+                    HarborCompletionReviewOutcome.RETRY,
+                )
+                return@launch
+            }
+            Log.i(
+                TAG,
+                "Harbor completion report ready: workspace=${candidate.workspaceId} " +
+                    "source=${if (reviewed != null) "openclaw" else "harbor"}",
+            )
+            BleConnectionService.reportHarborCompletionReview(
+                candidate.workspaceId,
+                candidate.trackingId,
+                candidate.fingerprint,
+                HarborCompletionReviewOutcome.REPORTED,
+            )
+            queueHarborCompletionReport(spokenText)
+        }
     }
 
-    private fun speakHarborAnnouncement(text: String): Boolean {
+    internal fun onInteractionModeChanged(mode: InteractionMode) {
+        if (mode != InteractionMode.HARBOR) {
+            cancelHarborCompletionWork(clearPendingSpeech = true)
+        }
+    }
+
+    private fun queueHarborCompletionReport(text: String) {
+        pendingHarborCompletionReport = text
+        Log.i(TAG, "Harbor completion speech queued: chars=${text.length}")
+        harborCompletionSpeechJob?.cancel()
+        harborCompletionSpeechJob = scope.launch {
+            while (isActive && BleConnectionService.interactionMode.value == InteractionMode.HARBOR) {
+                val pending = pendingHarborCompletionReport ?: return@launch
+                val state = BleConnectionService.voiceState.value
+                val available = (state == VoiceState.READY || state == VoiceState.ERROR) &&
+                    pendingHarborCommand == null && !harborConfirmInterpreting && !harborSubmitInFlight
+                if (available && speakHarborAnnouncement(pending)) {
+                    Log.i(TAG, "Harbor completion speech started")
+                    if (pendingHarborCompletionReport == pending) {
+                        pendingHarborCompletionReport = null
+                    }
+                    return@launch
+                }
+                delay(HARBOR_COMPLETION_SPEECH_RETRY_MS)
+            }
+        }
+    }
+
+    private fun cancelHarborCompletionWork(clearPendingSpeech: Boolean) {
+        if (harborCompletionReviewJob?.isActive == true) harborInterpreter.cancel()
+        harborCompletionReviewJob?.cancel()
+        harborCompletionReviewJob = null
+        if (clearPendingSpeech) {
+            harborCompletionSpeechJob?.cancel()
+            harborCompletionSpeechJob = null
+            pendingHarborCompletionReport = null
+        }
+    }
+
+    private fun speakHarborAnnouncement(
+        text: String,
+        manageVoiceState: Boolean = true,
+    ): Boolean {
         if (!ttsReady || text.isBlank()) return false
         val chunks = TtsTextFormatter.toSpeakableChunks(
             text = text,
@@ -1078,11 +1194,13 @@ internal class VoiceProcessor(
             override fun onStart(utteranceId: String?) = Unit
 
             override fun onDone(utteranceId: String?) {
-                if (utteranceId == finalUtteranceId &&
-                    BleConnectionService.voiceState.value == VoiceState.SPEAKING
-                ) {
+                if (utteranceId == finalUtteranceId) {
                     BleConnectionService.setPhonePlaybackActive(false)
-                    BleConnectionService.setVoiceState(VoiceState.READY)
+                    if (manageVoiceState &&
+                        BleConnectionService.voiceState.value == VoiceState.SPEAKING
+                    ) {
+                        BleConnectionService.setVoiceState(VoiceState.READY)
+                    }
                 }
             }
 
@@ -1090,17 +1208,21 @@ internal class VoiceProcessor(
             override fun onError(utteranceId: String?) {
                 if (utteranceId == finalUtteranceId) {
                     BleConnectionService.setPhonePlaybackActive(false)
-                    if (BleConnectionService.voiceState.value == VoiceState.SPEAKING) {
+                    if (manageVoiceState &&
+                        BleConnectionService.voiceState.value == VoiceState.SPEAKING
+                    ) {
                         BleConnectionService.setVoiceState(VoiceState.READY)
                     }
                 }
             }
         })
         BleConnectionService.setPhonePlaybackActive(true)
-        BleConnectionService.setVoiceState(VoiceState.SPEAKING)
+        if (manageVoiceState) BleConnectionService.setVoiceState(VoiceState.SPEAKING)
         if (speakWithFallbacks(chunks, utterancePrefix, "ja")) return true
         BleConnectionService.setPhonePlaybackActive(false)
-        BleConnectionService.setVoiceState(VoiceState.READY)
+        if (manageVoiceState && BleConnectionService.voiceState.value == VoiceState.SPEAKING) {
+            BleConnectionService.setVoiceState(VoiceState.READY)
+        }
         return false
     }
 
@@ -2594,6 +2716,7 @@ internal class VoiceProcessor(
     }
 
     fun shutdown() {
+        cancelHarborCompletionWork(clearPendingSpeech = true)
         tts?.stop()
         BleConnectionService.setPhonePlaybackActive(false)
         tts?.shutdown()
@@ -2667,3 +2790,4 @@ internal class VoiceProcessor(
 }
 
 private const val HARNESS_CONVERSATION_ID = "harness-node"
+private const val HARBOR_COMPLETION_SPEECH_RETRY_MS = 500L

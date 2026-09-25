@@ -582,6 +582,7 @@ class BleConnectionService : Service() {
             if (mode != InteractionMode.HARBOR) service?.harborMirrorController?.setMode(mode)
             service?.openClawMirrorController?.setMode(mode)
             _interactionMode.value = mode
+            service?.voiceProcessor?.onInteractionModeChanged(mode)
             InteractionModePreferences(context).setMode(mode)
             if (mode == InteractionMode.EPUB) EpubReaderHub.enterAsync(context)
             setErrorMessage("")
@@ -643,6 +644,27 @@ class BleConnectionService : Service() {
 
         internal fun harborInterpretContext(): HarborInterpretContext? =
             instance?.harborMirrorController?.interpretContext()
+
+        internal fun harborFallbackSpokenSummary(workspaceId: String): HarborSpokenSummary? =
+            instance?.harborMirrorController?.fallbackSpokenSummary(workspaceId)
+
+        internal fun reportHarborCompletionReview(
+            workspaceId: String,
+            trackingId: Long,
+            fingerprint: String,
+            outcome: HarborCompletionReviewOutcome,
+        ) {
+            instance?.harborMirrorController?.onCompletionReviewResult(
+                workspaceId,
+                trackingId,
+                fingerprint,
+                outcome,
+            )
+        }
+
+        internal fun cancelHarborCompletionTracking() {
+            instance?.harborMirrorController?.cancelCompletionTracking()
+        }
 
         internal fun submitHarborCommand(args: HarborCommandArgs): String {
             val controller = instance?.harborMirrorController
@@ -786,8 +808,8 @@ class BleConnectionService : Service() {
         harborMirrorController = HarborMirrorController(
             context = applicationContext,
             scope = serviceScope,
-            onSpokenSummary = { summary ->
-                voiceProcessor?.speakHarborWorkSummary(summary) == true
+            onCompletionCandidate = { candidate ->
+                voiceProcessor?.reviewHarborCompletion(candidate)
             },
         ).also { controller ->
             _harborConnectionState.value = controller.state.value

@@ -73,6 +73,12 @@ class HarborG2ViewTest {
     }
 
     @Test
+    fun `confirmation tap acknowledgements use the requested short phrases`() {
+        assertEquals("実行します", harborExecutionAcknowledgementSpeech())
+        assertEquals("キャンセルします", harborCancellationAcknowledgementSpeech())
+    }
+
+    @Test
     fun `work summary speech names Claude Code or Codex and includes its question`() {
         assertEquals(
             "Claude Codeの作業内容です。テストまで完了しました。" +

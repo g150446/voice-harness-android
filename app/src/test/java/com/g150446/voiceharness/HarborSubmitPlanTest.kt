@@ -52,6 +52,43 @@ class HarborSubmitPlanTest {
             plan.operations,
         )
         assertEquals("/model → ↓ → Enter を送りました", plan.message)
+        assertEquals(listOf("ws-a"), harborCompletionWorkspaceIds(plan))
+    }
+
+    @Test
+    fun `only submitted instructions and enter arm completion reporting`() {
+        val draft = HarborSubmitPlan(
+            operations = listOf(
+                HarborOperation.Instruction("ws-a", "draft", submit = false),
+                HarborOperation.Key("ws-a", "down"),
+                HarborOperation.SetMode("ws-a", ClaudeCodeMode.PLAN),
+                HarborOperation.Activate("ws-b"),
+            ),
+            message = "",
+        )
+        val submitted = HarborSubmitPlan(
+            operations = listOf(
+                HarborOperation.Instruction("ws-a", "run", submit = true),
+                HarborOperation.Key("ws-a", "enter"),
+            ),
+            message = "",
+        )
+
+        assertTrue(harborCompletionWorkspaceIds(draft).isEmpty())
+        assertEquals(listOf("ws-a"), harborCompletionWorkspaceIds(submitted))
+    }
+
+    @Test
+    fun `completion agent falls back to the workspace process`() {
+        assertEquals(
+            "claude",
+            HarborWorkspace(
+                id = "ws",
+                name = "repo",
+                selected = true,
+                process = "claude",
+            ).completionAgent(),
+        )
     }
 
     @Test

@@ -115,6 +115,21 @@ Harbor モードの音声は、ワークスペース単位の OpenClaw セッシ
   `openclaw/harbor-voice` を入れる。エージェントが自分のツールでタップ確認を素通りして
   端末に打ち込むことがなくなる。agent を増やすと fleet になるので、上の「複数 agent」も参照。
 
+### Terminal Harbor の完了音声報告
+
+Harborモード中はG2接続の有無に関係なく、Androidが選択中workspaceの画面を1秒周期で取得する。
+確認済み音声指示の実行直前の画面を基準に追跡し、変化した画面が2秒安定すると、`GET /transcript` の最新会話（取得不能時は現在画面）を、音声解釈と
+同じ `agent:<harbor-agent>:<app-key>:harbor:<workspaceId>` セッションへ送る。完了確認リクエストには
+toolを一切渡さないため、OpenClawは結果を確認・要約できるがTerminal Harborを操作できない。
+
+OpenClawは `not_waiting / completed / question / permission / choice` を判定し、報告対象なら日本語の
+最大2文・160字を返す。処理中や単なるシェルプロンプトは読み上げない。`not_waiting` と一時障害は
+追跡を終了せず、間隔を空けて同一画面を再確認する。報告済みの音声指示は一度だけ
+読み上げ、新しい音声指示は最終表示が同文でも改めて追跡する。TTSが使用中なら生成済み報告を
+保持して空き次第読み、LLMを再呼び出ししない。OpenClawが未設定・到達不能・タイムアウト・不正応答の
+場合だけTerminal Harborの既存`g2-view`要約を読み上げる。G2上の表示は従来の`g2-view`のままで、
+OpenClaw報告は音声専用。
+
 ## OpenClawモード（G2）
 
 ホームの操作モードボタン（AI対話 / リーダー / Harbor / OpenClaw）か、音声指示

@@ -308,12 +308,20 @@ Gemma 4 LiteRT-LMで両方を処理する。モデル探索と状態管理は`Mo
   - 候補ロケールを順番に試しながら TTS を実行する
   - 長文応答は複数 utterance に分けてキューイングし、最後のチャンク完了で `READY` に戻す
   - Harbor確認ではAIの確認コメントだけを読み、画面上の操作案内は音声へ混ぜない
-  - Harborミラーの入力待ち要約は `Claude Code` / `Codex` の名前、作業要約、質問、選択肢を読み上げる
+  - Harbor完了候補を同じworkspace別OpenClawセッションで確認し、最大2文・160字の報告を読み上げる
+  - TTS競合時は生成済み報告だけを保留し、OpenClawを再呼び出ししない
 
 - `HarborMirrorController`
-  - workspace、agent、要約、質問、選択肢を `HarborSpokenSummary` として `VoiceProcessor` へ渡す
-  - 同じ要約の再読を抑止し、ライブ表示を挟んだ次の作業では抑止状態を解除する
-  - TTSが録音・応答・確認処理で使用中なら既読扱いにせず、後続ポーリングで再試行する
+  - 確認済み音声指示の実行直前に対象workspaceと画面fingerprintを記録し、変化後の2秒安定を検出する
+  - `not_waiting` は同一画面を最大3回、一時障害は30秒間隔でタイムアウトまで再確認する
+  - 15分のタイムアウト、モード離脱、次の音声指示、報告生成のいずれかで追跡を終了する
+  - `workspace.agent` が空なら `process` を使い、G2未接続でも最新transcriptと画面を候補として渡す
+  - G2表示には従来のTerminal Harbor `g2-view`を使い、OpenClaw音声報告とは分離する
+
+- `OpenClawHarborInterpreter.kt`
+  - 音声解釈と完了確認を同じagent-scoped workspaceセッションへ直列化する
+  - 完了確認にはtoolを公開せず、`not_waiting / completed / question / permission / choice`を返させる
+  - OpenClaw障害時だけTerminal Harborの既存要約へフォールバックする
 
 ## AI返答の出力先
 

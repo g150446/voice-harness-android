@@ -5,6 +5,8 @@ import android.util.Log
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
@@ -27,6 +29,7 @@ internal class OpenClawHarborInterpreter(
     private val httpClient: OkHttpClient = defaultClient(),
 ) {
     private val activeClient = AtomicReference<OpenClawApiClient?>(null)
+    private val requestMutex = Mutex()
 
     fun isConfigured(): Boolean {
         val baseUrl = OpenClawPrefs.getBaseUrl(appContext)
@@ -34,12 +37,37 @@ internal class OpenClawHarborInterpreter(
             (baseUrl.startsWith("http://") || baseUrl.startsWith("https://"))
     }
 
-    suspend fun interpret(request: ChatRequest): Result<ChatResult> = withContext(Dispatchers.IO) {
-        runCatching {
-            val started = System.currentTimeMillis()
-            val result = client().also(activeClient::set).chat(request)
-            Log.i(TAG, "Harbor interpret latency=${System.currentTimeMillis() - started}ms")
-            result
+    suspend fun interpret(request: ChatRequest): Result<ChatResult> {
+        // A fresh user command takes priority over a background completion review.
+        cancel()
+        return withContext(Dispatchers.IO) {
+            requestMutex.withLock {
+                runClientCall("interpret") { it.chat(request) }
+            }
+        }
+    }
+
+    suspend fun reviewCompletion(candidate: HarborCompletionCandidate): Result<HarborCompletionReview> =
+        withContext(Dispatchers.IO) {
+            requestMutex.withLock {
+                runClientCall("completion review") { it.reviewHarborCompletion(candidate) }
+                    .mapCatching { HarborCompletionPrompt.parse(it.text) }
+            }
+        }
+
+    private inline fun runClientCall(
+        label: String,
+        call: (OpenClawApiClient) -> ChatResult,
+    ): Result<ChatResult> = runCatching {
+        val started = System.currentTimeMillis()
+        val current = client()
+        activeClient.set(current)
+        try {
+            call(current).also {
+                Log.i(TAG, "Harbor $label latency=${System.currentTimeMillis() - started}ms")
+            }
+        } finally {
+            activeClient.compareAndSet(current, null)
         }
     }
 

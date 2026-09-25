@@ -436,9 +436,9 @@ class VoiceProcessorDoubleTapTest {
     }
 
     @Test
-    fun `Harbor confirm double tap during interpretation interrupts instead of re-recording`() {
+    fun `Harbor confirm double tap during interpretation cancels the pending command`() {
         assertEquals(
-            RecordingTapAction.INTERRUPT,
+            RecordingTapAction.CANCEL_HARBOR,
             recordingTapAction(
                 mode = RecordingTapMode.SINGLE,
                 event = RecordingTapEvent.DOUBLE,

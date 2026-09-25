@@ -207,6 +207,46 @@ class OpenClawApiClientTest {
     }
 
     @Test
+    fun `completion review reuses the interpretation session without tools`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                MockResponse().setBody(
+                    """{"choices":[{"message":{"content":"{\"state\":\"completed\",\"report\":\"完了しました。\"}"}}]}""",
+                ),
+            )
+            val client = OpenClawApiClient(
+                baseUrl = server.url("/").toString(),
+                token = "gateway-secret",
+                sessionKey = "browser-session",
+                httpClient = OkHttpClient(),
+                harborSessionBase = "voice-harness:app",
+                harborModel = "openclaw/harbor-voice",
+            )
+
+            client.reviewHarborCompletion(
+                HarborCompletionCandidate(
+                    workspaceId = "ws-a",
+                    workspaceName = "repo",
+                    agent = "codex",
+                    fingerprint = "abc",
+                    screen = "Done",
+                    transcript = "assistant: Done",
+                ),
+            )
+
+            val recorded = server.takeRequest()
+            val body = recorded.body.readUtf8()
+            assertEquals(
+                "agent:harbor-voice:voice-harness:app:harbor:ws-a",
+                recorded.getHeader("x-openclaw-session-key"),
+            )
+            assertTrue(body.contains("openclaw/harbor-voice"))
+            assertTrue(!body.contains("\"tools\""))
+            assertTrue(!body.contains("\"tool_choice\""))
+        }
+    }
+
+    @Test
     fun `a named agent scopes both the chat and the interpretation session`() {
         MockWebServer().use { server ->
             repeat(2) {

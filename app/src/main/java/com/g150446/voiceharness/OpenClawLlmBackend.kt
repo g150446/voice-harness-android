@@ -48,6 +48,32 @@ internal class OpenClawApiClient(
         return execute(call) { responseBody -> OpenClawChatRequestBuilder.parseChatResponse(responseBody) }
     }
 
+    /** Uses the exact Harbor workspace session, but exposes no terminal-control tools. */
+    fun reviewHarborCompletion(candidate: HarborCompletionCandidate): ChatResult {
+        val target = harborModel
+        val key = agentScopedSessionKey(
+            target,
+            harborSessionKey(harborSessionBase, candidate.workspaceId),
+        )
+        val request = ChatRequest(
+            conversationHistory = listOf(
+                ConversationTurn(
+                    role = "user",
+                    content = HarborCompletionPrompt.build(candidate),
+                ),
+            ),
+            languageCode = "ja",
+        )
+        val body = OpenClawChatRequestBuilder.buildRequestBody(request, model = target)
+        val call = httpClient.newCall(
+            authorizedRequest("${normalizedBaseUrl()}/v1/chat/completions")
+                .addHeader("x-openclaw-session-key", key)
+                .post(body.toRequestBody(JSON_MEDIA))
+                .build(),
+        )
+        return execute(call) { responseBody -> OpenClawChatRequestBuilder.parseChatResponse(responseBody) }
+    }
+
     fun testConnection(): String {
         val call = httpClient.newCall(
             authorizedRequest("${normalizedBaseUrl()}/v1/models").get().build(),
