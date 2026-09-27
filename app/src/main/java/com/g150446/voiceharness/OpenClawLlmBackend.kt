@@ -48,6 +48,27 @@ internal class OpenClawApiClient(
         return execute(call) { responseBody -> OpenClawChatRequestBuilder.parseChatResponse(responseBody) }
     }
 
+    /**
+     * Answers a read step from the screen in the workspace's own session, so a later
+     * 「さっきの残量は？」 can be answered from it. Like the completion review, no tools.
+     */
+    fun answerHarborScreenQuestion(workspaceId: String, prompt: String): ChatResult {
+        val target = harborModel
+        val key = agentScopedSessionKey(target, harborSessionKey(harborSessionBase, workspaceId))
+        val request = ChatRequest(
+            conversationHistory = listOf(ConversationTurn(role = "user", content = prompt)),
+            languageCode = "ja",
+        )
+        val body = OpenClawChatRequestBuilder.buildRequestBody(request, model = target)
+        val call = httpClient.newCall(
+            authorizedRequest("${normalizedBaseUrl()}/v1/chat/completions")
+                .addHeader("x-openclaw-session-key", key)
+                .post(body.toRequestBody(JSON_MEDIA))
+                .build(),
+        )
+        return execute(call) { responseBody -> OpenClawChatRequestBuilder.parseChatResponse(responseBody) }
+    }
+
     /** Uses the exact Harbor workspace session, but exposes no terminal-control tools. */
     fun reviewHarborCompletion(candidate: HarborCompletionCandidate): ChatResult {
         val target = harborModel

@@ -26,6 +26,8 @@ internal enum class HarborStepAction {
     INSTRUCTION,
     KEY,
     MODE,
+    /** Read the screen and tell the user the answer to [HarborCommandStep.question]. */
+    READ,
 }
 
 /**
@@ -45,6 +47,8 @@ internal data class HarborCommandStep(
     /** Press Enter after the text. False leaves it typed but unsent (Harbor's 貼付). */
     val submit: Boolean = true,
     val waitMs: Int = HARBOR_STEP_DELAY_MS,
+    /** What to find on the screen when [action] is READ (「残りの使用量」). */
+    val question: String = "",
 )
 
 internal data class HarborCommandArgs(
@@ -171,6 +175,8 @@ internal object HarborCommandTool {
     /** How a mode step reads on the confirmation screen; the press count is not ours to promise. */
     fun modeLabel(mode: ClaudeCodeMode?): String = "モード→${(mode ?: ClaudeCodeMode.NORMAL).label}"
 
+    fun readLabel(question: String): String = "読取: ${question.take(16)}"
+
     /** One line naming every step, so a single tap never runs something the user cannot see. */
     fun stepsPreview(args: HarborCommandArgs): String {
         if (args.action == HarborCommandAction.SWITCH_WORKSPACE) return ""
@@ -185,6 +191,7 @@ internal object HarborCommandTool {
             when (step.action) {
                 HarborStepAction.KEY -> keyLabel(step.key ?: "enter")
                 HarborStepAction.MODE -> modeLabel(step.mode)
+                HarborStepAction.READ -> readLabel(step.question)
                 HarborStepAction.INSTRUCTION -> {
                     val text = step.command.take(24) + if (step.command.length > 24) "…" else ""
                     if (step.submit) text else "$text(貼付)"
@@ -208,6 +215,14 @@ internal object HarborCommandTool {
             "(エンターを送って / この内容で送信 → enter; 止めて → escape; 中断して → ctrl-c). " +
             "Use steps for anything that takes more than one key or line, so the whole sequence " +
             "runs under one confirmation. " +
+            "When the user chains several requests (「〜して、〜して、〜して」), put every one " +
+            "of them into steps in the spoken order; never drop a later part. " +
+            "When the user wants to know something the screen will show (「残りの使用量を確認して」 " +
+            "/ 「結果を教えて」), add a step action=read with question naming what to find; the " +
+            "app reads the screen and tells the user. Place it after the step that brings the " +
+            "information up and before any key that closes it. For example 「usageコマンドを送って、" +
+            "残りの使用量を確認して、Escapeを送って」 is steps [instruction \"/usage\", read " +
+            "\"残りの使用量\", key escape]. " +
             "Agent modes are action=mode. For Codex, normal and plan switch its Default/Plan " +
             "collaboration mode with Shift+Tab (「Codexを通常モードに戻して」 means mode=normal; " +
             "「Codexをプランモードにして」 means mode=plan). Claude Code permission modes " +
@@ -303,7 +318,21 @@ internal object HarborCommandTool {
                                         put("instruction")
                                         put("key")
                                         put("mode")
+                                        put("read")
                                     })
+                                    put(
+                                        "description",
+                                        "read = read the screen and tell the user the answer to " +
+                                            "question; sends nothing to the terminal.",
+                                    )
+                                })
+                                put("question", JSONObject().apply {
+                                    put("type", "string")
+                                    put(
+                                        "description",
+                                        "What to find on the screen when action=read, in Japanese " +
+                                            "(for example 「残りの使用量」).",
+                                    )
                                 })
                                 put("command", JSONObject().apply {
                                     put("type", "string")
@@ -461,7 +490,8 @@ internal object HarborCommandTool {
                     action = when (first.action) {
                         HarborStepAction.KEY -> HarborCommandAction.KEY
                         HarborStepAction.MODE -> HarborCommandAction.MODE
-                        HarborStepAction.INSTRUCTION -> HarborCommandAction.INSTRUCTION
+                        HarborStepAction.INSTRUCTION, HarborStepAction.READ ->
+                            HarborCommandAction.INSTRUCTION
                     },
                     command = first.command,
                     key = first.key,
@@ -573,6 +603,11 @@ internal object HarborCommandTool {
                 // cannot verify on screen, so the step is dropped instead of guessed at.
                 val mode = ClaudeCodeMode.fromWire(item.optString("mode")) ?: continue
                 steps += HarborCommandStep(HarborStepAction.MODE, mode = mode, waitMs = waitMs)
+            } else if (action == "read") {
+                // Nothing to look for is nothing to report; the step is dropped, not guessed.
+                val question = item.optString("question").trim()
+                if (question.isEmpty()) continue
+                steps += HarborCommandStep(HarborStepAction.READ, question = question, waitMs = waitMs)
             } else {
                 val command = item.optString("command").trim()
                 if (command.isEmpty()) continue
@@ -592,6 +627,7 @@ internal object HarborCommandTool {
             when (step.action) {
                 HarborStepAction.KEY -> keyLabel(step.key ?: "enter")
                 HarborStepAction.MODE -> modeLabel(step.mode)
+                HarborStepAction.READ -> readLabel(step.question)
                 HarborStepAction.INSTRUCTION -> step.command.take(20)
             }
         }

@@ -55,6 +55,14 @@ internal class OpenClawHarborInterpreter(
             }
         }
 
+    suspend fun answerScreenQuestion(workspaceId: String, prompt: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            requestMutex.withLock {
+                runClientCall("screen question") { it.answerHarborScreenQuestion(workspaceId, prompt) }
+                    .mapCatching { it.text.trim().ifEmpty { error("空の応答です") } }
+            }
+        }
+
     private inline fun runClientCall(
         label: String,
         call: (OpenClawApiClient) -> ChatResult,

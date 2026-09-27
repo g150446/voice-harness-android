@@ -682,10 +682,13 @@ class BleConnectionService : Service() {
             instance?.harborMirrorController?.cancelCompletionTracking()
         }
 
-        internal fun submitHarborCommand(args: HarborCommandArgs): String {
+        internal fun submitHarborCommand(
+            args: HarborCommandArgs,
+            reader: (question: String, screen: String) -> String? = { _, _ -> null },
+        ): String {
             val controller = instance?.harborMirrorController
                 ?: error("Terminal Harborに接続できません")
-            return controller.submitCommand(args)
+            return controller.submitCommand(args, reader)
         }
 
         internal fun pauseHarborMirror(paused: Boolean) {

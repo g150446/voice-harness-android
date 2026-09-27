@@ -494,7 +494,8 @@ class VoiceProcessorDoubleTapTest {
         assertTrue(harborAutoRunEligible(args(HarborCommandAction.KEY, key = "ctrl-c")))
         assertTrue(harborAutoRunEligible(args(HarborCommandAction.KEY, key = "enter")))
         assertFalse(harborAutoRunEligible(args(HarborCommandAction.INSTRUCTION)))
-        assertFalse(
+        // A known slash command and keys only: runs untapped as a whole.
+        assertTrue(
             harborAutoRunEligible(
                 args(
                     HarborCommandAction.INSTRUCTION,
@@ -523,6 +524,36 @@ class VoiceProcessorDoubleTapTest {
                 args(HarborCommandAction.KEY, key = "enter", needsClarification = true),
             ),
         )
+    }
+
+    @Test
+    fun `a sequence of safe steps runs without confirmation`() {
+        fun sequence(vararg steps: HarborCommandStep) = HarborCommandArgs(
+            action = HarborCommandAction.INSTRUCTION,
+            intentSummary = "確認",
+            steps = steps.toList(),
+        )
+        val usage = HarborCommandStep(HarborStepAction.INSTRUCTION, command = "/usage")
+        val read = HarborCommandStep(HarborStepAction.READ, question = "残りの使用量")
+        val escape = HarborCommandStep(HarborStepAction.KEY, key = "escape")
+        assertTrue(harborAutoRunEligible(sequence(usage, read, escape)))
+        assertTrue(harborAutoRunEligible(sequence(read)))
+        assertFalse(
+            harborAutoRunEligible(
+                sequence(usage, read, HarborCommandStep(HarborStepAction.INSTRUCTION, command = "続けて")),
+            ),
+        )
+        assertFalse(
+            harborAutoRunEligible(
+                sequence(HarborCommandStep(HarborStepAction.INSTRUCTION, command = "/my-deploy"), escape),
+            ),
+        )
+        assertFalse(
+            harborAutoRunEligible(
+                sequence(HarborCommandStep(HarborStepAction.INSTRUCTION, command = "/exit"), escape),
+            ),
+        )
+        assertEquals("手順を実行します", harborAutoRunSpeech(sequence(usage, read, escape)))
     }
 
     @Test

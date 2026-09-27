@@ -15,6 +15,43 @@ class HarborCommandToolTest {
     }
 
     @Test
+    fun `a chained request keeps its read step and the key after it`() {
+        val args = HarborCommandTool.parse(
+            """{"action":"instruction","intent_summary":"","steps":[
+                {"action":"instruction","command":"/usage"},
+                {"action":"read","question":"残りの使用量"},
+                {"action":"read","question":"  "},
+                {"action":"key","key":"escape"}]}""",
+        )
+        assertEquals(
+            listOf(HarborStepAction.INSTRUCTION, HarborStepAction.READ, HarborStepAction.KEY),
+            args.effectiveSteps.map { it.action },
+        )
+        assertEquals("残りの使用量", args.effectiveSteps[1].question)
+        assertEquals("/usage → 読取: 残りの使用量 → Esc", HarborCommandTool.stepsPreview(args))
+    }
+
+    @Test
+    fun `a request that starts with a read is an instruction with no text`() {
+        val args = HarborCommandTool.parse(
+            """{"action":"instruction","steps":[{"action":"read","question":"テスト結果"}]}""",
+            fallbackCommand = "テスト結果を教えて",
+        )
+        assertEquals(HarborCommandAction.INSTRUCTION, args.action)
+        assertEquals("", args.command)
+        assertEquals(HarborStepAction.READ, args.effectiveSteps.single().action)
+    }
+
+    @Test
+    fun `the tool offers a read step`() {
+        val step = HarborCommandTool.toolDefinitionJson().getJSONObject("function")
+            .getJSONObject("parameters").getJSONObject("properties")
+            .getJSONObject("steps").getJSONObject("items").getJSONObject("properties")
+        assertTrue(step.getJSONObject("action").getJSONArray("enum").toString().contains("\"read\""))
+        assertTrue(step.has("question"))
+    }
+
+    @Test
     fun `parse reads instruction command and intent summary`() {
         val args = HarborCommandTool.parse(
             """{"action":"instruction","command":"git push","intent_summary":"git push を送りますか？"}""",

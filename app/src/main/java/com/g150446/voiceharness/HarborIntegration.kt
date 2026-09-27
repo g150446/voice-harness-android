@@ -345,7 +345,10 @@ internal fun harborAutoRunSpeech(args: HarborCommandArgs): String {
     if (args.action == HarborCommandAction.SWITCH_WORKSPACE) {
         return "${args.workspace.orEmpty()}に切り替えます"
     }
-    val step = args.effectiveSteps.firstOrNull() ?: return harborExecutionAcknowledgementSpeech()
+    val steps = args.effectiveSteps
+    // A sequence is announced as a whole; what a read step finds is spoken once it is known.
+    if (steps.size > 1) return "手順を実行します"
+    val step = steps.firstOrNull() ?: return harborExecutionAcknowledgementSpeech()
     return when (step.action) {
         HarborStepAction.MODE -> "${(step.mode ?: ClaudeCodeMode.NORMAL).label}モードに切り替えます"
         HarborStepAction.KEY -> {
@@ -355,6 +358,7 @@ internal fun harborAutoRunSpeech(args: HarborCommandArgs): String {
         HarborStepAction.INSTRUCTION -> harborAutoRunSlashCommand(step.command)
             ?.let { "${it}コマンドを送ります" }
             ?: harborExecutionAcknowledgementSpeech()
+        HarborStepAction.READ -> "画面を確認します"
     }
 }
 
@@ -446,7 +450,22 @@ internal sealed interface HarborOperation {
         val agent: String? = null,
         override val waitMs: Int = HARBOR_MODE_SETTLE_MS,
     ) : HarborOperation
+
+    /**
+     * Read the screen and tell the user the answer to [question]. Sends nothing: it waits
+     * [settleMs] for the agent to draw what the previous step asked for (`/usage` fetches its
+     * numbers before painting them), then reads.
+     */
+    data class Read(
+        override val workspaceId: String,
+        val question: String,
+        val settleMs: Int = HARBOR_READ_SETTLE_MS,
+        override val waitMs: Int = HARBOR_STEP_DELAY_MS,
+    ) : HarborOperation
 }
+
+internal const val HARBOR_READ_SETTLE_MS = 1_500
+private const val HARBOR_READ_SCREEN_LINES = 200
 
 internal data class HarborSubmitPlan(
     val operations: List<HarborOperation>,
@@ -511,6 +530,12 @@ internal fun planHarborSubmit(
                 if (text.isEmpty()) error("送信する指示が空です")
                 HarborOperation.Instruction(targetId, text, step.submit, step.waitMs)
             }
+
+            HarborStepAction.READ -> HarborOperation.Read(
+                workspaceId = targetId,
+                question = step.question.trim().ifEmpty { error("読み取る内容が指定されていません") },
+                waitMs = step.waitMs,
+            )
         }
     }
     return HarborSubmitPlan(operations, describeHarborSteps(steps))
@@ -530,12 +555,14 @@ internal fun describeHarborSteps(steps: List<HarborCommandStep>): String {
             HarborStepAction.MODE -> ""
             HarborStepAction.INSTRUCTION ->
                 if (step.submit) "指示を送りました" else "指示を貼り付けました"
+            HarborStepAction.READ -> ""
         }
     }
     val sequence = steps.joinToString(" → ") { step ->
         when (step.action) {
             HarborStepAction.KEY -> HarborCommandTool.keyLabel(step.key ?: "enter")
             HarborStepAction.MODE -> HarborCommandTool.modeLabel(step.mode)
+            HarborStepAction.READ -> HarborCommandTool.readLabel(step.question)
             HarborStepAction.INSTRUCTION -> step.command.take(20)
         }
     }
@@ -1720,7 +1747,11 @@ internal class HarborMirrorController(
      * afterwards could only re-decide what the user had already approved — which is how
      * a confirmed instruction ended up switching workspaces instead of being sent.
      */
-    fun submitCommand(args: HarborCommandArgs): String {
+    fun submitCommand(
+        args: HarborCommandArgs,
+        /** Answers a read step's question from the screen and tells the user; null if not. */
+        reader: (question: String, screen: String) -> String? = { _, _ -> null },
+    ): String {
         val creds = credentials ?: error("Terminal Harborをペアリングしてください")
         val workspaces = client.listWorkspaces(creds)
         val plan = planHarborSubmit(args, workspaces)
@@ -1765,6 +1796,14 @@ internal class HarborMirrorController(
                     client.postKey(creds, operation.workspaceId, operation.key)
 
                 is HarborOperation.SetMode -> notes += applyAgentMode(creds, operation)
+
+                is HarborOperation.Read -> {
+                    Thread.sleep(operation.settleMs.toLong())
+                    val screen = filterHarborDisplayText(
+                        client.fetchScreen(creds, operation.workspaceId, HARBOR_READ_SCREEN_LINES).text,
+                    )
+                    reader(operation.question, screen)?.takeIf(String::isNotBlank)?.let(notes::add)
+                }
             }
             // The agent redraws between keys; sending the next one into a stale screen is how
             // a menu selection lands on the wrong row.
@@ -2030,17 +2069,24 @@ internal class HarborMirrorController(
     }
 }
 
-internal fun harborCompletionWorkspaceIds(plan: HarborSubmitPlan): List<String> = plan.operations
-    .filter(::startsAgentWork)
-    .map(HarborOperation::workspaceId)
-    .distinct()
+/**
+ * Workspaces to watch for the agent finishing. None when the plan reads the screen itself: the
+ * user has already been told what they asked about, and a later report would say it again.
+ */
+internal fun harborCompletionWorkspaceIds(plan: HarborSubmitPlan): List<String> {
+    if (plan.operations.any { it is HarborOperation.Read }) return emptyList()
+    return plan.operations
+        .filter(::startsAgentWork)
+        .map(HarborOperation::workspaceId)
+        .distinct()
+}
 
 internal fun HarborWorkspace.completionAgent(): String? = agent ?: process
 
 private fun startsAgentWork(operation: HarborOperation): Boolean = when (operation) {
     is HarborOperation.Instruction -> operation.submit
     is HarborOperation.Key -> operation.key == "enter"
-    is HarborOperation.Activate, is HarborOperation.SetMode -> false
+    is HarborOperation.Activate, is HarborOperation.SetMode, is HarborOperation.Read -> false
 }
 
 private const val HARBOR_COMPLETION_FINGERPRINT_LINES = 60

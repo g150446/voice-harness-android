@@ -14,6 +14,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -126,19 +127,29 @@ internal fun harborConfirmOutcome(pending: PendingHarborCommand?): HarborConfirm
 
 /**
  * Commands simple enough to run without a confirm tap: one mode change, one key, a workspace
- * switch, or one known slash command. Free text sent to the agent and multi-step plans still
- * wait for the tap.
+ * switch, one known slash command, one screen read — or a sequence made only of those
+ * (`/usage` → read → Esc). Free text sent to the agent still waits for the tap, alone or
+ * anywhere in a sequence.
  */
 internal fun harborAutoRunEligible(args: HarborCommandArgs): Boolean {
     if (args.needsClarification) return false
-    return when (args.action) {
-        HarborCommandAction.SWITCH_WORKSPACE -> !args.workspace.isNullOrBlank()
-        HarborCommandAction.MODE, HarborCommandAction.KEY -> args.effectiveSteps.size == 1
-        HarborCommandAction.INSTRUCTION -> args.effectiveSteps.singleOrNull()?.let { step ->
-            step.action == HarborStepAction.INSTRUCTION && step.submit &&
-                harborAutoRunSlashCommand(step.command) != null
-        } == true
+    if (args.action == HarborCommandAction.SWITCH_WORKSPACE) return !args.workspace.isNullOrBlank()
+    val steps = args.effectiveSteps
+    if (steps.size > 1) return steps.all(::harborStepAutoRunSafe)
+    val step = steps.singleOrNull() ?: return false
+    return when (step.action) {
+        HarborStepAction.MODE, HarborStepAction.KEY, HarborStepAction.READ -> true
+        HarborStepAction.INSTRUCTION -> step.submit && harborAutoRunSlashCommand(step.command) != null
     }
+}
+
+/**
+ * A step that may run untapped inside a sequence. A known slash command counts even unsent,
+ * since the keys that follow are also part of what was checked here (`/model` → ↓ → Enter).
+ */
+private fun harborStepAutoRunSafe(step: HarborCommandStep): Boolean = when (step.action) {
+    HarborStepAction.MODE, HarborStepAction.KEY, HarborStepAction.READ -> true
+    HarborStepAction.INSTRUCTION -> harborAutoRunSlashCommand(step.command) != null
 }
 
 /** Resolves tap ownership before any BLE command or pipeline side effect is performed. */
@@ -853,6 +864,7 @@ internal class VoiceProcessor(
             TAG,
             "Harbor intent: action=${interpreted.action} key=${interpreted.key} " +
                 "commandChars=${interpreted.command.length} " +
+                "steps=${interpreted.effectiveSteps.joinToString(",") { it.action.name }} " +
                 "clarify=${interpreted.needsClarification}",
         )
         if (harborAutoRunEligible(interpreted)) {
@@ -1116,7 +1128,17 @@ internal class VoiceProcessor(
         }
         harnessPipelineJob = scope.launch(Dispatchers.IO) {
             try {
-                val message = BleConnectionService.submitHarborCommand(pending.args)
+                val workspaceId = pending.args.workspaceId
+                val message = BleConnectionService.submitHarborCommand(pending.args) { question, screen ->
+                    // Runs on this IO coroutine's thread, between the steps it sits between.
+                    val answer = runBlocking { answerHarborScreenQuestion(workspaceId, question, screen) }
+                    BleConnectionService.setResponse(answer)
+                    EvenG2ReadingSession.publishResponse(answer)
+                    if (BleConnectionService.interactionMode.value == InteractionMode.HARBOR) {
+                        speakHarborAnnouncement(answer, manageVoiceState = false)
+                    }
+                    answer
+                }
                 Log.i(TAG, "Harbor confirm result: $message")
                 BleConnectionService.setResponse(message)
                 EvenG2ReadingSession.publishResponse(message)
@@ -1240,6 +1262,44 @@ internal class VoiceProcessor(
             )
             queueHarborCompletionReport(spokenText)
         }
+    }
+
+    /**
+     * A read step's answer. OpenClaw first, in the workspace's own session, then the cloud LLM
+     * — the same order as interpretation and completion review, so it still works with the
+     * Mac off the tailnet. Never throws: the user always hears something.
+     */
+    private suspend fun answerHarborScreenQuestion(
+        workspaceId: String?,
+        question: String,
+        screen: String,
+    ): String {
+        val prompt = HarborScreenQuestionPrompt.build(question, screen)
+        if (harborInterpreter.isConfigured() && workspaceId != null) {
+            harborInterpreter.answerScreenQuestion(workspaceId, prompt)
+                .onSuccess {
+                    Log.i(TAG, "Harbor screen question answered via OpenClaw")
+                    return it
+                }
+                .onFailure { Log.w(TAG, "Harbor screen question via OpenClaw failed: ${it.message}") }
+        }
+        val llm = ModelManager.currentLlmBackend(appContext)
+        if (aiBackend.ensureReady().isSuccess &&
+            (llm == LlmBackendId.GROQ || llm == LlmBackendId.OPENROUTER)
+        ) {
+            val request = ChatRequest(
+                conversationHistory = listOf(ConversationTurn(role = "user", content = prompt)),
+                languageCode = "ja",
+            )
+            aiBackend.chat(request)
+                .mapCatching { it.text.trim().ifEmpty { error("空の応答です") } }
+                .onSuccess {
+                    Log.i(TAG, "Harbor screen question answered via cloud LLM")
+                    return it
+                }
+                .onFailure { Log.w(TAG, "Harbor screen question via cloud LLM failed: ${it.message}") }
+        }
+        return "「$question」を画面から読み取れませんでした"
     }
 
     /** Same prompt and JSON contract as the OpenClaw review, sent to Groq/OpenRouter. */

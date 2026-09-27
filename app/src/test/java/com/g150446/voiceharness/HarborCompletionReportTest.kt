@@ -185,4 +185,13 @@ class HarborCompletionReportTest {
         assertTrue(prompt.contains("All tests passed"))
         assertTrue(prompt.contains("最大2文・160字"))
     }
+
+    @Test
+    fun `a screen question is answered from what is shown, not refused for its wording`() {
+        val prompt = HarborScreenQuestionPrompt.build("残りの使用量", "Current session 38% used")
+        assertTrue(prompt.contains("question: 残りの使用量"))
+        assertTrue(prompt.contains("Current session 38% used"))
+        assertTrue(prompt.contains("換算して答えて"))
+        assertTrue(prompt.contains("前置きはしないで"))
+    }
 }

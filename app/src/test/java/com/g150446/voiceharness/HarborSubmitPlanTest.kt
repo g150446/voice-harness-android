@@ -31,6 +31,25 @@ class HarborSubmitPlanTest {
     )
 
     @Test
+    fun `a read step becomes a read of the same workspace and turns off completion tracking`() {
+        val plan = planHarborSubmit(
+            args(
+                steps = listOf(
+                    HarborCommandStep(HarborStepAction.INSTRUCTION, command = "/usage"),
+                    HarborCommandStep(HarborStepAction.READ, question = "残りの使用量"),
+                    HarborCommandStep(HarborStepAction.KEY, key = "escape"),
+                ),
+            ),
+            workspaces,
+        )
+        assertEquals(
+            HarborOperation.Read("ws-a", "残りの使用量", settleMs = HARBOR_READ_SETTLE_MS),
+            plan.operations[1],
+        )
+        assertEquals(emptyList<String>(), harborCompletionWorkspaceIds(plan))
+    }
+
+    @Test
     fun `steps run in the order the model planned them`() {
         val plan = planHarborSubmit(
             args(

@@ -204,3 +204,21 @@ internal object HarborCompletionPrompt {
         return sentences.take(HARBOR_COMPLETION_REPORT_MAX_CHARS - 1).trimEnd() + "…"
     }
 }
+
+/** A read step: answer one question from what the terminal shows, for the user to hear. */
+internal object HarborScreenQuestionPrompt {
+    private const val MAX_SCREEN_CHARS = 12_000
+
+    fun build(question: String, screen: String): String = buildString {
+        appendLine("Terminal Harborの端末画面を読み、ユーザーの質問に日本語で最大2文で答えてください。")
+        appendLine("答えは読み上げられます。質問への答えそのものから始めてください。")
+        appendLine("画面の表記が質問と違う形でも、そこから答えられるなら換算して答えてください" +
+            "（例: 質問が「残りの使用量」で画面が「38% used」なら「残り62%です（38%使用）」）。")
+        appendLine("「記載されていません」「表記されていません」のような前置きはしないでください。" +
+            "関係する情報が画面に何も無いときだけ、無いと答えてください。")
+        appendLine("数値や期限は画面にあるものだけを使い、推測はしないでください。答えの文だけを返してください。")
+        appendLine("question: $question")
+        appendLine("current_terminal_screen:")
+        append(screen.takeLast(MAX_SCREEN_CHARS))
+    }
+}
