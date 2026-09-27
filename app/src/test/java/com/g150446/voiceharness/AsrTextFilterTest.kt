@@ -1,5 +1,6 @@
 package com.g150446.voiceharness
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -75,5 +76,37 @@ class AsrTextFilterTest {
         assertFalse(AsrTextFilter.isGarbageOrEmpty("うん"))
         assertFalse(AsrTextFilter.isGarbageOrEmpty("ありがとう"))
         assertFalse(AsrTextFilter.isGarbageOrEmpty("はい、今何時？"))
+    }
+
+    @Test
+    fun `an unfinished vocabulary term after the speech is cut`() {
+        val vocab = listOf("グラスモード変更", "パイロットモード", "Pilotモード", "Chrome")
+            .map { AsrVocabularyTerm(it) }
+        // Seen on the device with the Whisper prompt.
+        assertEquals(
+            "Chromeアプリを開いて",
+            AsrTextFilter.stripTrailingVocabularyFragment("Chromeアプリを開いてP", vocab),
+        )
+        assertEquals(
+            "表示されました",
+            AsrTextFilter.stripTrailingVocabularyFragment("表示されましたパイロットモ", vocab),
+        )
+        assertEquals(
+            "開いて。",
+            AsrTextFilter.stripTrailingVocabularyFragment("開いて。Pilot", vocab),
+        )
+        // Complete terms and ordinary endings stay.
+        assertEquals(
+            "パイロットモード",
+            AsrTextFilter.stripTrailingVocabularyFragment("パイロットモード", vocab),
+        )
+        assertEquals(
+            "ハーバーからパイロットモード",
+            AsrTextFilter.stripTrailingVocabularyFragment("ハーバーからパイロットモード", vocab),
+        )
+        assertEquals(
+            "Chromeを開いて",
+            AsrTextFilter.stripTrailingVocabularyFragment("Chromeを開いて", vocab),
+        )
     }
 }

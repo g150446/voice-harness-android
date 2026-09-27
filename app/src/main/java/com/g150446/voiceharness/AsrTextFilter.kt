@@ -36,6 +36,29 @@ object AsrTextFilter {
     private val leadingPunctOrSpace =
         Regex("^[\\s\\u3000.,!?？！。、，・\\-_/\\\\:：;；'\"“”‘’…·]+")
 
+    /**
+     * Whisper given a vocabulary `prompt` sometimes runs on into the start of a term after the
+     * speech ends: 「Chromeアプリを開いてP」, 「…表示されましたパイロットモ」. Such a tail — an
+     * unfinished term right after Japanese text, Latin or at least 3 characters long — is cut.
+     * Complete terms are kept, since the user may have said them.
+     */
+    fun stripTrailingVocabularyFragment(text: String, vocabulary: List<AsrVocabularyTerm>): String {
+        val trimmed = text.trim()
+        val forms = vocabulary.map { it.writtenForm.trim() }.filter { it.length >= 2 }
+        for (start in 1 until trimmed.length) {
+            val tail = trimmed.substring(start)
+            val before = trimmed[start - 1]
+            if (!cjkRegex.matches(before.toString()) && before !in "。、") continue
+            val latin = tail.all { it in 'A'..'Z' || it in 'a'..'z' }
+            if (!latin && tail.length < 3) continue
+            val unfinished = forms.any { form ->
+                form.length > tail.length && form.startsWith(tail, ignoreCase = true)
+            }
+            if (unfinished) return trimmed.substring(0, start).trimEnd()
+        }
+        return trimmed
+    }
+
     fun isGarbageOrEmpty(
         text: String,
         vocabulary: List<AsrVocabularyTerm> = AsrVocabularyCatalog.builtIn

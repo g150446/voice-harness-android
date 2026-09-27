@@ -50,8 +50,15 @@ internal fun glassesModeSwitchRemainder(text: String): String? {
     return trimmed.substring(match.range.last + 1).trim()
 }
 
+/**
+ * ASR often trails a short command with a clipped sound: 「パイロットモードに切り替えてパッ」,
+ * 「Chromeアプリを開いてP」. Up to two katakana or Latin letters after the command are ignored.
+ */
+internal const val ASR_TAIL_NOISE = "(?:[ァ-ヶーッA-Za-z]{1,2})?"
+
 private val SPOKEN_MODE_SWITCH = Regex(
-    "^(.{1,20}?)モード(?:に|へ)?(?:切り?替え|切替|変更|チェンジ|移動)?(?:して|て|てください|る)?$",
+    "^(.{1,20}?)モード(?:に|へ)?(?:切り?替え|切替|変更|チェンジ|移動)?(?:して|て|てください|る)?" +
+        "$ASR_TAIL_NOISE$",
 )
 
 /**
@@ -60,7 +67,7 @@ private val SPOKEN_MODE_SWITCH = Regex(
  * (Claude Code's "プランモード"), is left to the LLM.
  */
 internal fun spokenInteractionModeSwitch(text: String): InteractionMode? {
-    val compact = text.replace(Regex("[\\s　、。,.!！?？・:：]+"), "")
+    val compact = collapseRepeatedUtterance(text.replace(Regex("[\\s　、。,.!！?？・:：]+"), ""))
     val name = SPOKEN_MODE_SWITCH.matchEntire(compact)?.groupValues?.get(1) ?: return null
     return parseInteractionMode(name)
 }

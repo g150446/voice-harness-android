@@ -647,26 +647,9 @@ internal class VoiceProcessor(
             }
             try {
                 aiBackend.ensureReady().getOrThrow()
-                val vocab = buildList {
-                    add(AsrVocabularyTerm(GLASSES_MODE_SWITCH_PHRASE))
-                    add(AsrVocabularyTerm("ハーバーモード"))
-                    add(AsrVocabularyTerm("パイロットモード"))
-                    add(AsrVocabularyTerm("Pilotモード"))
-                    add(AsrVocabularyTerm("リーダーモード"))
-                    add(AsrVocabularyTerm("OpenClawモード"))
-                    add(AsrVocabularyTerm("EPUBモード"))
-                    if (interactionMode == InteractionMode.EPUB) {
-                        add(AsrVocabularyTerm("目次"))
-                        EpubReaderHub.get(appContext).speechHints().forEach { add(AsrVocabularyTerm(it)) }
-                    }
-                    add(AsrVocabularyTerm("Terminal Harbor"))
-                    add(AsrVocabularyTerm("ページ進めて"))
-                    add(AsrVocabularyTerm("ページ戻して"))
-                    BleConnectionService.harborSpeechHints()
-                        .take(24)
-                        .forEach { add(AsrVocabularyTerm(it)) }
-                }
-                val raw = aiBackend.transcribe(wav, vocab).getOrThrow().text.trim()
+                val asrResult = aiBackend.transcribe(wav, commandVocabulary(interactionMode))
+                    .getOrThrow()
+                val raw = asrResult.text.trim()
                 BleConnectionService.setTranscription(raw)
                 val modeRemainder = glassesModeSwitchRemainder(raw)
                 if (modeRemainder != null) {
@@ -701,7 +684,7 @@ internal class VoiceProcessor(
                         presentOpenClawConfirm(raw)
                         BleConnectionService.setVoiceState(VoiceState.READY)
                     }
-                    InteractionMode.AI -> transcribeAndRespondOnDevice(wav)
+                    InteractionMode.AI -> transcribeAndRespondOnDevice(wav, asrResult)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -763,6 +746,49 @@ internal class VoiceProcessor(
             return
         }
         applyInteractionModeSwitch(mode)
+    }
+
+    /**
+     * Spellings the STT model is told about before it hears the speech: the app's mode names
+     * always, plus what the current mode's commands name (installed apps in Pilot).
+     */
+    private fun commandVocabulary(mode: InteractionMode): List<AsrVocabularyTerm> = buildList {
+        add(AsrVocabularyTerm(GLASSES_MODE_SWITCH_PHRASE))
+        add(AsrVocabularyTerm("パイロットモード"))
+        add(AsrVocabularyTerm("Pilotモード"))
+        add(AsrVocabularyTerm("ハーバーモード"))
+        add(AsrVocabularyTerm("リーダーモード"))
+        add(AsrVocabularyTerm("OpenClawモード"))
+        add(AsrVocabularyTerm("EPUBモード"))
+        add(AsrVocabularyTerm("Terminal Harbor"))
+        when (mode) {
+            InteractionMode.AI ->
+                AppLauncher.speechHints(appContext).forEach { add(AsrVocabularyTerm(it)) }
+            InteractionMode.EPUB -> {
+                add(AsrVocabularyTerm("目次"))
+                EpubReaderHub.get(appContext).speechHints().forEach { add(AsrVocabularyTerm(it)) }
+            }
+            InteractionMode.READER -> {
+                add(AsrVocabularyTerm("ページ進めて"))
+                add(AsrVocabularyTerm("ページ戻して"))
+            }
+            InteractionMode.HARBOR ->
+                BleConnectionService.harborSpeechHints()
+                    .take(24)
+                    .forEach { add(AsrVocabularyTerm(it)) }
+            InteractionMode.OPENCLAW -> Unit
+        }
+    }.take(AsrVocabularyCatalog.MAX_TERMS_IN_PROMPT)
+
+    /**
+     * Pilot opens an installed app when the whole utterance only asks for it ("Chromeを開いて").
+     * Returns what the user was told, or null to leave the utterance to the LLM.
+     */
+    private fun pilotAppLaunchReply(query: String): String? {
+        if (BleConnectionService.interactionMode.value != InteractionMode.AI) return null
+        val target = spokenAppLaunchTarget(query) ?: return null
+        Log.i(TAG, "Voice app launch: $target")
+        return AppLauncher.openSpoken(appContext, target)
     }
 
     /** Switches the app mode by voice; returns what the user was told. */
@@ -1331,7 +1357,11 @@ internal class VoiceProcessor(
 
     // --- Shared transcription + chat logic ---
 
-    private suspend fun transcribeAndRespondOnDevice(file: File) {
+    /** [preTranscribed] is the G2 command recording's ASR, so it is not transcribed twice. */
+    private suspend fun transcribeAndRespondOnDevice(
+        file: File,
+        preTranscribed: TranscriptionResult? = null,
+    ) {
         BleConnectionService.setVoiceState(VoiceState.TRANSCRIBING)
         BleConnectionService.setErrorMessage("")
         responseLanguageCode = null
@@ -1361,7 +1391,11 @@ internal class VoiceProcessor(
                 BleConnectionService.setErrorMessage("")
             }
 
-            val asr = aiBackend.transcribe(file)
+            val asr = preTranscribed?.let { Result.success(it) }
+                ?: aiBackend.transcribe(
+                    file,
+                    commandVocabulary(BleConnectionService.interactionMode.value),
+                )
             if (asr.isFailure) {
                 val errMsg = "ASR error: ${asr.exceptionOrNull()?.message}"
                 BleConnectionService.setErrorMessage(errMsg)
@@ -1472,6 +1506,19 @@ internal class VoiceProcessor(
                 )
                 presentResponse(message)
                 return
+            }
+            if (!isOpenClawRoute()) {
+                pilotAppLaunchReply(query)?.let { message ->
+                    BleConnectionService.setResponse(message)
+                    saveHistoryEntry(
+                        transcription = query,
+                        response = message,
+                        isSilent = false,
+                        errorMessage = "",
+                    )
+                    presentResponse(message)
+                    return
+                }
             }
             val screenContext = takePendingHarnessScreen()
             val readerModeRequested = ReadingPassthrough.isRequested(query)
@@ -1678,6 +1725,24 @@ internal class VoiceProcessor(
                 transcribedText = query,
             )
             responseLanguageCode = language
+            pilotAppLaunchReply(query)?.let { message ->
+                BleConnectionService.setResponse(message)
+                saveHistoryEntry(query, message, isSilent = false, errorMessage = "")
+                notifyAssistantUi(
+                    requestId = requestId,
+                    conversationId = conversationId,
+                    text = message,
+                    success = true,
+                    speaking = speakResponse,
+                )
+                presentResponse(
+                    message,
+                    requestId = requestId,
+                    origin = origin,
+                    allowPhoneAudio = speakResponse,
+                )
+                return@launch
+            }
             val harborPaired = harborToolAvailable(
                 paired = BleConnectionService.harborConnectionState.value.paired,
                 mode = BleConnectionService.interactionMode.value,

@@ -156,6 +156,10 @@ class InteractionModeTest {
         assertEquals(InteractionMode.HARBOR, spokenInteractionModeSwitch("ターミナルハーバーモードに切り替えて"))
         assertEquals(InteractionMode.READER, spokenInteractionModeSwitch("リーダーモード"))
         assertEquals(InteractionMode.OPENCLAW, spokenInteractionModeSwitch("OpenClawモードへ変更"))
+        // Seen on the device: ASR trailed the command with a clipped sound.
+        assertEquals(InteractionMode.AI, spokenInteractionModeSwitch("パイロットモードに切り替えてパッ"))
+        assertEquals(InteractionMode.AI, spokenInteractionModeSwitch("パイロットモードに切り替えてP"))
+        assertNull(spokenInteractionModeSwitch("パイロットモードに切り替えてから話して"))
         // Claude Code's plan mode and sentences that only mention a mode go to the LLM.
         assertNull(spokenInteractionModeSwitch("プランモードに切り替えて"))
         assertNull(spokenInteractionModeSwitch("Pilotモードの説明をして"))

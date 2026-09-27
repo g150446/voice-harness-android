@@ -61,6 +61,10 @@ class GroqVoiceAiBackend(
                 )
                 .addFormDataPart("model", WHISPER_MODEL)
                 .addFormDataPart("response_format", "json")
+                .apply {
+                    AsrVocabularyCatalog.whisperPrompt(vocabulary)
+                        ?.let { addFormDataPart("prompt", it) }
+                }
                 .build()
 
             val response = httpClient.newCall(
@@ -80,8 +84,22 @@ class GroqVoiceAiBackend(
             val latencyMs = System.currentTimeMillis() - started
             ModelManager.recordAsrMs(latencyMs)
             Log.d(TAG, "Whisper ok latency=${latencyMs}ms lang=${payload.languageCode}")
+            // Whisper echoes its prompt on noise ("パイロットモード、Chrome、…"): treat as silence.
+            val echo = vocabulary.isNotEmpty() &&
+                AsrTextFilter.isVocabularyEchoWithoutTrigger(payload.text, vocabulary)
+            if (echo) Log.w(TAG, "Whisper prompt echo discarded: '${payload.text.take(80)}'")
+            val text = when {
+                echo -> ""
+                vocabulary.isEmpty() -> payload.text
+                else -> AsrTextFilter.stripTrailingVocabularyFragment(payload.text, vocabulary)
+                    .also {
+                        if (it != payload.text.trim()) {
+                            Log.w(TAG, "Whisper prompt tail cut: '${payload.text.takeLast(20)}'")
+                        }
+                    }
+            }
             TranscriptionResult(
-                text = payload.text,
+                text = text,
                 languageCode = payload.languageCode,
                 latencyMs = latencyMs
             )

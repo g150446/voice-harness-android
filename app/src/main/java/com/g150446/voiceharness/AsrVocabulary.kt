@@ -144,6 +144,22 @@ object AsrVocabularyCatalog {
         return section
     }
 
+    /**
+     * Whisper's `prompt` (224 tokens; a full-width character is a token or more) as a plain
+     * list of spellings. Only whole terms are kept, so a cut never leaves half a name.
+     */
+    fun whisperPrompt(terms: List<AsrVocabularyTerm>): String? {
+        val out = StringBuilder()
+        for (term in mergePreferringFirst(terms)) {
+            val next = if (out.isEmpty()) term.writtenForm else "、" + term.writtenForm
+            if (out.length + next.length > MAX_WHISPER_PROMPT_CHARS) break
+            out.append(next)
+        }
+        return out.toString().ifEmpty { null }
+    }
+
+    const val MAX_WHISPER_PROMPT_CHARS = 200
+
     private fun mergePreferringFirst(terms: List<AsrVocabularyTerm>): List<AsrVocabularyTerm> {
         val seen = LinkedHashSet<String>()
         val out = ArrayList<AsrVocabularyTerm>(terms.size)

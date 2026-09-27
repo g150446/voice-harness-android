@@ -283,6 +283,17 @@ BLE 音声は `VoiceProcessor` が担当し、次の順で判定する。
 
 語彙の追加方法は [`ondevice_gemma.md`](ondevice_gemma.md) の「ASR 認識語彙」を参照。
 
+指示録音（G2 のダブルタップ録音と Pilot／G2未接続 Harbor の録音パイプライン）では、
+`VoiceProcessor.commandVocabulary(mode)` が組んだ語彙を STT に渡す。モード名（パイロットモード・
+ハーバーモード・グラスモード変更など）は常に、加えて Pilot ではインストール済みアプリ名
+（`appSpeechHints`：このアプリ → 別名表のアプリ → その他の順）、EPUB では目次語、Harbor では
+workspace 名を入れ、40語で打ち切る。端末内モデルはプロンプトの語彙欄、Groq Whisper は
+`prompt` フォーム項目（`AsrVocabularyCatalog.whisperPrompt`、語単位で200文字まで）で受け取る。
+Whisper が雑音で prompt を吐き出したとき（語彙だけの羅列）は `isVocabularyEchoWithoutTrigger` で空にする。
+発話の後ろに語彙の書きかけが続くこと（実機で「Chromeアプリを開いてP」「…表示されましたパイロットモ」）もあるので、
+日本語の直後にある未完の語彙（英字、または3文字以上）は `stripTrailingVocabularyFragment` で切る。
+G2 経由の Pilot はこの1回の文字起こし結果を `transcribeAndRespondOnDevice` に渡し、再転写しない。
+
 ## 誤発火の発話ゲート
 
 `AsrTextFilter` を通過したあと、`UtteranceIntentGate` が「アシスタントへの依頼か」を
@@ -301,6 +312,16 @@ Qwen3-ASR GGUFで文字起こしし、Qwen 3.5 LiteRT-LMで応答を生成する
 Gemma 4 LiteRT-LMで両方を処理する。モデル探索と状態管理は`ModelManager`が担当する。
 
 詳細は[`ondevice_ai.md`](ondevice_ai.md)を参照。
+
+## Pilot のアプリ起動
+
+Pilot の発話（録音パイプライン・Android アシスタントの両経路）は、モード切替判定の次に
+`spokenAppLaunchTarget` で「〈アプリ名〉（アプリ）を開いて／起動して」だけの発話かを見る。該当すれば
+LLM へ渡さず `AppLauncher` が `<queries>` で可視化したランチャーアプリから照合して `startActivity` する。
+照合はラベル一致 → 別名表（「クロム」→Chrome、「Glock」→Grok など、未インストールは無視）→
+ICU `Katakana-Latin` のローマ字と英字ラベルの `consonantSkeleton` 一致（kuromu / Chrome → krm）→ 部分一致。
+サービスからの起動は `SYSTEM_ALERT_WINDOW` によるバックグラウンド起動制限の除外に頼る。
+Harbor・OpenClaw ではこの判定をしない。
 
 ## 応答言語と TTS
 
