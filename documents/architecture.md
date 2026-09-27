@@ -183,7 +183,17 @@ workspace 詳細画面は **端末 / プラン / 会話** を切り替える。�
 端末出力で代用しない）。会話はページングで、`さらに遡る` が `next_before` カーソルで古い分を
 前に継ぎ足す（`mergeHarborTranscript`）。**AI エージェントの pane は端末のスクロールバックに
 履歴を残さない**（実測で約1画面分）ため、返答から指示まで遡る用途は端末表示では成立せず、
-会話表示がその役割を担う。端末幅の横罫線は表示幅を実測して縮め（`HarborTextLayout`）、
+会話表示がその役割を担う。Claude Code のプラン承認画面（「Here is Claude's plan:」〜
+「Claude has written up a plan…」）が端末に出ると、`HarborMirrorController.loadWorkspace` が
+出現時に1回だけ `/plan` を取り、`inlineHarborPlan` が見出しと質問のあいだの行をプランファイルの
+全文に置き換えて端末表示に出す。見出しが画面外なら質問より上をすべて置き換える。質問と選択肢は
+末尾に残るので、自動追従とキー操作での承認はそのまま使える。プランが取れないときは画面の行を
+そのまま出す。端末表示でも会話タブと同じく5秒ごとに `/transcript` の最新ページを取り、
+`prependHarborExchange` が最後の user メッセージとそれ以降の返答を画面の上に差し込む
+（区切り「ここから現在の画面」。画面との重複は照合しない）。返答が1ページに収まらず指示が
+読み込まれていなければ `loadWorkspaceTranscript` が `HARBOR_EXCHANGE_MAX_PAGES`（5）ページまで
+遡る。送信（submit）直後にも1回取り直す。会話状態は `transcriptWorkspaceId` で workspace に紐づけ、
+別 workspace のログは差し込まない。ツール出力はログ API に含まれないので出ない。端末幅の横罫線は表示幅を実測して縮め（`HarborTextLayout`）、
 キーのボタン群は既定で畳んでおく。端末表示の自動追従は、ユーザーが最下部にいるときだけ働く。
 確認プロンプト表示中は、ホームと workspace 詳細画面に実行／取り消す／言い直すボタンも出る。
 その手前の**解釈待ち**（STT確定〜確認コメント到着）は `BleConnectionService.harborInterpreting`

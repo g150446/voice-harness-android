@@ -288,6 +288,8 @@ data class HarborUiState(
     val planLoading: Boolean = false,
     /** Oldest first, grown at the front as older pages are loaded. */
     val transcript: List<HarborTranscriptMessage> = emptyList(),
+    /** Whose log [transcript] is: cursors are byte offsets, meaningless across workspaces. */
+    val transcriptWorkspaceId: String? = null,
     val transcriptAgent: String? = null,
     val transcriptHasMore: Boolean = false,
     val transcriptCursor: String? = null,
@@ -686,6 +688,98 @@ internal fun harborPlanReasonText(plan: HarborPlan): String = when (plan.reason)
     "unsupported_api" -> "このTerminal Harborはプラン取得に未対応です（API 1.11.0以降が必要）。"
     else -> "プランを取得できませんでした。"
 }
+
+/** Harbor sends the plan file's mtime as RFC 3339; show it in the phone's own time zone. */
+internal fun harborPlanTimestamp(value: String): String = runCatching {
+    java.time.OffsetDateTime.parse(value)
+        .atZoneSameInstant(java.time.ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("MM/dd HH:mm"))
+}.getOrDefault(value)
+
+/** Claude Code's plan-approval prompt, as its own strings print it. */
+private const val CLAUDE_PLAN_HEADER = "Here is Claude's plan:"
+private val CLAUDE_PLAN_QUESTIONS = listOf(
+    "Claude has written up a plan",
+    "Would you like to proceed",
+)
+
+private fun claudePlanQuestionLine(lines: List<String>): Int? =
+    CLAUDE_PLAN_QUESTIONS.firstNotNullOfOrNull { marker ->
+        lines.indexOfLast { it.contains(marker) }.takeIf { it >= 0 }
+    }
+
+internal fun hasClaudePlanApproval(screen: String): Boolean =
+    claudePlanQuestionLine(screen.lines()) != null
+
+/**
+ * The terminal with Claude Code's plan-approval prompt showing the whole plan file.
+ *
+ * The terminal keeps only the rows still on it, so a plan taller than the pane has lost its
+ * top by the time the prompt asks for approval. The rows between the prompt's header and its
+ * question are replaced by [plan]'s text — read whole from `/plan`, never rebuilt from rows —
+ * under a heading that says so. The question and its options stay last, where the
+ * follow-bottom scroll and the approval keys expect them. Without an available plan the
+ * screen is returned as it is.
+ */
+internal fun inlineHarborPlan(screen: String, plan: HarborPlan?): String {
+    if (plan == null || !plan.available) return screen
+    val lines = screen.lines()
+    val question = claudePlanQuestionLine(lines) ?: return screen
+    val header = lines.subList(0, question).indexOfLast { it.contains(CLAUDE_PLAN_HEADER) }
+    // No header: it has scrolled off, so every row above the question is plan.
+    val start = header + 1
+    val heading = listOfNotNull(
+        "${plan.agent ?: "エージェント"}のプランファイル全文",
+        plan.updatedAt?.let { "更新 ${harborPlanTimestamp(it)}" },
+    ).joinToString(" · ")
+    return buildList {
+        addAll(lines.subList(0, start))
+        add("── $heading ──")
+        addAll(plan.text.trimEnd('\n').lines())
+        add("──")
+        addAll(lines.subList(question, lines.size))
+    }.joinToString("\n")
+}
+
+/**
+ * The terminal with the last instruction and every reply to it above the live screen.
+ *
+ * A fullscreen agent TUI repaints in place, so the screen holds only the tail of a long reply.
+ * The exchange comes whole from the agent's session log ([messages], the `/transcript` state),
+ * never rebuilt from rows. Its end overlaps the screen; the divider says where the screen
+ * starts rather than guessing which rows repeat. Without a user message loaded there is no
+ * exchange to anchor on, and the screen is returned as it is.
+ */
+internal fun prependHarborExchange(
+    screen: String,
+    messages: List<HarborTranscriptMessage>,
+    agent: String?,
+): String {
+    val instruction = messages.indexOfLast { it.isUser && !isHarnessImageNote(it.text) }
+    if (instruction < 0) return screen
+    val exchange = messages.subList(instruction, messages.size)
+        .filterNot { it.isUser && isHarnessImageNote(it.text) }
+    return buildList {
+        add("── 直前の指示と${agent ?: "エージェント"}の応答（会話ログ全文）──")
+        exchange.forEachIndexed { index, message ->
+            if (index > 0) add("")
+            val text = message.text.trimEnd()
+            add(if (message.isUser) text.lines().joinToString("\n") { "> $it" } else text)
+        }
+        add("── ここから現在の画面 ──")
+        add(screen)
+    }.joinToString("\n")
+}
+
+/**
+ * Claude Code logs the size note of an image the agent looked at (a screenshot it read) as a
+ * user turn of its own. Nobody typed it, so it is neither the instruction nor part of a reply.
+ */
+private val HARNESS_IMAGE_NOTE = Regex("""^\[Image: original \d+x\d+[^\]]*]$""")
+internal fun isHarnessImageNote(text: String): Boolean = HARNESS_IMAGE_NOTE.matches(text.trim())
+
+/** Enough to reach an instruction behind a long reply without walking the whole log. */
+internal const val HARBOR_EXCHANGE_MAX_PAGES = 5
 
 internal fun parseHarborG2View(json: JSONObject): HarborG2View {
     if (json.optString("view") != "summary") {
@@ -1342,6 +1436,10 @@ internal class HarborMirrorController(
         client.closeWorkspace(requireCredentials(), workspaceId)
     }
 
+    /** The workspace whose plan-approval prompt was on the last screen fetched, if any. */
+    @Volatile
+    private var planApprovalWorkspaceId: String? = null
+
     fun loadWorkspace(workspaceId: String, lines: Int = 500) {
         val creds = credentials ?: return
         scope.launch(Dispatchers.IO) {
@@ -1363,6 +1461,15 @@ internal class HarborMirrorController(
                     speechHints = hints,
                     error = null,
                 )
+                // Once per appearance of the approval prompt, not every poll: the plan file
+                // is written before the prompt shows and does not change while it waits.
+                val approval = workspaceId.takeIf { hasClaudePlanApproval(screen.text) }
+                if (approval != null && approval != planApprovalWorkspaceId) {
+                    // A plan held from earlier may be another workspace's or an older one.
+                    _uiState.value = _uiState.value.copy(plan = null)
+                    loadWorkspacePlan(workspaceId)
+                }
+                planApprovalWorkspaceId = approval
             }.onFailure { error ->
                 _uiState.value = _uiState.value.copy(error = error.message)
             }
@@ -1400,13 +1507,25 @@ internal class HarborMirrorController(
      * what is shown; a cursor prepends the page before it, which is how 「さらに遡る」 walks
      * back to the instruction that produced a reply.
      */
-    fun loadWorkspaceTranscript(workspaceId: String, before: String? = null) {
+    fun loadWorkspaceTranscript(workspaceId: String, before: String? = null, walked: Int = 0) {
         val creds = credentials ?: return
         _uiState.value = _uiState.value.copy(transcriptLoading = true, transcriptError = null)
         scope.launch(Dispatchers.IO) {
             runCatching { client.fetchTranscript(creds, workspaceId, before = before) }
                 .onSuccess { page ->
-                    val current = _uiState.value
+                    val current = _uiState.value.let {
+                        if (it.transcriptWorkspaceId == workspaceId) {
+                            it
+                        } else {
+                            it.copy(
+                                transcript = emptyList(),
+                                transcriptWorkspaceId = workspaceId,
+                                transcriptAgent = null,
+                                transcriptHasMore = false,
+                                transcriptCursor = null,
+                            )
+                        }
+                    }
                     if (!page.available) {
                         _uiState.value = current.copy(
                             transcript = if (before == null) emptyList() else current.transcript,
@@ -1437,6 +1556,16 @@ internal class HarborMirrorController(
                         transcriptError = null,
                         transcriptLoading = false,
                     )
+                    // The terminal view anchors on the last instruction. A reply longer than
+                    // a page leaves it behind the cursor, so walk back until it is loaded.
+                    val loaded = _uiState.value
+                    if (loaded.transcript.none { it.isUser && !isHarnessImageNote(it.text) } && loaded.transcriptHasMore &&
+                        walked + 1 < HARBOR_EXCHANGE_MAX_PAGES
+                    ) {
+                        loaded.transcriptCursor?.let {
+                            loadWorkspaceTranscript(workspaceId, it, walked + 1)
+                        }
+                    }
                 }
                 .onFailure { error ->
                     _uiState.value = _uiState.value.copy(
@@ -1462,6 +1591,9 @@ internal class HarborMirrorController(
     fun sendInstruction(workspaceId: String, text: String, submit: Boolean = true) =
         mutateWorkspace(workspaceId) {
             client.postInstruction(requireCredentials(), workspaceId, text, submit)
+            // The terminal view heads with the last instruction; don't leave the previous one
+            // there until the next poll.
+            if (submit) loadWorkspaceTranscript(workspaceId)
         }
 
     fun sendKey(workspaceId: String, key: String) = mutateWorkspace(workspaceId) {

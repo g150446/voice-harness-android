@@ -1944,6 +1944,18 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
     // Follow new output only while the user is parked at the bottom. The decision is made
     // when a scroll gesture ends, not when the text changes: deciding on content change
     // races with the growing maxValue and drags the reader back down mid-scroll.
+    val terminalText = remember(
+        state.screenText, state.plan, state.transcript, state.transcriptAgent,
+        state.transcriptWorkspaceId, state.selectedWorkspaceId,
+    ) {
+        prependHarborExchange(
+            inlineHarborPlan(state.screenText, state.plan),
+            // Until the new workspace's log arrives, the one held is another workspace's.
+            state.transcript.takeIf { state.transcriptWorkspaceId == state.selectedWorkspaceId }
+                .orEmpty(),
+            state.transcriptAgent,
+        )
+    }
     val followSlackPx = with(LocalDensity.current) { 24.dp.roundToPx() }
     var followBottom by remember { mutableStateOf(true) }
     LaunchedEffect(terminalScroll, followSlackPx) {
@@ -1953,7 +1965,7 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
             }
         }
     }
-    LaunchedEffect(state.screenText, deepHistory, pane) {
+    LaunchedEffect(terminalText, deepHistory, pane) {
         if (!deepHistory && pane == HarborPaneView.TERMINAL && followBottom) {
             delay(25)
             terminalScroll.scrollTo(terminalScroll.maxValue)
@@ -1965,12 +1977,11 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
             // An agent answers while the pane is open, so the newest end has to keep
             // arriving; without this the end of the conversation is wherever it stood when
             // the tab was opened. Slower than the terminal: prose, not a spinner.
-            HarborPaneView.CHAT -> while (true) {
+            // The terminal heads its screen with the last exchange from the same log.
+            HarborPaneView.CHAT, HarborPaneView.TERMINAL -> while (true) {
                 viewModel.refreshHarborTranscript()
                 delay(5_000)
             }
-
-            HarborPaneView.TERMINAL -> Unit
         }
     }
     closeTab?.let { tab ->
@@ -2080,7 +2091,7 @@ private fun HarborWorkspaceScreen(modifier: Modifier, viewModel: VoiceViewModel)
             )
 
             HarborPaneView.TERMINAL -> HarborMonospaceText(
-                text = state.screenText.ifEmpty { "出力を待っています…" },
+                text = terminalText.ifEmpty { "出力を待っています…" },
                 fontSize = terminalFontSize,
                 scroll = terminalScroll,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -2332,13 +2343,6 @@ private fun HarborTranscriptMessageBlock(
         )
     }
 }
-
-/** Harbor sends the plan file's mtime as RFC 3339; show it in the phone's own time zone. */
-private fun harborPlanTimestamp(value: String): String = runCatching {
-    java.time.OffsetDateTime.parse(value)
-        .atZoneSameInstant(java.time.ZoneId.systemDefault())
-        .format(java.time.format.DateTimeFormatter.ofPattern("MM/dd HH:mm"))
-}.getOrDefault(value)
 
 /**
  * Wraps the Harbor confirm prompt in a card so it's visually distinct from the surrounding
