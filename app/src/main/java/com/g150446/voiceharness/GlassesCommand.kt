@@ -50,6 +50,29 @@ internal fun glassesModeSwitchRemainder(text: String): String? {
     return trimmed.substring(match.range.last + 1).trim()
 }
 
+private val SPOKEN_MODE_SWITCH = Regex(
+    "^(.{1,20}?)モード(?:に|へ)?(?:切り?替え|切替|変更|チェンジ|移動)?(?:して|て|てください|る)?$",
+)
+
+/**
+ * A whole utterance that only asks for an app mode ("パイロットモードに切り替えて"), without
+ * the [GLASSES_MODE_SWITCH_PHRASE] prefix. Anything longer, or a mode the app does not have
+ * (Claude Code's "プランモード"), is left to the LLM.
+ */
+internal fun spokenInteractionModeSwitch(text: String): InteractionMode? {
+    val compact = text.replace(Regex("[\\s　、。,.!！?？・:：]+"), "")
+    val name = SPOKEN_MODE_SWITCH.matchEntire(compact)?.groupValues?.get(1) ?: return null
+    return parseInteractionMode(name)
+}
+
+internal fun interactionModeSpokenName(mode: InteractionMode): String = when (mode) {
+    InteractionMode.AI -> "Pilot"
+    InteractionMode.READER -> "リーダー"
+    InteractionMode.HARBOR -> "Harbor"
+    InteractionMode.OPENCLAW -> "OpenClaw"
+    InteractionMode.EPUB -> "EPUB"
+}
+
 internal fun parseReaderPageCommand(text: String): ReaderPageCommand? {
     val compact = text.lowercase(Locale.ROOT).replace(Regex("[\\s　]+"), "")
     if (compact.isEmpty()) return null

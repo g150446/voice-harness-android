@@ -18,7 +18,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -157,6 +159,14 @@ class BleConnectionService : Service() {
 
         private val _interactionMode = MutableStateFlow(InteractionMode.AI)
         val interactionMode: StateFlow<InteractionMode> = _interactionMode.asStateFlow()
+
+        // Only a spoken switch moves the app screen; a plugin drop or a restored mode must not.
+        private val _voiceModeSwitches = MutableSharedFlow<InteractionMode>(extraBufferCapacity = 1)
+        val voiceModeSwitches: SharedFlow<InteractionMode> = _voiceModeSwitches
+
+        fun notifyVoiceModeSwitch(mode: InteractionMode) {
+            _voiceModeSwitches.tryEmit(mode)
+        }
 
         private val _harborConnectionState = MutableStateFlow(HarborConnectionState())
         val harborConnectionState: StateFlow<HarborConnectionState> =
@@ -557,7 +567,7 @@ class BleConnectionService : Service() {
                 InteractionMode.AI -> {
                     setReadingPassthroughEnabled(context, false, notifyG2 = false)
                     setResponseOutputTarget(context, ResponseOutputTarget.SMART_GLASSES)
-                    EvenG2ReadingSession.publishResponse("AI対話モード")
+                    EvenG2ReadingSession.publishResponse("Pilotモード")
                 }
                 InteractionMode.READER -> {
                     service?.harborMirrorController?.setMode(InteractionMode.AI)

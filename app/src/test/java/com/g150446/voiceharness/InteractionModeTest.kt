@@ -12,7 +12,7 @@ class InteractionModeTest {
     fun `Japanese and English commands select each mode`() {
         assertEquals(InteractionMode.HARBOR, parseInteractionMode("ハーバーモードにして"))
         assertEquals(InteractionMode.HARBOR, parseInteractionMode("Terminal Harbor"))
-        assertEquals(InteractionMode.AI, parseInteractionMode("AI 対話モード"))
+        assertEquals(InteractionMode.AI, parseInteractionMode("Pilot モード"))
         assertEquals(InteractionMode.READER, parseInteractionMode("読書モード"))
         assertEquals(InteractionMode.READER, parseInteractionMode("reader mode"))
     }
@@ -22,9 +22,7 @@ class InteractionModeTest {
         assertEquals(InteractionMode.OPENCLAW, parseInteractionMode("OpenClawモード"))
         assertEquals(InteractionMode.OPENCLAW, parseInteractionMode("open claw"))
         assertEquals(InteractionMode.OPENCLAW, parseInteractionMode("オープンクローモードにして"))
-        // "チャット" alone still means AI, but not next to the OpenClaw name.
         assertEquals(InteractionMode.OPENCLAW, parseInteractionMode("OpenClawチャット"))
-        assertEquals(InteractionMode.AI, parseInteractionMode("チャットモード"))
     }
 
     @Test
@@ -55,7 +53,7 @@ class InteractionModeTest {
 
     @Test
     fun `ambiguous or unknown command does not switch`() {
-        assertNull(parseInteractionMode("ハーバーからAIへ"))
+        assertNull(parseInteractionMode("ハーバーからパイロットへ"))
         assertNull(parseInteractionMode("音楽モード"))
     }
 
@@ -101,7 +99,14 @@ class InteractionModeTest {
         assertEquals(InteractionMode.EPUB, parseInteractionMode("epubリーダー"))
         assertEquals(InteractionMode.READER, parseInteractionMode("リーダー"))
         assertEquals(InteractionMode.READER, parseInteractionMode("リーダーモード"))
-        assertEquals(InteractionMode.AI, parseInteractionMode("AI対話"))
+    }
+
+    @Test
+    fun `Pilot names the AI mode and the former AI対話 name is retired`() {
+        assertEquals(InteractionMode.AI, parseInteractionMode("パイロットモード"))
+        assertEquals(InteractionMode.AI, parseInteractionMode("Pilotモードに切り替えて"))
+        assertNull(parseInteractionMode("AI対話モード"))
+        assertNull(parseInteractionMode("チャットモード"))
     }
 
     @Test
@@ -116,5 +121,31 @@ class InteractionModeTest {
                 InteractionMode.EPUB, g2Active = true, harborPaired = true, epubReady = false,
             ),
         )
+    }
+
+    @Test
+    fun `Harbor reopens its active workspace, then the remembered one`() {
+        val a = HarborWorkspace(id = "a", name = "a", selected = false)
+        val b = HarborWorkspace(id = "b", name = "b", selected = true)
+        assertEquals("b", lastHarborWorkspaceId(listOf(a, b), "a", "a"))
+        assertEquals("a", lastHarborWorkspaceId(listOf(a), "a", null))
+        assertEquals("a", lastHarborWorkspaceId(emptyList(), null, "a"))
+        // A remembered workspace that has since closed is not reopened.
+        assertNull(lastHarborWorkspaceId(listOf(a), "gone", null))
+        assertNull(lastHarborWorkspaceId(emptyList(), null, null))
+    }
+
+    @Test
+    fun `a bare mode request switches without the glasses prefix`() {
+        assertEquals(InteractionMode.AI, spokenInteractionModeSwitch("パイロットモードに切り替えて"))
+        assertEquals(InteractionMode.AI, spokenInteractionModeSwitch("パイロットモードに切り替え。"))
+        assertEquals(InteractionMode.HARBOR, spokenInteractionModeSwitch("ハーバーモードにして"))
+        assertEquals(InteractionMode.HARBOR, spokenInteractionModeSwitch("ターミナルハーバーモードに切り替えて"))
+        assertEquals(InteractionMode.READER, spokenInteractionModeSwitch("リーダーモード"))
+        assertEquals(InteractionMode.OPENCLAW, spokenInteractionModeSwitch("OpenClawモードへ変更"))
+        // Claude Code's plan mode and sentences that only mention a mode go to the LLM.
+        assertNull(spokenInteractionModeSwitch("プランモードに切り替えて"))
+        assertNull(spokenInteractionModeSwitch("Pilotモードの説明をして"))
+        assertNull(spokenInteractionModeSwitch("AI対話モードに切り替えて"))
     }
 }

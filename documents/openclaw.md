@@ -3,7 +3,7 @@
 OpenClaw は LLM ではなく、LLM 一覧とは別の「応答先」。音声認識は既存の Gemma / Qwen / Groq
 を使い、操作モードが **OpenClaw** のときだけ、応答生成を選択中の LLM の代わりに Mac の
 OpenClaw Gateway へ送る。Terminal Harbor の workspace instruction API は使わない。
-他のモード（AI対話 / リーダー / Harbor）では従来どおり選択中の LLM を使う。
+他のモード（Pilot / リーダー / Harbor）では従来どおり選択中の LLM を使う。
 
 ## Android の設定
 
@@ -134,7 +134,7 @@ OpenClaw報告は音声専用。
 
 ## OpenClawモード（G2）
 
-ホームの操作モードボタン（AI対話 / リーダー / Harbor / OpenClaw）か、音声指示
+ホームの操作モードボタン（Pilot / リーダー / Harbor / OpenClaw）か、音声指示
 「グラスモード変更 OpenClaw」で入る。Harbor と同じく G2 を必須とせず、Gateway token が
 未設定なら有効化できない。OpenClaw は LLM ではないので、入っても応答モデル(LLM)の選択は変わらない。
 モードが ON の間は BLE 音声・アプリ内マイク・アプリ内テキストのすべてが OpenClaw へ送られ、

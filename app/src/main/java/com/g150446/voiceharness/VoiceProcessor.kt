@@ -650,7 +650,8 @@ internal class VoiceProcessor(
                 val vocab = buildList {
                     add(AsrVocabularyTerm(GLASSES_MODE_SWITCH_PHRASE))
                     add(AsrVocabularyTerm("ハーバーモード"))
-                    add(AsrVocabularyTerm("AI対話モード"))
+                    add(AsrVocabularyTerm("パイロットモード"))
+                    add(AsrVocabularyTerm("Pilotモード"))
                     add(AsrVocabularyTerm("リーダーモード"))
                     add(AsrVocabularyTerm("OpenClawモード"))
                     add(AsrVocabularyTerm("EPUBモード"))
@@ -670,6 +671,10 @@ internal class VoiceProcessor(
                 val modeRemainder = glassesModeSwitchRemainder(raw)
                 if (modeRemainder != null) {
                     applyGlassesModeSwitch(modeRemainder)
+                    return@launch
+                }
+                spokenInteractionModeSwitch(raw)?.let { mode ->
+                    applyInteractionModeSwitch(mode)
                     return@launch
                 }
                 when (interactionMode) {
@@ -757,19 +762,20 @@ internal class VoiceProcessor(
             showCommandError("モードを特定できませんでした")
             return
         }
+        applyInteractionModeSwitch(mode)
+    }
+
+    /** Switches the app mode by voice; returns what the user was told. */
+    private suspend fun applyInteractionModeSwitch(mode: InteractionMode): String {
+        Log.i(TAG, "Voice mode switch: $mode")
+        val name = interactionModeSpokenName(mode)
         if (!BleConnectionService.setInteractionMode(appContext, mode)) {
             BleConnectionService.setVoiceState(VoiceState.READY)
-            return
+            return "${name}モードに切り替えられませんでした"
         }
-        BleConnectionService.setResponse(
-            when (mode) {
-                InteractionMode.AI -> "AI対話モードに切り替えました"
-                InteractionMode.READER -> "リーダーモードに切り替えました"
-                InteractionMode.HARBOR -> "Harborモードに切り替えました"
-                InteractionMode.OPENCLAW -> "OpenClawモードに切り替えました"
-                InteractionMode.EPUB -> "EPUBモードに切り替えました"
-            }
-        )
+        BleConnectionService.notifyVoiceModeSwitch(mode)
+        val message = "${name}モードに切り替えました"
+        BleConnectionService.setResponse(message)
         if (mode == InteractionMode.READER) {
             startReadingPassthroughFromCurrentScreen(
                 command = "音声指示でリーダーモード開始",
@@ -778,6 +784,7 @@ internal class VoiceProcessor(
         } else {
             BleConnectionService.setVoiceState(VoiceState.READY)
         }
+        return message
     }
 
     private fun showCommandError(message: String) {
@@ -1451,6 +1458,21 @@ internal class VoiceProcessor(
             val query = resetParse.remainingUserText?.trim()
                 ?.takeIf { resetParse.shouldReset && it.isNotEmpty() }
                 ?: transcribed
+            // Without this the LLM answers "切り替えました" while nothing switches.
+            val spokenMode = glassesModeSwitchRemainder(query)?.let(::parseInteractionMode)
+                ?: spokenInteractionModeSwitch(query)
+            if (spokenMode != null) {
+                val message = applyInteractionModeSwitch(spokenMode)
+                BleConnectionService.setResponse(message)
+                saveHistoryEntry(
+                    transcription = query,
+                    response = message,
+                    isSilent = false,
+                    errorMessage = "",
+                )
+                presentResponse(message)
+                return
+            }
             val screenContext = takePendingHarnessScreen()
             val readerModeRequested = ReadingPassthrough.isRequested(query)
             if (readerModeRequested) {

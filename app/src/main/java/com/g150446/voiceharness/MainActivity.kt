@@ -618,7 +618,7 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             listOf(
-                InteractionMode.AI to "AI対話",
+                InteractionMode.AI to "Pilot",
                 InteractionMode.READER to "リーダー",
                 InteractionMode.HARBOR to "Harbor",
                 InteractionMode.OPENCLAW to "OpenClaw",

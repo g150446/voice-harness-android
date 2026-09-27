@@ -188,7 +188,7 @@ workspace 詳細画面は **端末 / プラン / 会話** を切り替える。�
 確認プロンプト表示中は、ホームと workspace 詳細画面に実行／取り消す／言い直すボタンも出る。
 その手前の**解釈待ち**（STT確定〜確認コメント到着）は `BleConnectionService.harborInterpreting`
 で画面に伝える。経路は2つあり、G2接続中の指示録音は `presentHarborConfirmSuspend`
-（`VoiceProcessor.harborConfirmInterpreting` のsetterが写す）、G2未接続時は通常のAI対話
+（`VoiceProcessor.harborConfirmInterpreting` のsetterが写す）、G2未接続時は通常のPilot
 パイプラインが `harbor_command` tool で解釈するので `assistantGateway.submit` の前後
 （try/finally）で立てて下ろす。どちらも
 `HarborInterpretingCard`（「AIが指示を確認中…」＋取り消す）を出す。`VoiceState` は
@@ -245,12 +245,12 @@ Handy の接続 800 ms 後 claim より後（0 / 1000 / 1600 ms）に RX `0x02` 
 
 | 経路 | FW `0.0.95+` | Android |
 |---|---|---|
-| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | **G2 未接続時のみ**、ホームで single 選択かつ AI 対話モード時に RX `0x01`/`0x00` でホスト承認。G2 接続中は録音の開始/終了を一切行わない |
+| シングルタップ (`0x14`) | **notify-only**（**既定の録音操作**） | **G2 未接続時のみ**、ホームで single 選択かつ Pilotモード時に RX `0x01`/`0x00` でホスト承認。G2 接続中は録音の開始/終了を一切行わない |
 | 手首ジェスチャー | 検出スイッチ ON 時のみ自律 `0x01`/`0x02`（**既定 OFF**） | ホーム「ジェスチャー録音」→ RX `0x07` |
 | リーダーの single | notify-only | RX なし。G2 `singleTapCount` でページ送り |
 | Harbor の single | notify-only | 確認待ち = 実行。それ以外（要約・質問の表示中／待機中）は録音を一切開始せず、要約・質問のページ送りはG2側（`singleTapCount`）に委ねる |
 | Harbor の double | notify-only | 確認待ち = 取り消し。言い直し待ちのみ録音し直し |
-| ダブルタップ (`0x12`) | notify-only | G2 接続中はモード別指示録音（先頭「グラスモード変更」だけモード切替）。録音の開始/終了は接続中は常にダブルタップのみが担う。未接続時はホームの double 選択時だけ録音 start/stop |
+| ダブルタップ (`0x12`) | notify-only | G2 接続中はモード別指示録音（先頭「グラスモード変更」（または発話全体が「〈モード名〉モード（に切り替えて）」だけ）はモード切替）。録音の開始/終了は接続中は常にダブルタップのみが担う。未接続時はホームの double 選択時だけ録音 start/stop |
 | M5 StickC single | RX `0x08 0x01` で notify-only（既定はローカルトグル） | 接続時に `0x08 0x01` を送り、上記のホスト承認へ統一 |
 
 無音による RX `0x00` 自動停止は廃止済み。  

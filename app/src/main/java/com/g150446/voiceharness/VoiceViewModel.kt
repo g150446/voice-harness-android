@@ -151,13 +151,66 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
         // The screen the user is on is not changed: following is not navigating.
         viewModelScope.launch {
             BleConnectionService.harborUiState.collect { state ->
-                val activated = state.activatedWorkspaceId ?: return@collect
-                if (activated != _selectedHarborWorkspaceId.value) {
+                val activated = state.activatedWorkspaceId
+                if (activated != null && activated != _selectedHarborWorkspaceId.value) {
                     _selectedHarborWorkspaceId.value = activated
                     BleConnectionService.loadHarborWorkspace(activated)
                 }
+                if (pendingHarborDetail) {
+                    if (_currentScreen.value != AppScreen.HARBOR_WORKSPACES) {
+                        pendingHarborDetail = false
+                    } else if (state.workspaces.isNotEmpty()) {
+                        pendingHarborDetail = false
+                        lastHarborWorkspaceId(state.workspaces, null, null)?.let(::showHarborWorkspace)
+                    }
+                }
             }
         }
+
+        // A spoken mode switch takes the app screen along: Pilot goes home, Harbor reopens
+        // the workspace it was on. Buttons already move the screen themselves.
+        viewModelScope.launch {
+            BleConnectionService.voiceModeSwitches.collect { mode ->
+                when (mode) {
+                    InteractionMode.AI -> {
+                        pendingHarborDetail = false
+                        _currentScreen.value = AppScreen.HOME
+                    }
+                    InteractionMode.HARBOR -> showLastHarborWorkspace()
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    /** Set while the workspace list is fetched on the way into Harbor, to open the active one. */
+    private var pendingHarborDetail = false
+
+    private fun showLastHarborWorkspace() {
+        val state = harborUiState.value
+        if (state.devices.isEmpty()) {
+            _currentScreen.value = AppScreen.HARBOR_DEVICES
+            return
+        }
+        val id = lastHarborWorkspaceId(
+            state.workspaces,
+            state.activatedWorkspaceId,
+            _selectedHarborWorkspaceId.value,
+        )
+        if (id != null) {
+            showHarborWorkspace(id)
+        } else {
+            pendingHarborDetail = true
+            _currentScreen.value = AppScreen.HARBOR_WORKSPACES
+            BleConnectionService.refreshHarborWorkspaces()
+        }
+    }
+
+    /** Like [openHarborWorkspace] but without re-activating: Harbor is already there. */
+    private fun showHarborWorkspace(id: String) {
+        _selectedHarborWorkspaceId.value = id
+        BleConnectionService.loadHarborWorkspace(id)
+        _currentScreen.value = AppScreen.HARBOR_DETAIL
     }
 
     fun stopSpeaking() {

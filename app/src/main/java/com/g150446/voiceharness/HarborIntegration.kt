@@ -54,10 +54,7 @@ internal fun parseInteractionMode(text: String): InteractionMode? {
         if (listOf("ハーバー", "terminalharbor", "ターミナル").any(normalized::contains)) {
             add(InteractionMode.HARBOR)
         }
-        // "OpenClawチャット" names the OpenClaw chat, not the on-device AI mode.
-        val aiWords = if (openClaw) listOf("ai対話", "aiモード") else
-            listOf("ai対話", "aiモード", "対話", "チャット")
-        if (aiWords.any(normalized::contains) || (!openClaw && normalized.contains("ai"))) {
+        if (listOf("pilot", "パイロット").any(normalized::contains)) {
             add(InteractionMode.AI)
         }
         // "EPUBリーダー" names the EPUB reader, not the Kindle reader.
@@ -247,6 +244,18 @@ data class HarborTranscript(
     val nextBefore: String? = null,
     val reason: String? = null,
 )
+
+/** The workspace to reopen when Harbor mode is entered: Harbor's own active one first. */
+internal fun lastHarborWorkspaceId(
+    workspaces: List<HarborWorkspace>,
+    activatedId: String?,
+    selectedId: String?,
+): String? {
+    workspaces.firstOrNull { it.selected }?.let { return it.id }
+    // A remembered id may name a workspace closed since; trust it only while the list is unknown.
+    return listOfNotNull(activatedId, selectedId)
+        .firstOrNull { id -> workspaces.isEmpty() || workspaces.any { it.id == id } }
+}
 
 data class HarborUiState(
     val devices: List<HarborDevice> = emptyList(),
