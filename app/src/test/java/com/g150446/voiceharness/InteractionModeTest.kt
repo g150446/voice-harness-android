@@ -136,6 +136,19 @@ class InteractionModeTest {
     }
 
     @Test
+    fun `only Harbor mode offers the harbor_command tool`() {
+        assertTrue(harborToolAvailable(paired = true, mode = InteractionMode.HARBOR))
+        // Pilot's "open the Chrome app" must not become a Claude Code instruction.
+        assertFalse(harborToolAvailable(paired = true, mode = InteractionMode.AI))
+        assertFalse(harborToolAvailable(paired = true, mode = InteractionMode.READER))
+        assertFalse(harborToolAvailable(paired = true, mode = InteractionMode.EPUB))
+        assertFalse(harborToolAvailable(paired = false, mode = InteractionMode.HARBOR))
+        assertFalse(
+            harborToolAvailable(paired = true, mode = InteractionMode.HARBOR, openClawRoute = true),
+        )
+    }
+
+    @Test
     fun `a bare mode request switches without the glasses prefix`() {
         assertEquals(InteractionMode.AI, spokenInteractionModeSwitch("パイロットモードに切り替えて"))
         assertEquals(InteractionMode.AI, spokenInteractionModeSwitch("パイロットモードに切り替え。"))

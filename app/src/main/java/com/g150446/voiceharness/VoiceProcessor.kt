@@ -1502,14 +1502,17 @@ internal class VoiceProcessor(
                 presentResponse(message)
                 return
             }
-            // OpenClaw answers as itself; it is not told about the Harbor tool.
-            val harborPaired = BleConnectionService.harborConnectionState.value.paired &&
-                !isOpenClawRoute()
+            // OpenClaw answers as itself; it is not told about the Harbor tool, and neither is
+            // Pilot, so its requests never reach Claude Code.
+            val harborPaired = harborToolAvailable(
+                paired = BleConnectionService.harborConnectionState.value.paired,
+                mode = BleConnectionService.interactionMode.value,
+                openClawRoute = isOpenClawRoute(),
+            )
             // Without G2, Harbor-mode voice is interpreted here (harbor_command tool), not in
             // presentHarborConfirmSuspend; the phone still needs "AI is confirming" meanwhile.
             // Only the UI flow is set: harborConfirmInterpreting would change tap ownership.
-            val showHarborInterpreting = harborPaired &&
-                BleConnectionService.interactionMode.value == InteractionMode.HARBOR
+            val showHarborInterpreting = harborPaired
             if (showHarborInterpreting) BleConnectionService.setHarborInterpreting(true)
             val chat = try {
                 val harborContext = if (harborPaired) {
@@ -1559,7 +1562,7 @@ internal class VoiceProcessor(
             val harborCall = chatResult.toolCalls.firstOrNull { it.name == HARBOR_COMMAND_TOOL_NAME }
             when {
                 reminderCall != null -> handleReminderToolCall(reminderCall.argumentsJson)
-                harborCall != null && BleConnectionService.harborConnectionState.value.paired -> {
+                harborCall != null && harborPaired -> {
                     val args = HarborCommandTool.parse(
                         harborCall.argumentsJson,
                         fallbackCommand = BleConnectionService.transcription.value,
@@ -1675,7 +1678,10 @@ internal class VoiceProcessor(
                 transcribedText = query,
             )
             responseLanguageCode = language
-            val harborPaired = BleConnectionService.harborConnectionState.value.paired
+            val harborPaired = harborToolAvailable(
+                paired = BleConnectionService.harborConnectionState.value.paired,
+                mode = BleConnectionService.interactionMode.value,
+            )
             val harborContext = if (harborPaired) {
                 BleConnectionService.harborInterpretContext()
             } else {
@@ -1718,7 +1724,7 @@ internal class VoiceProcessor(
                     )
                     return@onSuccess
                 }
-                if (harborCall != null && BleConnectionService.harborConnectionState.value.paired) {
+                if (harborCall != null && harborPaired) {
                     val args = HarborCommandTool.parse(
                         harborCall.argumentsJson,
                         fallbackCommand = query,

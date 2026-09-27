@@ -100,8 +100,10 @@ Harbor側のモデル障害で指示が消えたりしていた。確認画面�
 ワークスペース切り替えの判定材料は、上記の `switchable_workspaces` として
 Android側のプロンプトに渡している。
 
-Harborがペアリング済みならPilotモードでも同じ `harbor_command` を渡すため、端末操作の依頼を
-拒否せず確認画面へ合流できる。ローカルLLMでは tool 非対応のため、Harbor操作にはクラウドLLMが必要。
+`harbor_command` はHarborモードのときだけLLMに渡す（`harborToolAvailable`）。以前はペアリング済みなら
+Pilotでも渡していたが、「Chromeアプリを開いて」のような端末操作に見える依頼がClaude Codeへ送られ、
+簡単な指示の即実行と重なって確認なしで実行されたため廃止した。ローカルLLMでは tool 非対応のため、
+Harbor操作にはクラウドLLMが必要。
 
 整形済み画面が2秒停止すると、Terminal Harborは最大2,000行・UTF-8 64 KiBを、Harbor側に
 設定済みのOpenRouterモデルへ渡す。モデルが質問、確認、権限要求、選択肢などの明示的な入力待ちと

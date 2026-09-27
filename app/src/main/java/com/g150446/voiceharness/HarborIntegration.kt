@@ -245,6 +245,16 @@ data class HarborTranscript(
     val reason: String? = null,
 )
 
+/**
+ * harbor_command is offered to the LLM only in Harbor mode. Pilot speech must never reach
+ * Claude Code, even when a request ("open the Chrome app") reads like a terminal task.
+ */
+internal fun harborToolAvailable(
+    paired: Boolean,
+    mode: InteractionMode,
+    openClawRoute: Boolean = false,
+): Boolean = paired && mode == InteractionMode.HARBOR && !openClawRoute
+
 /** The workspace to reopen when Harbor mode is entered: Harbor's own active one first. */
 internal fun lastHarborWorkspaceId(
     workspaces: List<HarborWorkspace>,
