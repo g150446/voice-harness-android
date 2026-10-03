@@ -90,6 +90,9 @@ class HarnessVoiceInteractionSession(context: Context) : VoiceInteractionSession
     override fun onHide() {
         Log.i(TAG, "Assistant session hide headless=$headless")
         super.onHide()
+        if (!headless) {
+            AssistantSessionController.onSessionDestroyed(context.applicationContext)
+        }
     }
 
     override fun onDestroy() {

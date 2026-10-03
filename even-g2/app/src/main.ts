@@ -5,7 +5,7 @@ import {
   TextContainerUpgrade,
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
-import { IncrementalReadingPaginator, paginate } from './paginate'
+import { IncrementalReadingPaginator, paginate, shouldPrefetchReadingPage } from './paginate'
 import { paginateHarborSummary } from './harbor'
 import { measureTextWrap } from '@evenrealities/pretext'
 
@@ -18,6 +18,7 @@ const CONTAINER_ID = 1
 const CONTAINER_NAME = 'main'
 const READING_URL = 'http://127.0.0.1:8787/api/v1/reading'
 const ADVANCE_URL = 'http://127.0.0.1:8787/api/v1/reading/advance'
+const READING_PREFETCH_PAGES = 3
 
 type DisplayMode = 'idle' | 'response' | 'reading' | 'harbor'
 
@@ -26,6 +27,7 @@ interface ReadingState {
   active: boolean
   mode?: DisplayMode
   revision: number
+  readingSessionId?: number
   title?: string | null
   bodyText: string | null
   harborSummaryText?: string | null
@@ -59,11 +61,14 @@ if (created !== 0) console.error('createStartUpPageContainer failed:', created)
 let pages: string[] = []
 let currentPage = 0
 let currentRevision = -1
+let currentReadingSessionId: number | null = null
+let fetchedReadingSources = 0
 let currentMode: DisplayMode = 'idle'
 let lastSingleTapCount: number | null = null
 let awaitingAdvanceRevision: number | null = null
 let blockedAdvanceRevision: number | null = null
-let pendingReadingPage = false
+let pendingReadingTaps = 0
+let drainingReadingTaps = false
 let lastHarborTitle: string | null = null
 let currentHarborPaged = false
 let rendering: Promise<unknown> = Promise.resolve()
@@ -147,55 +152,92 @@ async function requestNextKindlePage(): Promise<void> {
     blockedAdvanceRevision === currentRevision ||
     currentRevision < 0
   ) return
-  awaitingAdvanceRevision = currentRevision
+  const requestedRevision = currentRevision
+  const requestedSession = currentReadingSessionId
+  awaitingAdvanceRevision = requestedRevision
   try {
     const response = await fetch(ADVANCE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revision: currentRevision }),
+      body: JSON.stringify({ revision: requestedRevision }),
       signal: AbortSignal.timeout(2_500),
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
   } catch (error) {
     console.warn('Could not request the next Kindle page:', error)
-    await finishReadingPageWithRemainder()
+    if (currentRevision === requestedRevision && currentReadingSessionId === requestedSession) {
+      await finishReadingPageWithRemainder()
+    }
   }
 }
 
-async function requestReadingPage(): Promise<void> {
-  if (currentMode !== 'reading' || pendingReadingPage) return
-  pendingReadingPage = true
-  await fulfillReadingPage()
+function prefetchReadingPages(): void {
+  if (currentMode !== 'reading' || currentPage < 0) return
+  if (shouldPrefetchReadingPage(
+    fetchedReadingSources,
+    readingPaginator.consumedSourcePages,
+    READING_PREFETCH_PAGES,
+  )) void requestNextKindlePage()
 }
 
-async function fulfillReadingPage(): Promise<void> {
-  if (currentMode !== 'reading' || !pendingReadingPage) return
+async function showInitialReadingPage(): Promise<void> {
+  if (currentMode !== 'reading' || currentPage >= 0) return
   const page = readingPaginator.takeNextPage()
   if (page == null) {
     if (blockedAdvanceRevision === currentRevision) {
-      pendingReadingPage = false
-      return
-    }
-    if (pages.length === 0 && awaitingAdvanceRevision === null) {
+      const remainder = readingPaginator.flushRemainder()
+      if (remainder != null) {
+        pages.push(remainder)
+        await showPage(0)
+      }
+    } else if (awaitingAdvanceRevision === null) {
       await textUpgrade('Kindle\n\n次ページを取得中…')
+      await requestNextKindlePage()
     }
-    await requestNextKindlePage()
     return
   }
   pages.push(page)
-  pendingReadingPage = false
-  await showPage(pages.length - 1)
+  await showPage(0)
+  prefetchReadingPages()
 }
 
 async function finishReadingPageWithRemainder(): Promise<void> {
   blockedAdvanceRevision = currentRevision
   awaitingAdvanceRevision = null
-  if (!pendingReadingPage) return
-  const remainder = readingPaginator.flushRemainder()
-  pendingReadingPage = false
-  if (remainder == null) return
-  pages.push(remainder)
-  await showPage(pages.length - 1)
+  if (currentPage < 0) await showInitialReadingPage()
+  await drainReadingTaps()
+}
+
+async function drainReadingTaps(): Promise<void> {
+  if (drainingReadingTaps) return
+  drainingReadingTaps = true
+  try {
+    while (currentMode === 'reading' && pendingReadingTaps > 0) {
+      if (currentPage < pages.length - 1) {
+        pendingReadingTaps -= 1
+        await showPage(currentPage + 1)
+        continue
+      }
+      const page = readingPaginator.takeNextPage() ??
+        (blockedAdvanceRevision === currentRevision ? readingPaginator.flushRemainder() : null)
+      if (page == null) break
+      pages.push(page)
+      pendingReadingTaps -= 1
+      await showPage(pages.length - 1)
+    }
+  } finally {
+    drainingReadingTaps = false
+  }
+  if (blockedAdvanceRevision === currentRevision && !readingPaginator.remainingText) {
+    pendingReadingTaps = 0
+  }
+  prefetchReadingPages()
+}
+
+async function requestReadingPage(): Promise<void> {
+  if (currentMode !== 'reading') return
+  pendingReadingTaps += 1
+  await drainReadingTaps()
 }
 
 function singleTapCountOf(state: ReadingState): number {
@@ -216,15 +258,15 @@ async function handleSingleTapCount(count: number): Promise<void> {
     currentMode !== 'response' &&
     !(currentMode === 'harbor' && currentHarborPaged)
   ) return
-  if (currentRevision < 0 || awaitingAdvanceRevision !== null) return
+  if (currentRevision < 0) return
+  if (currentMode === 'reading') {
+    pendingReadingTaps += delta
+    await drainReadingTaps()
+    return
+  }
   for (let index = 0; index < delta; index += 1) {
     if (currentPage < pages.length - 1) await showPage(currentPage + 1)
-    else if (currentMode === 'reading') {
-      await requestReadingPage()
-      break
-    } else {
-      break
-    }
+    else break
   }
 }
 
@@ -239,12 +281,13 @@ async function renderState(state: ReadingState): Promise<void> {
     const previousRevision = currentRevision
     const expectedReadingAdvance = mode === 'reading' &&
       currentMode === 'reading' &&
-      awaitingAdvanceRevision === previousRevision
+      awaitingAdvanceRevision === previousRevision &&
+      (state.readingSessionId ?? null) === currentReadingSessionId
     currentRevision = state.revision
     currentMode = mode
     awaitingAdvanceRevision = null
     blockedAdvanceRevision = null
-    lastSingleTapCount = tapCount
+    if (!expectedReadingAdvance) lastSingleTapCount = tapCount
     if (mode === 'harbor') {
       currentHarborPaged = Boolean(state.harborSummaryText || state.harborActionText)
       pages = currentHarborPaged
@@ -255,7 +298,8 @@ async function renderState(state: ReadingState): Promise<void> {
           )
         : []
       currentPage = 0
-      pendingReadingPage = false
+      pendingReadingTaps = 0
+      currentReadingSessionId = null
       readingPaginator.reset('')
       const revision = currentRevision
       const titleChanged = Boolean(state.title) && state.title !== lastHarborTitle
@@ -276,15 +320,20 @@ async function renderState(state: ReadingState): Promise<void> {
     } else if (mode === 'reading' && state.active && state.bodyText) {
       if (expectedReadingAdvance) {
         readingPaginator.append(state.bodyText)
+        fetchedReadingSources += 1
       } else {
         pages = []
         currentPage = -1
-        pendingReadingPage = true
+        pendingReadingTaps = 0
+        currentReadingSessionId = state.readingSessionId ?? null
+        fetchedReadingSources = 1
         readingPaginator.reset(state.bodyText)
       }
-      await fulfillReadingPage()
+      await showInitialReadingPage()
+      await drainReadingTaps()
     } else if (state.active && state.bodyText) {
-      pendingReadingPage = false
+      pendingReadingTaps = 0
+      currentReadingSessionId = null
       readingPaginator.reset('')
       pages = paginate(state.bodyText, {
         width: INNER_WIDTH,
@@ -295,7 +344,8 @@ async function renderState(state: ReadingState): Promise<void> {
     } else {
       pages = []
       currentPage = 0
-      pendingReadingPage = false
+      pendingReadingTaps = 0
+      currentReadingSessionId = null
       readingPaginator.reset('')
       await textUpgrade(idleMessage(state))
     }
@@ -312,6 +362,7 @@ async function renderState(state: ReadingState): Promise<void> {
     await finishReadingPageWithRemainder()
   }
   if (state.error && pages.length === 0) await textUpgrade(idleMessage(state))
+  if (currentMode === 'reading') prefetchReadingPages()
 }
 
 async function poll(): Promise<void> {
@@ -342,8 +393,8 @@ const unsubscribe = bridge.onEvenHubEvent((event) => {
     return
   }
   if (textType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-    if (currentPage < pages.length - 1) void showPage(currentPage + 1)
-    else if (currentMode === 'reading') void requestReadingPage()
+    if (currentMode === 'reading') void requestReadingPage()
+    else if (currentPage < pages.length - 1) void showPage(currentPage + 1)
     return
   }
   if (sysType === OsEventTypeList.SYSTEM_EXIT_EVENT || sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT) {

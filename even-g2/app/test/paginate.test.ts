@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { measureTextWrap } from '@evenrealities/pretext'
-import { IncrementalReadingPaginator } from '../src/paginate.ts'
+import { IncrementalReadingPaginator, shouldPrefetchReadingPage } from '../src/paginate.ts'
 
 const oneLine = { width: 568, height: 27 }
 const twoLines = { width: 568, height: 54 }
@@ -90,4 +90,35 @@ test('materializes only one screen and retains later text for the next request',
 
   assert.equal(paginator.takeNextPage(), '一ページ目。')
   assert.equal(paginator.remainingText, '二ページ目。\n三ページ目。')
+})
+
+test('tracks consumed Kindle source pages across a joined G2 screen', () => {
+  const paginator = new IncrementalReadingPaginator({ width: 80, height: 54 })
+  paginator.reset('吾輩は')
+  paginator.append('猫である。続き。')
+
+  assert.equal(paginator.consumedSourcePages, 0)
+  assert.equal(paginator.takeNextPage(), '吾輩は猫である。')
+  assert.equal(paginator.consumedSourcePages, 1)
+  assert.equal(paginator.remainingText, '続き。')
+  assert.equal(paginator.flushRemainder(), '続き。')
+  assert.equal(paginator.consumedSourcePages, 2)
+})
+
+test('counts a source page consumed across an inserted English word separator', () => {
+  const paginator = new IncrementalReadingPaginator({ width: 60, height: 27 })
+  paginator.reset('Hello')
+  paginator.append('world.')
+
+  assert.equal(paginator.takeNextPage(), 'Hello')
+  assert.equal(paginator.consumedSourcePages, 1)
+  assert.equal(paginator.remainingText, 'world.')
+})
+
+test('prefetches no more than three Kindle pages ahead and refills after consumption', () => {
+  assert.equal(shouldPrefetchReadingPage(1, 0, 3), true)
+  assert.equal(shouldPrefetchReadingPage(3, 0, 3), true)
+  assert.equal(shouldPrefetchReadingPage(4, 0, 3), false)
+  assert.equal(shouldPrefetchReadingPage(4, 1, 3), false)
+  assert.equal(shouldPrefetchReadingPage(4, 2, 3), true)
 })

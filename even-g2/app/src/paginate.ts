@@ -11,6 +11,11 @@ export interface PaginateBox {
   height: number
 }
 
+/** Keep at most `ahead` converted Kindle pages after the oldest unread source. */
+export function shouldPrefetchReadingPage(fetched: number, consumed: number, ahead: number): boolean {
+  return fetched - Math.max(consumed, 1) < ahead
+}
+
 /**
  * Incremental paginator for Kindle reader mode.
  *
@@ -21,6 +26,8 @@ export interface PaginateBox {
 export class IncrementalReadingPaginator {
   private readonly maxLines: number
   private buffer = ''
+  private sourceLengths: number[] = []
+  private consumedSources = 0
 
   constructor(private readonly box: PaginateBox) {
     this.maxLines = Math.max(1, Math.floor(box.height / LINE_HEIGHT))
@@ -28,6 +35,8 @@ export class IncrementalReadingPaginator {
 
   reset(source: string): void {
     this.buffer = normalizeSource(source)
+    this.sourceLengths = [Array.from(this.buffer).length]
+    this.consumedSources = 0
   }
 
   append(source: string): void {
@@ -35,9 +44,12 @@ export class IncrementalReadingPaginator {
     if (!incoming) return
     if (!this.buffer) {
       this.buffer = incoming
+      this.sourceLengths.push(Array.from(incoming).length)
       return
     }
-    this.buffer = `${this.buffer}${sourceJoiner(this.buffer, incoming)}${incoming}`
+    const joined = `${sourceJoiner(this.buffer, incoming)}${incoming}`
+    this.buffer += joined
+    this.sourceLengths.push(Array.from(joined).length)
   }
 
   /** Returns null when another Kindle page is needed to fill the next screen. */
@@ -69,10 +81,26 @@ export class IncrementalReadingPaginator {
     return this.buffer
   }
 
+  /** Kindle source pages fully removed from the unread buffer. */
+  get consumedSourcePages(): number {
+    return this.consumedSources
+  }
+
   private consume(characterCount: number): string | null {
     const characters = Array.from(this.buffer)
     const page = characters.slice(0, characterCount).join('').trim()
     this.buffer = characters.slice(characterCount).join('').trimStart()
+    let removed = characters.length - Array.from(this.buffer).length
+    while (removed > 0 && this.sourceLengths.length > 0) {
+      const first = this.sourceLengths[0]
+      if (removed < first) {
+        this.sourceLengths[0] = first - removed
+        break
+      }
+      removed -= first
+      this.sourceLengths.shift()
+      this.consumedSources += 1
+    }
     return page || null
   }
 }

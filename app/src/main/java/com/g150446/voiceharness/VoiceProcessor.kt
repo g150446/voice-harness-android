@@ -2725,43 +2725,58 @@ internal class VoiceProcessor(
             return
         }
         scope.launch(Dispatchers.IO) {
-            val completed = runCatching {
-                if (EvenG2ReadingSession.snapshot(BleConnectionService.doubleTapStatus.value.count).revision != expectedRevision) {
-                    false
-                } else {
-                    advanceKindlePageIfPossible()
-                }
-            }.getOrDefault(false)
-            if (!completed) {
+            val current = EvenG2ReadingSession.snapshot()
+            if (current.revision != expectedRevision || current.mode != EvenG2DisplayMode.READING) {
+                return@launch
+            }
+            val completed = runCatching { advanceKindlePageIfPossible(expectedRevision) }.getOrDefault(false)
+            if (!completed && EvenG2ReadingSession.snapshot().revision == expectedRevision) {
                 EvenG2ReadingSession.failAdvance("Kindleの次ページを取得できませんでした")
             }
         }
     }
 
-    private suspend fun advanceKindlePageIfPossible(): Boolean =
-        turnKindlePages(pages = 1, forward = true, extract = true)
+    private suspend fun advanceKindlePageIfPossible(expectedRevision: Long): Boolean =
+        turnKindlePages(
+            pages = 1,
+            forward = true,
+            extract = true,
+            prefetch = true,
+            expectedRevision = expectedRevision,
+        )
 
     private suspend fun turnKindlePages(
         pages: Int,
         forward: Boolean,
         extract: Boolean = true,
+        prefetch: Boolean = false,
+        expectedRevision: Long? = null,
     ): Boolean {
         if (!readingPageTurnInFlight.compareAndSet(false, true)) return false
+        fun reportError(message: String) {
+            if (prefetch) {
+                if (expectedRevision == EvenG2ReadingSession.snapshot().revision) {
+                    EvenG2ReadingSession.failAdvance(message)
+                }
+            } else {
+                showKindlePageTurnError(message)
+            }
+        }
         try {
             if (!KindlePageTurnController.isAvailable()) {
-                showKindlePageTurnError("Accessibility Serviceを有効にしてください")
+                reportError("Accessibility Serviceを有効にしてください")
                 return false
             }
             var changedScreen: ScreenContext? = null
             repeat(pages) {
                 val previous = (changedScreen ?: readingSourceContext)?.let(ScreenContextFingerprint::from)
                     ?: run {
-                        showKindlePageTurnError("現在のKindle画面を確認できません")
+                        reportError("現在のKindle画面を確認できません")
                         return false
                     }
                 changedScreen = turnOneKindlePage(previous, forward)
                 if (changedScreen == null) {
-                    showKindlePageTurnError(
+                    reportError(
                         "Kindleのページ操作または画面更新を確認できませんでした",
                     )
                     return false
@@ -2782,17 +2797,39 @@ internal class VoiceProcessor(
                 )
             )
             assistantGateway.resetConversation(HARNESS_CONVERSATION_ID)
+            if (expectedRevision != null &&
+                EvenG2ReadingSession.snapshot().revision != expectedRevision
+            ) return false
+            var extractedText: String? = null
             result.onSuccess { reply ->
-                presentReadingPassthrough(
-                    command = label,
-                    extracted = reply.text,
-                    sourceContext = screen,
-                    saveHistory = false,
-                )
+                if (prefetch) {
+                    val extraction = ReadingPassthrough.parseExtraction(reply.text)
+                    val text = extraction.bodyText
+                    if (text == null) {
+                        reportError("ページ本文の抽出に失敗しました")
+                    } else {
+                        extractedText = text
+                        if (extraction.pageTurnGesture != PageTurnGesture.UNKNOWN) {
+                            readingPageTurnGesture = extraction.pageTurnGesture
+                        }
+                        EvenG2ReadingSession.publishReading(
+                            text,
+                            append = true,
+                            expectedRevision = expectedRevision,
+                        )
+                    }
+                } else {
+                    presentReadingPassthrough(
+                        command = label,
+                        extracted = reply.text,
+                        sourceContext = screen,
+                        saveHistory = false,
+                    )
+                }
             }.onFailure { error ->
-                showKindlePageTurnError("ページ本文の抽出に失敗しました: ${error.message}")
+                reportError("ページ本文の抽出に失敗しました: ${error.message}")
             }
-            return result.isSuccess
+            return result.isSuccess && (!prefetch || extractedText != null)
         } finally {
             readingPageTurnInFlight.set(false)
         }

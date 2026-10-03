@@ -113,6 +113,9 @@ class HarnessAssistantActivity : ComponentActivity() {
 
     override fun onDestroy() {
         stopListeningInternal()
+        if (!isChangingConfigurations && AssistantSessionController.uiState.value.sessionActive) {
+            AssistantSessionController.close(applicationContext)
+        }
         super.onDestroy()
     }
 

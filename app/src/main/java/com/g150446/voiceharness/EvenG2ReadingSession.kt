@@ -17,6 +17,7 @@ internal data class EvenG2ReadingSnapshot(
     val active: Boolean,
     val mode: EvenG2DisplayMode,
     val revision: Long,
+    val readingSessionId: Long = 0L,
     val title: String? = null,
     val bodyText: String?,
     val harborSummaryText: String? = null,
@@ -44,6 +45,7 @@ internal object EvenG2ReadingSession {
         val active: Boolean = false,
         val mode: EvenG2DisplayMode = EvenG2DisplayMode.IDLE,
         val revision: Long = 0L,
+        val readingSessionId: Long = 0L,
         val title: String? = null,
         val bodyText: String? = null,
         val harborSummaryText: String? = null,
@@ -83,14 +85,22 @@ internal object EvenG2ReadingSession {
 
     fun publishBody(text: String) = publishReading(text)
 
-    fun publishReading(text: String) {
+    fun publishReading(text: String, append: Boolean = false, expectedRevision: Long? = null) {
         val normalized = normalize(text) ?: return
         state.update { current ->
+            if (expectedRevision != null &&
+                (current.revision != expectedRevision || current.mode != EvenG2DisplayMode.READING)
+            ) return@update current
             current.copy(
                 enabled = true,
                 active = true,
                 mode = EvenG2DisplayMode.READING,
                 revision = current.revision + 1L,
+                readingSessionId = if (append && current.mode == EvenG2DisplayMode.READING) {
+                    current.readingSessionId
+                } else {
+                    current.readingSessionId + 1L
+                },
                 title = null,
                 bodyText = normalized,
                 harborSummaryText = null,
@@ -230,6 +240,7 @@ internal object EvenG2ReadingSession {
             active = current.active,
             mode = current.mode,
             revision = current.revision,
+            readingSessionId = current.readingSessionId,
             title = current.title,
             bodyText = current.bodyText,
             harborSummaryText = current.harborSummaryText,

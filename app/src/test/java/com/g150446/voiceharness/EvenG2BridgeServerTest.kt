@@ -143,4 +143,30 @@ class EvenG2BridgeServerTest {
             EvenG2ReadingSession.setEnabled(false)
         }
     }
+
+    @Test
+    fun `prefetched reading keeps its session while a new reading starts another`() {
+        EvenG2ReadingSession.setEnabled(false)
+        try {
+            EvenG2ReadingSession.setEnabled(true)
+            EvenG2ReadingSession.publishReading("最初のページ")
+            val first = EvenG2ReadingSession.snapshot()
+            EvenG2ReadingSession.publishReading("先読み", append = true)
+            val prefetched = EvenG2ReadingSession.snapshot()
+            assertEquals(first.readingSessionId, prefetched.readingSessionId)
+            assertEquals(first.revision + 1, prefetched.revision)
+
+            EvenG2ReadingSession.publishReading("別の位置")
+            val newer = EvenG2ReadingSession.snapshot()
+            assertEquals(first.readingSessionId + 1, newer.readingSessionId)
+            EvenG2ReadingSession.publishReading(
+                "古い先読み",
+                append = true,
+                expectedRevision = first.revision,
+            )
+            assertEquals(newer, EvenG2ReadingSession.snapshot())
+        } finally {
+            EvenG2ReadingSession.setEnabled(false)
+        }
+    }
 }
